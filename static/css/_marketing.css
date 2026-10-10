@@ -20,6 +20,7 @@ html:has(.marketing-shell) {
     scroll-padding-top: 5rem;
     scroll-behavior: smooth;
 }
+:root[data-mk-theme="dark"] { color-scheme: dark; }
 
 /* Honour users who ask the OS to reduce motion. */
 @media (prefers-reduced-motion: reduce) {
@@ -112,9 +113,10 @@ html:has(.marketing-shell) {
     --mk-down:      oklch(0.58 0.20 28);
     --mk-mark:      oklch(0.78 0.135 62);
     /* Depth + hover accents — shared by every framed surface; no hand-rolled stacks. */
-    --mk-shadow-frame: 0 1px 0 oklch(1 0 0 / 0.6) inset, 0 18px 32px -24px oklch(0 0 0 / 0.18);
-    --mk-shadow-card: 0 1px 0 oklch(1 0 0 / 0.6) inset, 0 10px 20px -16px oklch(0 0 0 / 0.14);
-    --mk-shadow-card-hover: 0 1px 0 oklch(1 0 0 / 0.6) inset, 0 14px 26px -16px oklch(0 0 0 / 0.18);
+    --mk-highlight: oklch(1 0 0 / 0.6);
+    --mk-shadow-frame: 0 1px 0 var(--mk-highlight) inset, 0 18px 32px -24px oklch(0 0 0 / 0.18);
+    --mk-shadow-card: 0 1px 0 var(--mk-highlight) inset, 0 10px 20px -16px oklch(0 0 0 / 0.14);
+    --mk-shadow-card-hover: 0 1px 0 var(--mk-highlight) inset, 0 14px 26px -16px oklch(0 0 0 / 0.18);
     --mk-rule-hover: color-mix(in oklch, var(--mk-ok) 40%, var(--mk-rule));
     --mk-rule-soft: color-mix(in oklch, var(--mk-rule) 70%, transparent);
 
@@ -128,6 +130,52 @@ html:has(.marketing-shell) {
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+}
+
+/* Set on <html> by theme.js. The console figures (.mk-fig, .mk-conf) keep
+   their own darker ladder, so they still read as recessed screens. */
+:root[data-mk-theme="dark"] .marketing-shell {
+    --mk-bg:        oklch(0.18 0.010 240);
+    --mk-bg-2:      oklch(0.25 0.011 240);
+    --mk-surface:   oklch(0.21 0.010 240);
+    --mk-ink:       oklch(0.95 0.006 240);
+    --mk-ink-soft:  oklch(0.80 0.008 240);
+    --mk-quiet:     oklch(0.66 0.010 240);
+    --mk-faint:     oklch(0.48 0.010 240);
+    --mk-rule:      oklch(0.33 0.012 240);
+    --mk-ok:        oklch(0.75 0.15 158);
+    --mk-ok-soft:   oklch(0.30 0.06 158);
+    --mk-warn:      oklch(0.80 0.14 80);
+    --mk-down:      oklch(0.68 0.18 25);
+    --mk-mark:      oklch(0.80 0.13 70);
+    --mk-highlight: oklch(1 0 0 / 0.04);
+    --mk-shadow-frame: 0 1px 0 var(--mk-highlight) inset, 0 20px 36px -24px oklch(0 0 0 / 0.55);
+    --mk-shadow-card: 0 1px 0 var(--mk-highlight) inset, 0 10px 20px -16px oklch(0 0 0 / 0.45);
+    --mk-shadow-card-hover: 0 1px 0 var(--mk-highlight) inset, 0 14px 26px -16px oklch(0 0 0 / 0.55);
+
+    /* The reused app primitives (combobox, checkbox, focus ring) read the
+       --theme-* layer, which is light at :root. */
+    --theme-surface:      var(--mk-bg);
+    --theme-surface-elev: var(--mk-surface);
+    --theme-surface-sunk: var(--mk-bg-2);
+    --theme-ink:          var(--mk-ink);
+    --theme-text:         var(--mk-ink);
+    --theme-text-muted:   var(--mk-ink-soft);
+    --theme-text-quiet:   var(--mk-quiet);
+    --theme-text-faint:   var(--mk-faint);
+    --theme-line:         var(--mk-rule);
+    --theme-accent:       var(--mk-ok);
+    --theme-focus-ring:   var(--mk-ok);
+    --control-on:         var(--mk-ok);
+}
+:root[data-mk-theme="dark"] .marketing-shell::before {
+    background-image: repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 3px,
+        oklch(1 0 0 / 0.012) 3px,
+        oklch(1 0 0 / 0.012) 4px
+    );
 }
 
 /* Scanline atmosphere + z-index lift on direct children live with the
@@ -168,6 +216,7 @@ html:has(.marketing-shell) {
     padding: 0.04em 0.14em;
     border-radius: 3px;
 }
+:root[data-mk-theme="dark"] .mk-mark { background: color-mix(in oklch, var(--mk-mark) 32%, transparent); }
 
 .mk-h2 {
     font-family: var(--mk-font-mono);
@@ -238,6 +287,56 @@ html:has(.marketing-shell) {
    mobile menu panel always shows the word. */
 .mk-nav-desk .gh-label { display: none; }
 @media (min-width: 64rem) { .mk-nav-desk .gh-label { display: inline; } }
+
+/* ── Light/dark toggle ─────────────────────────────────────────────────
+   Below 40rem the bar has no room, so it moves into the mobile menu. */
+.mk-theme-toggle {
+    display: inline-grid;
+    place-items: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    margin-inline: -0.5rem;
+    color: var(--mk-ink-soft);
+    cursor: pointer;
+    transition: color 140ms ease;
+}
+.mk-theme-toggle:hover { color: var(--mk-ok); }
+.mk-theme-toggle:active .mk-theme-toggle__icon { scale: 0.92; }
+.mk-theme-toggle__label { display: none; }
+.mk-menu__panel .mk-theme-toggle {
+    grid-template-columns: auto 1fr auto;
+    justify-items: start;
+    column-gap: 0.5rem;
+    width: auto;
+    height: auto;
+    min-height: 2.5rem;
+    margin: 0.25rem 0 0;
+    padding: 0.625rem 0.75rem;
+    border-top: 1px solid var(--mk-rule);
+    font: 500 0.8125rem/1 var(--mk-font-mono);
+}
+.mk-menu__panel .mk-theme-toggle__label { display: block; grid-column: 2; grid-row: 1; }
+.mk-menu__panel .mk-theme-toggle::after { content: "off"; grid-column: 3; grid-row: 1; color: var(--mk-quiet); }
+.mk-menu__panel .mk-theme-toggle[aria-pressed="true"]::after { content: "on"; color: var(--mk-ok); }
+@media (max-width: 39.99rem) { .mk-header nav > div > .mk-theme-toggle { display: none; } }
+@media (min-width: 40rem) { .mk-menu__panel .mk-theme-toggle { display: none; } }
+:root:not([data-mk-theme]) .mk-theme-toggle { display: none; }
+.mk-theme-toggle__icon {
+    grid-area: 1 / 1;
+    width: 1.125rem;
+    height: 1.125rem;
+    transition: opacity 180ms cubic-bezier(.2,0,0,1), scale 180ms cubic-bezier(.2,0,0,1), filter 180ms cubic-bezier(.2,0,0,1);
+}
+:root[data-mk-theme="dark"] .mk-theme-toggle__icon--moon,
+:root:not([data-mk-theme="dark"]) .mk-theme-toggle__icon--sun {
+    opacity: 0;
+    scale: 0.25;
+    filter: blur(4px);
+}
+/* The row states on/off in words, so its icon stays put. */
+.mk-menu__panel .mk-theme-toggle .mk-theme-toggle__icon--moon { opacity: 1; scale: 1; filter: none; }
+.mk-menu__panel .mk-theme-toggle__icon--sun { display: none; }
+@media (prefers-reduced-motion: reduce) { .mk-theme-toggle__icon { transition: none; } }
 
 /* ── Mobile menu — native <details> disclosure, JS-enhanced close ───── */
 .mk-menu { position: relative; }
@@ -1501,6 +1600,7 @@ html:has(.marketing-shell) {
 .cmp .yes { color: var(--mk-ok); }
 .cmp .no { color: var(--mk-quiet); }
 .cmp .part { color: oklch(0.62 0.13 66); }
+:root[data-mk-theme="dark"] .cmp .part { color: oklch(0.78 0.13 66); }
 .cmp__note { font-family: var(--mk-font-mono); font-size: 0.6875rem; color: var(--mk-quiet); margin-top: 0.6rem; }
 
 /* ── Comparison pages (/vs, /compare) ─────────────────────────────────
@@ -2291,7 +2391,7 @@ html:has(.marketing-shell) {
     height: auto;
     margin: 1.75rem auto;
     border-radius: 2px;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--mk-ink) 10%, transparent);
 }
 /* Caption: the fully-italic line directly under an image or a figure. */
 .mk-article p:has(> img) + p:has(> em:only-child),
@@ -2971,7 +3071,7 @@ html:has(.marketing-shell) {
     background: var(--mk-surface);
     overflow: hidden;
     box-shadow:
-        0 1px 0 oklch(1 0 0 / 0.6) inset,
+        0 1px 0 var(--mk-highlight) inset,
         0 18px 34px -26px oklch(0 0 0 / 0.20);
     transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
@@ -2980,7 +3080,7 @@ html:has(.marketing-shell) {
     transform: translateY(-3px);
     border-color: var(--mk-rule-hover);
     box-shadow:
-        0 1px 0 oklch(1 0 0 / 0.6) inset,
+        0 1px 0 var(--mk-highlight) inset,
         0 26px 46px -24px oklch(0 0 0 / 0.28);
 }
 .mk-gallery__card:active { transform: translateY(-3px) scale(0.96); }
@@ -3003,7 +3103,7 @@ html:has(.marketing-shell) {
     height: 1.85rem;
     border-radius: 999px;
     background: color-mix(in oklch, var(--mk-ink) 78%, transparent);
-    color: #fff;
+    color: var(--mk-bg);
     opacity: 0;
     transform: translateY(4px);
     transition: opacity 0.18s ease, transform 0.18s ease;
@@ -3211,7 +3311,7 @@ html:has(.mk-hero),
     background: var(--mk-surface);
     padding: clamp(0.85rem, 3vw, 2rem);
     box-shadow:
-        0 1px 0 oklch(1 0 0 / 0.6) inset,
+        0 1px 0 var(--mk-highlight) inset,
         0 24px 40px -28px oklch(0 0 0 / 0.18);
 }
 .mk-map__svg {

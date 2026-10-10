@@ -1,6 +1,6 @@
 # Cookie Policy
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-10-11
 
 ## What Cookies We Use
 
@@ -28,10 +28,11 @@ Without `_sm_session` you cannot stay signed in. The other two are set only whil
 
 | Name | Purpose | Duration | Required? |
 |---|---|---|---|
-| `sm_theme` | Your light or dark choice, so the page paints in it before the stylesheet loads | 365 days | No |
+| `sm_app_theme` | Your theme, so the app and the website paint in it before the stylesheet loads | 365 days | No |
 | `sm_time_format` | Your 12-hour or 24-hour clock choice | 365 days | No |
+| `sm_theme_pick` | The light or dark mode you chose with the switch on the website | 365 days | No |
 
-These two mirror preferences already stored on your account. They are issued when you sign in and updated when you change the setting.
+`sm_app_theme` and `sm_time_format` mirror preferences already stored on your account. They are issued when you sign in or open the app without them, and updated when you change the setting. `sm_theme_pick` is set only when you press the switch. If you sign up while it is set, your new account starts on that mode; it never changes the theme of an existing account. The two theme cookies belong to the whole domain, so the website and the app both read them.
 
 ### Paying for a plan
 
@@ -55,7 +56,7 @@ You can configure your browser to reject all cookies, but you would not be able 
 ## Public Status Pages
 
 The public per-organisation status pages (e.g., `acme.example.com`)
-do **not** set any cookies. They are fully anonymous.
+do **not** set any cookies. They are fully anonymous. A browser that holds the two theme cookies above still sends them there, and the status pages ignore them.
 
 ## Contact
 

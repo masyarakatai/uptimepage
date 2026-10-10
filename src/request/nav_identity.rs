@@ -18,7 +18,7 @@ use crate::request::{RequestState, Session};
 const COOKIE_NAME: &str = "sm_nav_id";
 
 pub async fn middleware(State(state): State<RequestState>, req: Request, next: Next) -> Response {
-    if !is_page_load(&req) || !renders_app_chrome(&state, req.headers(), req.uri().path()) {
+    if !is_app_page_load(&state, &req) {
         return next.run(req).await;
     }
     let (mut parts, body) = req.into_parts();
@@ -44,6 +44,11 @@ pub async fn middleware(State(state): State<RequestState>, req: Request, next: N
         cookies.add(c);
     }
     response
+}
+
+/// A full page load drawn in the operator app's chrome.
+pub fn is_app_page_load(state: &RequestState, req: &Request) -> bool {
+    is_page_load(req) && renders_app_chrome(state, req.headers(), req.uri().path())
 }
 
 fn is_page_load(req: &Request) -> bool {

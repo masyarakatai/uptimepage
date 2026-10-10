@@ -133,10 +133,8 @@ pub async fn update_theme(
     if !ok {
         return Err(AppError::not_found("USER_NOT_FOUND", "user not found"));
     }
-    cookies.add(theme_cookie::build_cookie(
-        req.theme,
-        state.cfg.auth.session.cookie_secure,
-    ));
+    let scope = theme_cookie::CookieScope::from_config(&state.cfg);
+    cookies.add(theme_cookie::build_cookie(req.theme, scope));
     Ok(Json(ThemeView { theme: req.theme }))
 }
 

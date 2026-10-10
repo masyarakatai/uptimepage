@@ -373,6 +373,11 @@ pub fn routes(state: AppState) -> Router {
 
     assets::mount_static(r)
         .fallback(error::not_found)
+        // Inside nav_identity, which leaves the session in the extensions.
+        .layer(axum::middleware::from_fn_with_state(
+            state.request_state(),
+            crate::request::display_prefs::middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.request_state(),
             crate::request::nav_identity::middleware,

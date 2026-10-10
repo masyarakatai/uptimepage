@@ -242,9 +242,14 @@ pub(super) async fn complete(
         created.cookie_token,
     ));
     crate::request::login_hint::set(cookies, session_cfg, method.as_db_str());
+    if new_user
+        && let Err(err) = crate::request::display_prefs::adopt_pick(pool, cookies, user_id).await
+    {
+        tracing::warn!(error = %err, "marketing theme pick not adopted (non-fatal)");
+    }
     if let Err(err) = crate::request::display_prefs::issue_cookies(
         pool,
-        session_cfg.cookie_secure,
+        crate::request::theme::CookieScope::from_config(&state.cfg),
         cookies,
         user_id,
     )

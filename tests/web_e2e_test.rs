@@ -749,6 +749,10 @@ async fn legal_pages_render_public_without_auth_nav() {
             !body.contains("hx-post=\"/auth/logout\""),
             "{path} must not expose the authenticated nav"
         );
+        assert!(
+            body.contains("window.smApplyTheme"),
+            "{path} should paint in the visitor's theme like the sign-in page"
+        );
         // Footer cross-links to the sibling policies.
         assert!(
             body.contains(r#"href="/privacy""#) && body.contains(r#"href="/security-policy""#),

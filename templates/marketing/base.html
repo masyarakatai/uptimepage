@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f9fafb">
+    {# Blocking, ahead of the stylesheet: the first paint is in the right mode. #}
+    <script src="{{ "js/marketing/theme.js"|asset }}"></script>
     {% include "marketing/_site_verification.html" %}
     <title>{% block title %}Uptimepage{% endblock %}</title>
     <meta name="description" content="{% block description %}{{ og.description }}{% endblock %}">
@@ -50,6 +52,7 @@
                     </svg>
                     <span class="gh-label">github</span>
                 </a>
+                {% include "marketing/_theme_toggle.html" %}
                 {# Marketing never sees the session cookie, so the label cannot
                    know. Naming a destination lets the app skip the form for
                    anyone already signed in. #}
@@ -63,6 +66,7 @@
                     <summary aria-label="Menu"><span class="mk-menu__bars"></span></summary>
                     <div class="mk-menu__panel" data-link-region="nav-mobile">
                         {% include "marketing/_nav_mobile.html" %}
+                        {% include "marketing/_theme_toggle.html" %}
                     </div>
                 </details>
             </div>

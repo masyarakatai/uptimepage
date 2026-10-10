@@ -1,35 +1,17 @@
 <!doctype html>
 <html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+{% include "_theme_boot.html" %}
     <script>
-      // First-paint reveal gate + theme apply, both BEFORE stylesheet parse.
-      // Theme: read sm_theme cookie and put theme-X on <html> so .theme-X
-      // rules win at first render (no FOUC). Whitelist keeps attacker cookie
-      // values out of the class list. "system" (also the no-cookie case)
-      // resolves against the OS setting once per page load: charts read
-      // theme colours once, so a live flip would strand them.
-      (function () {
-        window.smApplyTheme = function (theme) {
-          var html = document.documentElement;
-          Array.from(html.classList)
-            .filter(function (c) { return c.indexOf('theme-') === 0; })
-            .forEach(function (c) { html.classList.remove(c); });
-          if (theme === 'system') {
-            theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
-          }
-          if (theme !== 'default') html.classList.add('theme-' + theme);
-        };
-        var m = document.cookie.match(/(?:^|; )sm_theme=([^;]+)/);
-        window.smApplyTheme(m && /^[a-z]+$/.test(m[1]) ? m[1] : 'system');
-      })();
+      // First-paint reveal gate, also BEFORE the stylesheet parses.
       document.documentElement.classList.add('sm-fresh-load');
       addEventListener('load', () => setTimeout(
         () => document.documentElement.classList.remove('sm-fresh-load'),
         900
       ));
     </script>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     {# Every page behind this base is login-walled; none belongs in an index. #}
     <meta name="robots" content="noindex, nofollow">
     <title>{% block title %}Uptimepage{% endblock %}</title>

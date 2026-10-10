@@ -1,26 +1,97 @@
-//! `sm_theme` cookie helper. The cookie is a fast-path mirror of `users.theme`
-//! that the inline boot script in `templates/base.html` reads BEFORE the
-//! stylesheet parses, so the user's chosen theme is the very first render.
-//! The DB column remains the source of truth.
+//! Theme cookies. `sm_app_theme` mirrors `users.theme` for the scripts that
+//! paint before the stylesheet loads (`templates/base.html`, the marketing
+//! `theme.js`). `sm_theme_pick` is a light/dark choice from the marketing
+//! toggle that a new account starts on; it never touches an existing one.
 
-use tower_cookies::Cookie;
 use tower_cookies::cookie::SameSite;
 use tower_cookies::cookie::time::Duration;
+use tower_cookies::{Cookie, Cookies};
 
+use crate::config::AppConfig;
 use crate::domain::AppTheme;
 
-pub const COOKIE_NAME: &str = "sm_theme";
+pub const COOKIE_NAME: &str = "sm_app_theme";
+pub const PICK_COOKIE_NAME: &str = "sm_theme_pick";
 
-/// `http_only=false` is intentional — the inline boot script reads
-/// `document.cookie` to apply the theme class before the stylesheet parses.
-/// Issued for a fresh browser at login by
-/// [`crate::request::display_prefs::issue_cookies`].
-pub fn build_cookie(theme: AppTheme, secure: bool) -> Cookie<'static> {
-    let mut c = Cookie::new(COOKIE_NAME, theme.as_str().to_owned());
+/// With a marketing site the mirror takes the parent domain it shares with the
+/// app, so both surfaces read it; host-only otherwise (self-host).
+#[derive(Debug, Clone, Copy)]
+pub struct CookieScope<'a> {
+    pub secure: bool,
+    pub domain: Option<&'a str>,
+}
+
+impl<'a> CookieScope<'a> {
+    pub fn from_config(cfg: &'a AppConfig) -> Self {
+        Self {
+            secure: cfg.auth.session.cookie_secure,
+            domain: cfg
+                .marketing
+                .enabled
+                .then_some(cfg.public_status.base_domain.trim()),
+        }
+    }
+}
+
+/// `http_only=false` is intentional: scripts read it.
+pub fn build_cookie(theme: AppTheme, scope: CookieScope<'_>) -> Cookie<'static> {
+    let mut c = Cookie::new(COOKIE_NAME, theme.as_str());
     c.set_http_only(false);
-    c.set_secure(secure);
+    c.set_secure(scope.secure);
     c.set_same_site(SameSite::Lax);
     c.set_path("/");
+    if let Some(domain) = scope.domain {
+        c.set_domain(domain.to_owned());
+    }
     c.set_max_age(Duration::days(365));
     c
+}
+
+/// Light is [`AppTheme::Default`], the look the marketing light palette mirrors.
+pub fn pending_pick(cookies: &Cookies) -> Option<AppTheme> {
+    match cookies.get(PICK_COOKIE_NAME)?.value() {
+        "light" => Some(AppTheme::Default),
+        "dark" => Some(AppTheme::Dark),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::AppTheme;
+
+    fn quoted(list: &str) -> Vec<String> {
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_marketing_site_knows_every_dark_app_theme() {
+        let css = include_str!("../../static/css/input.css");
+        let rule = css
+            .split("{ color-scheme: dark; }")
+            .next()
+            .and_then(|before| before.rsplit('}').next())
+            .expect("color-scheme: dark rule");
+        let mut in_css: Vec<String> = rule
+            .split(',')
+            .filter_map(|sel| sel.trim().strip_prefix(".theme-"))
+            .map(str::to_owned)
+            .collect();
+        let js = include_str!("../../assets/js/marketing/theme.js");
+        let list = js
+            .split("DARK_APP_THEMES = [")
+            .nth(1)
+            .and_then(|rest| rest.split(']').next())
+            .expect("DARK_APP_THEMES in theme.js");
+        let mut in_js = quoted(list);
+        in_css.sort();
+        in_js.sort();
+        assert!(!in_css.is_empty());
+        assert_eq!(in_css, in_js);
+        assert!(in_js.iter().all(|t| AppTheme::ALL.contains(&t.as_str())));
+    }
 }

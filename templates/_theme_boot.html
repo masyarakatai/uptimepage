@@ -1,0 +1,24 @@
+    <script>
+      // Runs BEFORE the stylesheet parses. Reads the sm_app_theme cookie and
+      // puts theme-X on <html> so .theme-X rules win at first render (no FOUC).
+      // Whitelist keeps attacker cookie values out of the class list. Without
+      // an account theme yet, a light/dark pick from the marketing site stands
+      // in. "system" (also the no-cookie case) resolves against the OS setting
+      // once per page load: charts read theme colours once, so a live flip
+      // would strand them.
+      (function () {
+        window.smApplyTheme = function (theme) {
+          var html = document.documentElement;
+          Array.from(html.classList)
+            .filter(function (c) { return c.indexOf('theme-') === 0; })
+            .forEach(function (c) { html.classList.remove(c); });
+          if (theme === 'system') {
+            theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+          }
+          if (theme !== 'default') html.classList.add('theme-' + theme);
+        };
+        var m = document.cookie.match(/(?:^|; )sm_app_theme=([a-z]+)(?:;|$)/);
+        var pick = document.cookie.match(/(?:^|; )sm_theme_pick=(light|dark)(?:;|$)/);
+        window.smApplyTheme(m ? m[1] : pick ? { light: 'default', dark: 'dark' }[pick[1]] : 'system');
+      })();
+    </script>

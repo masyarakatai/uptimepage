@@ -75,6 +75,10 @@ struct Rig {
 }
 
 async fn rig(prefix: &str, methods: &[&str]) -> Option<Rig> {
+    rig_with(prefix, methods, |_| {}).await
+}
+
+async fn rig_with(prefix: &str, methods: &[&str], tweak: impl Fn(&mut AppConfig)) -> Option<Rig> {
     let (db_url, db_name) = common::fresh_test_db(prefix).await?;
     let pool = common::open_test_pool(&db_url).await;
     let issued: Issued = Arc::default();
@@ -92,6 +96,7 @@ async fn rig(prefix: &str, methods: &[&str]) -> Option<Rig> {
         cfg.auth.gitlab.client.client_secret = CLIENT_SECRET.to_string().into();
         cfg.auth.gitlab.client.redirect_url = REDIRECT_URL.into();
         cfg.auth.gitlab.base_url = gitlab.clone();
+        tweak(cfg);
     };
     let mail = Arc::new(InMemoryEmailSender::new());
     let sender = mail.clone();
@@ -122,6 +127,15 @@ impl Reply {
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default()
+    }
+
+    fn set_cookie(&self, name: &str) -> Option<&str> {
+        let prefix = format!("{name}=");
+        self.headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|c| c.starts_with(&prefix))
     }
 }
 
@@ -168,10 +182,20 @@ impl Rig {
     }
 
     async fn callback(&self, state: &str, claims: Value) -> Reply {
+        self.callback_carrying(state, claims, "").await
+    }
+
+    /// The callback from a browser that holds `cookie`.
+    async fn callback_carrying(&self, state: &str, claims: Value, cookie: &str) -> Reply {
         let code = Uuid::new_v4().simple().to_string();
         self.issued.lock().unwrap().insert(code.clone(), claims);
-        self.get(&format!("/auth/gitlab/callback?code={code}&state={state}"))
-            .await
+        self.send(
+            Request::get(format!("/auth/gitlab/callback?code={code}&state={state}"))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
     }
 
     /// A whole dance: start with `query`, come back with `claims`.
@@ -214,6 +238,14 @@ impl Rig {
         .fetch_all(&self.pool)
         .await
         .unwrap()
+    }
+
+    async fn theme_of(&self, user: Uuid) -> String {
+        sqlx::query_scalar("SELECT theme FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
     }
 
     async fn sessions(&self, user: Uuid) -> i64 {
@@ -496,6 +528,82 @@ async fn logout_ends_this_session_and_logout_all_ends_every_one() {
     let all = rig.send(post("/auth/logout-all", &cookies[1], true)).await;
     assert_eq!(all.location(), "/login");
     assert_eq!(rig.sessions(user.0).await, 0);
+
+    rig.done().await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_signup_takes_the_theme_picked_on_the_website() {
+    let Some(rig) = rig_with("oauth_theme_signup", &["gitlab_oauth"], |cfg| {
+        cfg.marketing.enabled = true;
+        cfg.public_status.base_domain = "uptimepage.test".into();
+    })
+    .await
+    else {
+        return;
+    };
+    let email = format!("olena.{}@example.com", Uuid::new_v4().simple());
+    let state = rig.start("").await;
+
+    let signed_up = rig
+        .callback_carrying(&state, rig.claims("42", &email, true), "sm_theme_pick=dark")
+        .await;
+
+    let user = rig.user_by_email(&email).await.expect("account created");
+    assert_eq!(rig.theme_of(user).await, "dark");
+    let mirror = signed_up.set_cookie("sm_app_theme").expect("theme mirror");
+    assert!(mirror.starts_with("sm_app_theme=dark;"), "{mirror}");
+    assert!(mirror.contains("Domain=uptimepage.test"), "{mirror}");
+    assert!(
+        signed_up.set_cookie("sm_theme_pick").is_none(),
+        "the pick stays the website's"
+    );
+
+    rig.done().await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_sign_in_keeps_the_account_theme_whatever_the_browser_holds() {
+    let Some(rig) = rig("oauth_theme_signin", &["gitlab_oauth"]).await else {
+        return;
+    };
+    let email = format!("olena.{}@example.com", Uuid::new_v4().simple());
+    rig.sign_in("", rig.claims("7", &email, true)).await;
+    let user = rig.user_by_email(&email).await.unwrap();
+
+    let state = rig.start("").await;
+    let stale = rig
+        .callback_carrying(
+            &state,
+            rig.claims("7", &email, true),
+            "sm_app_theme=dracula",
+        )
+        .await;
+    assert_eq!(rig.theme_of(user).await, "system");
+    let mirror = stale.set_cookie("sm_app_theme").expect("theme mirror");
+    assert!(mirror.starts_with("sm_app_theme=system;"), "{mirror}");
+
+    let state = rig.start("").await;
+    let picked = rig
+        .callback_carrying(
+            &state,
+            rig.claims("7", &email, true),
+            "sm_app_theme=dracula; sm_theme_pick=light",
+        )
+        .await;
+    assert_eq!(rig.theme_of(user).await, "system");
+    let mirror = picked.set_cookie("sm_app_theme").expect("theme mirror");
+    assert!(mirror.starts_with("sm_app_theme=system;"), "{mirror}");
+    assert!(
+        !mirror.contains("Domain="),
+        "no marketing site, host-only: {mirror}"
+    );
+    assert!(
+        picked.set_cookie("sm_theme_pick").is_none(),
+        "the pick stays the website's"
+    );
 
     rig.done().await;
 }
