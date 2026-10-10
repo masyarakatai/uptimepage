@@ -61,7 +61,7 @@ async fn me_theme_get_patch_round_trip() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["theme"], "default");
+    assert_eq!(body["theme"], "system");
 
     let resp = router
         .clone()
@@ -137,7 +137,7 @@ async fn me_theme_patch_rejects_unknown_variant() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(stored, "default", "DB must be untouched on bad input");
+    assert_eq!(stored, "system", "DB must be untouched on bad input");
 
     pool.close().await;
     drop_test_db(&name).await;

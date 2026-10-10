@@ -32,6 +32,7 @@ pub struct User {
 #[serde(rename_all = "lowercase")]
 pub enum AppTheme {
     #[default]
+    System,
     Default,
     Terminal,
     Winter,
@@ -50,6 +51,7 @@ pub enum AppTheme {
 impl AppTheme {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::System => "system",
             Self::Default => "default",
             Self::Terminal => "terminal",
             Self::Winter => "winter",
@@ -68,6 +70,7 @@ impl AppTheme {
 
     pub fn from_db(s: &str) -> Self {
         match s {
+            "system" => Self::System,
             "default" => Self::Default,
             "terminal" => Self::Terminal,
             "winter" => Self::Winter,
@@ -84,14 +87,15 @@ impl AppTheme {
             other => {
                 tracing::warn!(
                     value = other,
-                    "unknown user.theme in DB, falling back to default"
+                    "unknown user.theme in DB, falling back to system"
                 );
-                Self::Default
+                Self::System
             }
         }
     }
 
     pub const ALL: &'static [&'static str] = &[
+        "system",
         "default",
         "terminal",
         "winter",
@@ -117,6 +121,6 @@ mod tests {
         for s in AppTheme::ALL {
             assert_eq!(AppTheme::from_db(s).as_str(), *s);
         }
-        assert_eq!(AppTheme::from_db("garbage").as_str(), "default");
+        assert_eq!(AppTheme::from_db("garbage").as_str(), "system");
     }
 }

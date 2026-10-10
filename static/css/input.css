@@ -437,6 +437,12 @@
         --theme-state-warn-fg:       oklch(0.82 0.14 75);   --theme-state-warn-fg-strong: oklch(0.92 0.16 75);
         --theme-state-warn-fg-onsoft: oklch(0.86 0.15 75);  --theme-state-warn-strong:   oklch(0.78 0.16 75);
     }
+    /* The app's Dark theme sits on <html>; the status page Dark style keeps its accent. */
+    html.theme-dark {
+        --theme-action-accent:       oklch(0.93 0.006 256);
+        --theme-action-accent-hover: oklch(0.82 0.008 256);
+        --theme-action-accent-fg:    oklch(0.18 0.012 256);
+    }
 
     .theme-night {
         --theme-surface:       oklch(0.18 0.030 252);
@@ -738,6 +744,9 @@
         --theme-state-warn-fg:       oklch(0.88 0.16 75);   --theme-state-warn-fg-strong: oklch(0.95 0.18 75);
         --theme-state-warn-fg-onsoft: oklch(0.90 0.17 75);  --theme-state-warn-strong:   oklch(0.82 0.18 75);
     }
+    .theme-terminal, .theme-dark, .theme-night, .theme-dim,
+    .theme-dracula, .theme-synthwave { color-scheme: dark; }
+
     /* Theme atmosphere overrides. Theme class is on `<html>` for the org
        app (body has .app-shell) and on `<body>` for the public page (body
        also has .public-shell) — both selector forms needed per family. */
@@ -839,7 +848,7 @@
     .sticker-btn--danger  { background: var(--theme-action-danger); color: white; }
     .sticker-btn--danger:not(:disabled):hover { background: var(--theme-action-danger-hover); }
     /* Accent fill for try-before-save controls. */
-    .sticker-btn--accent  { background: var(--theme-action-accent); color: white; }
+    .sticker-btn--accent  { background: var(--theme-action-accent); color: var(--theme-action-accent-fg, white); }
     .sticker-btn--accent:not(:disabled):hover { background: var(--theme-action-accent-hover); }
     /* Amber fill. warn-strong stays light in every theme, so a fixed dark ink
        holds contrast, mirroring the white text used on the dark fills. */

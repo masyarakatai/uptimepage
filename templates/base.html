@@ -5,12 +5,22 @@
       // First-paint reveal gate + theme apply, both BEFORE stylesheet parse.
       // Theme: read sm_theme cookie and put theme-X on <html> so .theme-X
       // rules win at first render (no FOUC). Whitelist keeps attacker cookie
-      // values out of the class list.
+      // values out of the class list. "system" (also the no-cookie case)
+      // resolves against the OS setting once per page load: charts read
+      // theme colours once, so a live flip would strand them.
       (function () {
+        window.smApplyTheme = function (theme) {
+          var html = document.documentElement;
+          Array.from(html.classList)
+            .filter(function (c) { return c.indexOf('theme-') === 0; })
+            .forEach(function (c) { html.classList.remove(c); });
+          if (theme === 'system') {
+            theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default';
+          }
+          if (theme !== 'default') html.classList.add('theme-' + theme);
+        };
         var m = document.cookie.match(/(?:^|; )sm_theme=([^;]+)/);
-        if (m && /^[a-z]+$/.test(m[1]) && m[1] !== 'default') {
-          document.documentElement.classList.add('theme-' + m[1]);
-        }
+        window.smApplyTheme(m && /^[a-z]+$/.test(m[1]) ? m[1] : 'system');
       })();
       document.documentElement.classList.add('sm-fresh-load');
       addEventListener('load', () => setTimeout(

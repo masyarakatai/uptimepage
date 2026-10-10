@@ -83,9 +83,7 @@ pub async fn get_theme(pool: &PgPool, user: UserId) -> Result<AppTheme> {
             .fetch_optional(pool)
             .await
             .context("get_theme")?;
-    Ok(row
-        .map(|(s,)| AppTheme::from_db(&s))
-        .unwrap_or(AppTheme::Default))
+    Ok(row.map(|(s,)| AppTheme::from_db(&s)).unwrap_or_default())
 }
 
 pub async fn set_theme(pool: &PgPool, user: UserId, theme: AppTheme) -> Result<bool> {

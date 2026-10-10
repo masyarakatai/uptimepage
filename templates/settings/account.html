@@ -22,6 +22,7 @@
       <div class="field-outline">
         <span class="field-outline__label">Theme</span>
         <select id="app-theme" data-sm-combobox aria-label="Theme" class="w-full field">
+          <option value="system"{% if theme == "system" %} selected{% endif %}>System — follow your OS light/dark</option>
           <option value="default"{% if theme == "default" %} selected{% endif %}>Default — CLI register</option>
           <option value="terminal"{% if theme == "terminal" %} selected{% endif %}>Terminal — CRT phosphor</option>
           <option value="winter"{% if theme == "winter" %} selected{% endif %}>Winter — cool blue</option>
@@ -84,11 +85,7 @@
         try {
           await savePref("/api/v1/me/theme", { theme: v });
           // Theme is a pure CSS-class swap — apply live, no reload.
-          const html = document.documentElement;
-          Array.from(html.classList)
-            .filter(function (c) { return c.indexOf("theme-") === 0; })
-            .forEach(function (c) { html.classList.remove(c); });
-          if (v !== "default") html.classList.add("theme-" + v);
+          window.smApplyTheme(v);
           themeOut.textContent = "saved";
         } catch (err) {
           themeOut.textContent = "could not save theme: " + err.message;
