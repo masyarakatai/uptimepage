@@ -483,7 +483,8 @@ impl DnsRecordType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DnsCheck {
-    /// Name to resolve (FQDN; trailing dot tolerated).
+    /// Name to resolve (FQDN; trailing dot tolerated). Underscore labels such
+    /// as `_dmarc` are accepted.
     #[schema(example = "api.example.com")]
     pub domain: String,
     pub record_type: DnsRecordType,

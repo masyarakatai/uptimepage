@@ -486,9 +486,17 @@ pub(crate) fn carry_flow_secrets(
 /// Returns `400` when IDN encoding fails on a user-supplied host.
 pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result<()> {
     use crate::domain::CheckSpec;
-    use crate::net::host::canonical_host_strict;
+    use crate::net::host::{canonical_dns_name, canonical_host_strict};
     use std::net::IpAddr;
     fn canon_host(host: &mut String, field: &'static str, code: &'static str) -> Result<()> {
+        canon_with(host, field, code, canonical_host_strict)
+    }
+    fn canon_with(
+        host: &mut String,
+        field: &'static str,
+        code: &'static str,
+        canon: fn(&str) -> std::result::Result<String, idna::Errors>,
+    ) -> Result<()> {
         let raw = std::mem::take(host);
         let unbracketed = crate::domain::check::unbracket(&raw);
         // IPs bypass IDN, but not canonicalisation: `2001:db8::1` and
@@ -499,7 +507,7 @@ pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result
             *host = ip.to_string();
             return Ok(());
         }
-        match canonical_host_strict(unbracketed) {
+        match canon(unbracketed) {
             Ok(canon) => {
                 *host = canon;
                 Ok(())
@@ -525,10 +533,12 @@ pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result
         CheckSpec::DomainExpiry(d) => {
             canon_host(&mut d.domain, "check.domain", codes::INVALID_DOMAIN_PARAMS)
         }
-        CheckSpec::Dns(d) => {
-            canon_host(&mut d.domain, "check.domain", codes::INVALID_DNS_PARAMS)?;
-            Ok(())
-        }
+        CheckSpec::Dns(d) => canon_with(
+            &mut d.domain,
+            "check.domain",
+            codes::INVALID_DNS_PARAMS,
+            canonical_dns_name,
+        ),
     }
 }
 

@@ -252,7 +252,9 @@ Sends one ICMP echo request per resolved (SSRF-filtered) address until a reply a
 
 Resolves `domain` and reads the answers. `record_type` is one of `A`, `AAAA`,
 `CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`. A trailing dot on the
-domain is tolerated. `resolver` takes `ip` or `ip:port` (`1.1.1.1`,
+domain is tolerated, and so are underscore labels, so `_dmarc.example.com`,
+`s1._domainkey.example.com` and `_sip._tcp.example.com` can be watched;
+host-based checks still refuse them. `resolver` takes `ip` or `ip:port` (`1.1.1.1`,
 `8.8.8.8:53`) to query one specific server instead of the process default.
 
 Status: an empty answer set — including NXDOMAIN and no-records — is `down`.

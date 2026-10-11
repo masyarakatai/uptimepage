@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use chrono::Utc;
 use hickory_resolver::TokioResolver;
-use hickory_resolver::proto::rr::RecordType;
+use hickory_resolver::proto::rr::{Name, RecordType};
 use serde::Serialize;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -86,7 +86,8 @@ async fn run_check(check: &DnsCheck, clients: &HttpClients) -> anyhow::Result<Dn
 
     let record_type = RecordType::from_str(check.record_type.as_str())
         .map_err(|e| anyhow::anyhow!("invalid record type: {e}"))?;
-    let lookup = match resolver.lookup(check.domain.as_str(), record_type).await {
+    let name = query_name(&check.domain)?;
+    let lookup = match resolver.lookup(name, record_type).await {
         Ok(l) => l,
         Err(e) if e.is_nx_domain() || e.is_no_records_found() => {
             return Ok(classify(check, &[]));
@@ -99,6 +100,12 @@ async fn run_check(check: &DnsCheck, clients: &HttpClients) -> anyhow::Result<Dn
         .map(|r| r.data.to_string())
         .collect();
     Ok(classify(check, &answers))
+}
+
+// UTF-8 parsing applies STD3 per label and refuses an underscore inside one
+// (`foo_bar`); the relaxed parse falls back to plain ASCII for those.
+fn query_name(domain: &str) -> anyhow::Result<Name> {
+    Ok(Name::from_str_relaxed(domain)?)
 }
 
 fn classify(check: &DnsCheck, answers: &[String]) -> DnsVerdict {
@@ -154,6 +161,16 @@ mod tests {
             expected_contains: expected.map(str::to_string),
             timeout: Duration::from_secs(3),
         }
+    }
+
+    #[test]
+    fn underscore_names_parse_as_relative_query_names() {
+        for domain in ["_dmarc.example.com", "foo_bar.example.com", "example.com"] {
+            let name = query_name(domain).unwrap();
+            assert_eq!(name.to_ascii(), domain);
+            assert!(!name.is_fqdn(), "{domain} became absolute");
+        }
+        assert_eq!(query_name("bähn.de").unwrap().to_ascii(), "xn--bhn-qla.de");
     }
 
     #[test]

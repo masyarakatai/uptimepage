@@ -595,6 +595,51 @@ fn host_canonicalization_is_pinned_to_a_fixed_corpus() {
 }
 
 #[test]
+fn dns_names_accept_underscore_labels_and_keep_the_other_rules() {
+    use crate::domain::{CheckSpec, DnsCheck, DnsRecordType};
+    use std::time::Duration;
+
+    let canon = |input: &str| {
+        let mut spec = CheckSpec::Dns(DnsCheck {
+            domain: input.into(),
+            record_type: DnsRecordType::Txt,
+            resolver: None,
+            expected_contains: None,
+            timeout: Duration::from_secs(3),
+        });
+        canonicalize_check(&mut spec).map(|()| match spec {
+            CheckSpec::Dns(d) => d.domain,
+            _ => panic!("variant changed"),
+        })
+    };
+
+    for (input, want) in [
+        ("_dmarc.example.com", "_dmarc.example.com"),
+        ("s1._domainkey.example.com", "s1._domainkey.example.com"),
+        ("_sip._tcp.example.com", "_sip._tcp.example.com"),
+        ("foo_bar.example.com", "foo_bar.example.com"),
+        (
+            "_ACME-challenge.Example.COM.",
+            "_acme-challenge.example.com",
+        ),
+    ] {
+        assert_eq!(canon(input).unwrap(), want, "canonicalising {input:?}");
+    }
+
+    let label = "a".repeat(64);
+    let over_253 = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(62));
+    for input in [
+        "-lead.example.com",
+        "a..b.example.com",
+        "exa mple.com",
+        &format!("{label}.example.com"),
+        &over_253,
+    ] {
+        assert!(canon(input).is_err(), "{input:?} accepted");
+    }
+}
+
+#[test]
 fn a_named_region_set_is_cleaned_and_an_empty_one_refused() {
     use super::normalize_region_ids;
 
