@@ -33,6 +33,10 @@ pub fn routes(state: AppState) -> Router {
             get(views::targets_detail::incidents),
         )
         .route("/targets/{id}/edit", get(views::targets_form::edit_form))
+        .route(
+            "/targets/{id}/duplicate",
+            get(views::targets_duplicate::page),
+        )
         .route("/incidents", get(views::incidents::list))
         .route(
             "/web/partials/incidents",

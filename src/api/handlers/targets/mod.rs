@@ -16,7 +16,7 @@ use crate::app::AppState;
 use crate::auth::scope::Scope;
 use crate::domain::agent_wire::DispatchKind;
 use crate::domain::{
-    CheckResult, CheckSpec, NewTarget, NewTargetWithRegions, NotificationReason, OrgId, Target,
+    CheckResult, CheckSpec, NewTarget, NotificationReason, OrgId, PlacedTarget, Target,
     TargetUpdate, min_interval_secs_for_kind,
 };
 use crate::duration::exact_duration;
@@ -33,6 +33,11 @@ use crate::storage::TargetFilter;
 use crate::storage::traits::ChannelEdit;
 use crate::target_ops::SetManualState;
 use crate::targets::{HeartbeatInfo, heartbeat_info, heartbeat_info_from};
+
+mod duplicate;
+
+pub(crate) use duplicate::may_bind_policy;
+pub use duplicate::{__path_duplicate, DUPLICATE_MAX, DuplicateCopy, DuplicateRequest, duplicate};
 
 const BULK_MAX: usize = 10_000;
 const LIST_LIMIT_DEFAULT: usize = 50;
@@ -825,7 +830,11 @@ pub async fn bulk_create(
         let regions = ops
             .resolve_create_regions(org, &target, &plan, &snapshot)
             .await?;
-        placed.push(NewTargetWithRegions { target, regions });
+        placed.push(PlacedTarget {
+            target,
+            regions,
+            escalation_policy_id: None,
+        });
     }
     let out = state
         .target_store

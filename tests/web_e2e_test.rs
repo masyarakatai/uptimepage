@@ -684,6 +684,7 @@ async fn operator_pages_redirect_to_login_when_unauthenticated_saas() {
         "/targets/new",
         "/targets/00000000-0000-0000-0000-000000000000",
         "/targets/00000000-0000-0000-0000-000000000000/edit",
+        "/targets/00000000-0000-0000-0000-000000000000/duplicate",
         "/maintenance",
         "/maintenance/new",
         "/maintenance/00000000-0000-0000-0000-000000000000/edit",

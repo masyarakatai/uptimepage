@@ -201,12 +201,38 @@ impl NewTarget {
     }
 }
 
-/// A monitor with the regions it probes from, resolved before the write so
-/// both land in one transaction. Empty for a heartbeat, which is pinged.
+impl Target {
+    /// Every setting of this monitor under a new name, owned by whoever made
+    /// the copy. Regions and the escalation policy live outside the row; the
+    /// caller carries them on the [`PlacedTarget`].
+    pub fn duplicate(&self, name: String, owner: UserId) -> NewTarget {
+        NewTarget {
+            name,
+            check: self.check.clone(),
+            interval: self.interval,
+            enabled: self.enabled,
+            tags: self.tags.clone(),
+            alerts: self.alerts.clone(),
+            alert_confirmations: self.alert_confirmations,
+            notify_recovery: self.notify_recovery,
+            renotify_interval_secs: self.renotify_interval_secs,
+            recovery_period_secs: Some(self.recovery_period_secs),
+            region_policy: Some(self.region_policy),
+            group_name: self.group_name.clone(),
+            owner_user_id: Some(Some(owner.0)),
+            regions: None,
+        }
+    }
+}
+
+/// A monitor with what is resolved before the write so it all lands in one
+/// transaction: the regions it probes from (empty takes the deployment
+/// default) and, for a duplicate, the escalation policy of its source.
 #[derive(Debug, Clone)]
-pub struct NewTargetWithRegions {
+pub struct PlacedTarget {
     pub target: NewTarget,
     pub regions: Vec<String>,
+    pub escalation_policy_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]

@@ -28,6 +28,7 @@ Documentation pages, blog posts and the homepage also answer `Accept: text/markd
 |--------|------|---------|
 | `POST` | `/api/v1/targets` | create one target |
 | `POST` | `/api/v1/targets/bulk` | bulk-create up to 10,000 targets |
+| `POST` | `/api/v1/targets/{id}/duplicate` | create up to 100 targets that copy an existing one, each with its own name and address |
 | `POST` | `/api/v1/targets/bulk-action` | enable / disable / delete / tag-add / tag-remove / set-group / set-interval / channel bindings on many ids |
 | `POST` | `/api/v1/targets/test` | run a one-shot check against a `CheckSpec` without persisting |
 | `POST` | `/api/v1/targets/{id}/check-now` | run an immediate check using the target's stored credentials |
@@ -413,6 +414,26 @@ notification channels and maintenance windows, and drives the "managed by"
 badge in the web UI. A write through any endpoint restamps it, so it reflects
 the most recent author.
 
+### Duplicating a target
+
+`POST /api/v1/targets/{id}/duplicate` creates new targets that start as an exact copy of the stored one. Each copy names itself and, optionally, what it checks:
+
+```jsonc
+{
+  "copies": [
+    { "name": "api eu", "address": "https://eu.example.com/health" },
+    { "name": "api us", "address": "https://us.example.com/health" },
+    { "name": "api again" } // no address: same as the source
+  ]
+}
+```
+
+The `address` is a URL for `http` and `flow` (the flow's `start_url`; its steps are copied as they are), a host or `host:port` for `tcp` and `tls_cert` (a bare host keeps the port, and a `tls_cert` copy keeps any `server_name` override), a host for `ping`, and a domain for `dns` and `domain_expiry`. Heartbeat and manual targets have none, and naming one is `400 INVALID_ADDRESS`.
+
+Everything else is copied from the stored row, so nothing has to be echoed back: the check with its credentials (`basic_auth`, `bearer_token`, flow `fill` values), the interval, the paused or running state, tags, group, alert bindings, and the regions and `region_policy`. The interval and region set are copied as stored even when the plan now allows less; the plan governs them at probe time, as it does for the source. The escalation policy is copied only when the caller could bind it by hand, since a new monitor on a ladder is new paging coverage: the org owner, on a plan with on-call, with a token that allows `oncall:write`. Otherwise the copies have no policy of their own and follow the org default, if one is set, like any new monitor. A flow copy is held to the plan's flow limits like any new flow, so a source with more steps than the plan now allows is `400 INVALID_FLOW_PARAMS`, and one whose regions no longer have a flow-capable agent is `422 NO_FLOW_CAPABLE_AGENT`. The caller owns every copy. A heartbeat copy gets its own ping URL at once. Status page components, share links and history are not copied.
+
+The response is `201` with the new targets in request order, redacted as usual. The whole batch is created or none of it: a copy that fails validation is `400` with `field` naming it (`copies[1].address`, `copies[0].check.url`), and a batch the plan has no room for is `422 QUOTA_EXCEEDED`. More than 100 copies is `413 BULK_TOO_LARGE`; for more, use `POST /api/v1/targets/bulk`. The endpoint accepts an `Idempotency-Key` header.
+
 ### Alert config
 
 `alerts` is an optional array of channel bindings. Each binding is just a
@@ -627,7 +648,7 @@ The person who owns the Slack workspace / Telegram group / inbox often isn't the
 
 ## Rate limiting
 
-`/api/v1/*` is rate-limited per authenticated subject — by `(org, category)` and by `(user, category)`, whichever trips first — with the per-minute budgets taken from the org's plan. Categories: `api_writes` (POST/PATCH/DELETE), `api_reads` (GET/HEAD/OPTIONS), `bulk_ops` (`/bulk*`), `test_now` (`/test`), `check_now` (`/check-now`), and `support` (`/support`), the one category with a fixed ceiling on every plan. Exceeding a budget returns `429 Too Many Requests` with a `Retry-After` header (seconds until the next token) and `code: RATE_LIMITED`. `/healthz` and `/readyz` are never throttled. Unauthenticated and per-IP limiting is the reverse proxy's job (see [Deployment](deployment.md)). Full model: [Quotas & rate limits](quotas.md).
+`/api/v1/*` is rate-limited per authenticated subject — by `(org, category)` and by `(user, category)`, whichever trips first — with the per-minute budgets taken from the org's plan. Categories: `api_writes` (POST/PATCH/DELETE), `api_reads` (GET/HEAD/OPTIONS), `bulk_ops` (`/bulk*` and `/duplicate`), `test_now` (`/test`), `check_now` (`/check-now`), and `support` (`/support`), the one category with a fixed ceiling on every plan. Exceeding a budget returns `429 Too Many Requests` with a `Retry-After` header (seconds until the next token) and `code: RATE_LIMITED`. `/healthz` and `/readyz` are never throttled. Unauthenticated and per-IP limiting is the reverse proxy's job (see [Deployment](deployment.md)). Full model: [Quotas & rate limits](quotas.md).
 
 ## CORS
 
@@ -654,7 +675,7 @@ Every 4xx and 5xx response uses one wire shape:
 - `details` carries optional structured context (e.g., `{ "range": "127.0.0.0/8" }` for SSRF rejections).
 - `trace_id` is the W3C `traceparent` when tracing is enabled.
 
-Common codes: `INVALID_URL_SCHEME`, `INVALID_URL_FORMAT`, `SSRF_BLOCKED`, `INVALID_INTERVAL`, `INVALID_TIMEOUT`, `INVALID_TCP_PORT`, `INVALID_TCP_HOST`, `INVALID_PING_HOST`, `INVALID_HEARTBEAT_PARAMS`, `HEARTBEAT_NOT_PROBEABLE`, `INVALID_MANUAL_STATE`, `MANUAL_NOT_CONFIGURED`, `INVALID_STATUS_RANGE`, `INVALID_TLS_CERT_PARAMS`, `INVALID_DOMAIN_PARAMS`, `INVALID_FLOW_PARAMS`, `FLOW_CHECKS_DISABLED`, `NO_FLOW_CAPABLE_AGENT`, `SMS_ALERTS_DISABLED`, `INVALID_TLS_CRED_COMBO`, `INVALID_ALERT_CONFIG`, `REDACTION_SENTINEL`, `CHECK_KIND_IMMUTABLE`, `BULK_EMPTY`, `BULK_TOO_LARGE`, `BAD_TIME_RANGE`, `TARGET_NOT_FOUND`, `CHANNEL_NOT_FOUND`, `CHANNEL_NAME_TAKEN`, `CHANNEL_NAME_INVALID`, `CHANNEL_QUOTA_EXCEEDED`, `INVALID_CHANNEL_CONFIG`, `CHANNEL_TEST_FAILED`, `CIRCUIT_OPEN`, `DEPENDENCY_DOWN`, `INTERNAL`.
+Common codes: `INVALID_URL_SCHEME`, `INVALID_URL_FORMAT`, `INVALID_ADDRESS`, `SSRF_BLOCKED`, `INVALID_INTERVAL`, `INVALID_TIMEOUT`, `INVALID_TCP_PORT`, `INVALID_TCP_HOST`, `INVALID_PING_HOST`, `INVALID_HEARTBEAT_PARAMS`, `HEARTBEAT_NOT_PROBEABLE`, `INVALID_MANUAL_STATE`, `MANUAL_NOT_CONFIGURED`, `INVALID_STATUS_RANGE`, `INVALID_TLS_CERT_PARAMS`, `INVALID_DOMAIN_PARAMS`, `INVALID_FLOW_PARAMS`, `FLOW_CHECKS_DISABLED`, `NO_FLOW_CAPABLE_AGENT`, `SMS_ALERTS_DISABLED`, `INVALID_TLS_CRED_COMBO`, `INVALID_ALERT_CONFIG`, `REDACTION_SENTINEL`, `CHECK_KIND_IMMUTABLE`, `BULK_EMPTY`, `BULK_TOO_LARGE`, `BAD_TIME_RANGE`, `TARGET_NOT_FOUND`, `CHANNEL_NOT_FOUND`, `CHANNEL_NAME_TAKEN`, `CHANNEL_NAME_INVALID`, `CHANNEL_QUOTA_EXCEEDED`, `INVALID_CHANNEL_CONFIG`, `CHANNEL_TEST_FAILED`, `CIRCUIT_OPEN`, `DEPENDENCY_DOWN`, `INTERNAL`.
 
 ### Quota, rate-limit and abuse codes
 
@@ -870,7 +891,7 @@ Returns every tag currently in use across the caller's targets (enabled or disab
 
 ## Idempotency
 
-`POST /api/v1/targets/bulk` and `POST /api/v1/targets/bulk-action` accept an optional `Idempotency-Key` header. The server stores the response for 24 hours keyed by `(header value, body hash)`. A retry with the same key and body returns the original response without re-executing. A retry with the same key but a different body executes normally — the body hash is part of the cache key. The cache is in-process; entries are lost on restart.
+`POST /api/v1/targets/bulk`, `POST /api/v1/targets/bulk-action` and `POST /api/v1/targets/{id}/duplicate` accept an optional `Idempotency-Key` header. The server stores the response for 24 hours keyed by `(header value, method and path, body hash)`. A retry with the same key and body to the same path returns the original response without re-executing. The same key with a different body, or sent to a different path, executes normally. The cache is in-process; entries are lost on restart.
 
 ```http
 POST /api/v1/targets/bulk-action HTTP/1.1

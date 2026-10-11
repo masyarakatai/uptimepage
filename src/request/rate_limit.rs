@@ -26,7 +26,7 @@ fn categorize(parts: &Parts) -> RateLimitCategory {
     if path == "/mcp" || path.starts_with("/mcp/") {
         return RateLimitCategory::ApiReads;
     }
-    if path.contains("/bulk") {
+    if path.contains("/bulk") || path.ends_with("/duplicate") {
         return RateLimitCategory::BulkOps;
     }
     if path.ends_with("/test") {
@@ -159,6 +159,10 @@ mod tests {
         // The /bulk, /test, /check-now suffixes win over the method so a
         // bursty POST /targets/bulk can't drain the steady api_writes budget.
         assert_eq!(categorize(&parts("POST", "/api/v1/targets/bulk")), BulkOps);
+        assert_eq!(
+            categorize(&parts("POST", "/api/v1/targets/abc/duplicate")),
+            BulkOps
+        );
         assert_eq!(
             categorize(&parts("POST", "/api/v1/targets/bulk-action")),
             BulkOps

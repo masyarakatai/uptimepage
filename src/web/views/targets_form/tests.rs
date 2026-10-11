@@ -1,5 +1,5 @@
 use super::fields::*;
-use super::from_target::{FormKind, empty_create_form, form_from_target, http_fields_from};
+use super::from_target::{empty_create_form, form_from_target, http_fields_from};
 use super::model::*;
 use super::prefill::{apply_kind_param, prefill_host, prefill_url};
 use super::*;
@@ -266,7 +266,7 @@ fn headers_render_as_row_inputs() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.http.headers.len(), 2);
     // Sorted alphabetically by name for stable rendering.
     assert_eq!(form.http.headers[0].name, "Accept");
@@ -558,7 +558,7 @@ fn edit_form_renders_target_with_sealed_auth() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.submit_method, "PATCH");
     let page = FormPage {
         active_tab: "targets",
@@ -596,7 +596,7 @@ fn edit_form_maps_tcp_target_fields() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "tcp");
     assert_eq!(form.tcp.host, "db.example.com");
     assert_eq!(form.tcp.port, 5432);
@@ -638,7 +638,7 @@ fn edit_form_maps_tls_cert_target_fields() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "tls_cert");
     assert_eq!(form.tls_cert.host, "example.com");
     assert_eq!(form.tls_cert.port, 8443);
@@ -677,7 +677,7 @@ fn edit_form_maps_domain_expiry_target_fields() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "domain_expiry");
     assert_eq!(form.domain_expiry.domain, "example.com");
     assert_eq!(form.domain_expiry.warn_days, 60);
@@ -713,7 +713,7 @@ fn edit_form_maps_heartbeat_target_fields() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "heartbeat");
     assert_eq!(form.heartbeat.period_s, 300);
     assert_eq!(form.heartbeat.grace_s, 45);
@@ -763,7 +763,7 @@ fn edit_form_maps_dns_target_fields() {
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
     };
-    let form = form_from_target(t, FormKind::Edit).unwrap();
+    let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "dns");
     assert_eq!(form.dns.domain, "api.example.com");
     assert_eq!(form.dns.record_type, "CNAME");
@@ -851,47 +851,6 @@ fn lapsed_escalation_keeps_the_picker_and_says_new_bindings_are_refused() {
     .unwrap();
     assert!(html.contains("data-monitor-policy-select"));
     assert!(html.contains("choosing a new one needs the Team plan"));
-}
-
-#[test]
-fn copy_form_seeds_create_from_existing() {
-    use crate::domain::TcpCheck;
-    use std::time::Duration;
-    let t = Target {
-        id: uuid::Uuid::nil(),
-        name: "db".into(),
-        check: CheckSpec::Tcp(TcpCheck {
-            host: "db.example.com".into(),
-            port: 5432,
-            timeout: Duration::from_millis(2_500),
-        }),
-        interval: Duration::from_secs(30),
-        enabled: true,
-        tags: vec!["prod".into()],
-        alerts: Default::default(),
-        region_policy: Default::default(),
-        alert_confirmations: 2,
-        notify_recovery: true,
-        renotify_interval_secs: 3600,
-        recovery_period_secs: 0,
-        group_name: None,
-        owner_user_id: None,
-        write_source: crate::domain::WriteSource::Ui,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        plan_hold_at: None,
-    };
-    let form = form_from_target(t, FormKind::Copy).unwrap();
-    assert_eq!(form.mode, "create");
-    assert_eq!(form.submit_method, "POST");
-    assert_eq!(form.action, "/api/v1/targets");
-    assert!(form.id.is_empty());
-    assert_eq!(form.name, "db (copy)");
-    // Check config carried over so the copy is a real duplicate.
-    assert_eq!(form.check_type, "tcp");
-    assert_eq!(form.tcp.host, "db.example.com");
-    assert_eq!(form.tcp.port, 5432);
-    assert_eq!(form.tags, vec!["prod".to_string()]);
 }
 
 /// The form's heartbeat default has to pass the cadence rule the API applies

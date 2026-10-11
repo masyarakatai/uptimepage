@@ -59,7 +59,7 @@ link on any plan, and a page with `public_hide_from_search` set follows nothing.
 |---|---|---|---|---|---|
 | `api_writes_per_minute` | 600 | 900 | 1200 | 1800 | POST/PATCH/DELETE on `/api/v1/*` |
 | `api_reads_per_minute` | 6000 | 9000 | 12000 | 18000 | GET/HEAD/OPTIONS on `/api/v1/*` |
-| `bulk_ops_per_minute` | 30 | 45 | 60 | 90 | `/api/v1/targets/bulk*` |
+| `bulk_ops_per_minute` | 30 | 45 | 60 | 90 | `/api/v1/targets/bulk*`, `/api/v1/targets/{id}/duplicate` |
 | `test_now_per_minute` | 60 | 90 | 120 | 180 | `POST /api/v1/targets/test` + the notification-channel test endpoints |
 | `check_now_per_minute` | 60 | 90 | 120 | 180 | `POST /api/v1/targets/{id}/check-now` |
 
@@ -166,7 +166,7 @@ The first tier keys on the account for the same reason the resource caps pool:
 one budget however many workspaces the customer splits their traffic across. The
 request category is derived from the path and method:
 
-- path contains `/bulk` → `bulk_ops`
+- path contains `/bulk` or ends in `/duplicate` → `bulk_ops`
 - path ends `/test` → `test_now`
 - path ends `/check-now` → `check_now`
 - path ends `/support` → `support`

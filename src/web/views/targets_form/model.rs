@@ -103,7 +103,7 @@ pub struct KindCard {
     pub badge_tone: &'static str,
 }
 
-const KIND_CARDS: &[(&str, &str, &str)] = &[
+pub(crate) const KIND_CARDS: &[(&str, &str, &str)] = &[
     ("http", "http", "URL / API endpoint"),
     ("tcp", "tcp", "host : port reachable"),
     ("ping", "ping", "icmp echo reply"),

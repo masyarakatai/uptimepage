@@ -10,9 +10,10 @@ use axum::middleware::Next;
 use axum::response::Response;
 use moka::sync::Cache;
 
-/// `POST /targets/bulk` and `POST /targets/bulk-action` accept an optional
-/// `Idempotency-Key` header. The server replays the prior response for 24h,
-/// keyed by `(caller credential, header value, body hash)`.
+/// `POST /targets/bulk`, `POST /targets/bulk-action` and
+/// `POST /targets/{id}/duplicate` accept an optional `Idempotency-Key` header.
+/// The server replays the prior response for 24h, keyed by
+/// `(caller credential, header value, method + path, body hash)`.
 pub const TTL: Duration = Duration::from_secs(24 * 3600);
 pub const HEADER_NAME: HeaderName = HeaderName::from_static("idempotency-key");
 
@@ -27,7 +28,7 @@ struct CachedResponse {
     body: Bytes,
 }
 
-/// Response cache keyed by `(caller credential, idempotency-key, body-hash)`,
+/// Response cache keyed by `(caller credential, idempotency-key, route + body hash)`,
 /// bounded by a 24h TTL and a total-bytes weigher.
 pub struct IdempotencyCache {
     cache: Cache<String, CachedResponse>,
@@ -98,7 +99,11 @@ pub async fn middleware(
         }
     };
 
+    // The route is part of the request: one body sent to two monitors'
+    // `/duplicate` is two requests, not a retry.
     let mut hasher = DefaultHasher::new();
+    parts.method.as_str().hash(&mut hasher);
+    parts.uri.path().hash(&mut hasher);
     body_bytes.hash(&mut hasher);
     let cache_key = format!("{caller_hash:016x}:{key_header}:{:016x}", hasher.finish());
 

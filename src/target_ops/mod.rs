@@ -102,17 +102,33 @@ impl TargetOps<'_> {
                 i64::from(plan.max_flow_checks),
             )
             .await?;
-        if t.check.as_heartbeat().is_some() {
-            self.ensure_heartbeat(org, t.id).await?;
-        }
-        self.report_initial_states(org, std::slice::from_ref(&t));
         // The store seeds the deployment's default region; only this write makes a
         // set that seed does not contain stick.
         if !regions.is_empty() {
             self.targets.set_target_regions(org, t.id, &regions).await?;
         }
-        self.dispatch_first_check(org, &t, &regions).await;
+        self.settle_created(org, std::slice::from_ref(&t), &regions)
+            .await?;
         Ok(t)
+    }
+
+    /// What monitors that now exist in `regions` still need: a heartbeat's ping
+    /// row, a manual monitor's first state, and a first check, so each can be
+    /// pinged and shows a state at once.
+    pub(crate) async fn settle_created(
+        &self,
+        org: OrgId,
+        created: &[Target],
+        regions: &[String],
+    ) -> Result<()> {
+        for t in created.iter().filter(|t| t.check.as_heartbeat().is_some()) {
+            self.ensure_heartbeat(org, t.id).await?;
+        }
+        self.report_initial_states(org, created);
+        for t in created {
+            self.dispatch_first_check(org, t, regions).await;
+        }
+        Ok(())
     }
 
     /// A manual monitor is up from the moment it exists, so it reports that now

@@ -280,6 +280,7 @@ fn every_request_body_resolves_its_refs_without_the_doc() {
         body::<targets::RotateHeartbeatRequest>(),
         body::<SetManualState>(),
         body::<BulkActionRequest>(),
+        body::<targets::DuplicateRequest>(),
         body::<TestRequest>(),
         body::<NewMaintenanceWindow>(),
         body::<MaintenanceWindowUpdate>(),

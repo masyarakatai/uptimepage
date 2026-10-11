@@ -1,19 +1,13 @@
 //! Prefilling a create form from the query string, so a link out of the
 //! coverage hints or the marketing hero lands on a half-filled form.
 
-use serde::Deserialize;
-use uuid::Uuid;
-
 use crate::domain::CheckSpec;
+use serde::Deserialize;
 
 use super::model::FormModel;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct NewParams {
-    /// When set, prefill the create form from an existing monitor (the
-    /// "Copy" action on the list) so similar monitors can be added fast.
-    #[serde(default)]
-    pub from: Option<Uuid>,
     /// From the coverage hints. Unrecognised values are ignored rather than
     /// rejected: this arrives in a URL people bookmark and edit.
     #[serde(default)]

@@ -137,6 +137,7 @@ mod support_request_test;
 mod target_delete_audit_test;
 mod target_owner_default_pg_test;
 mod target_pause_audit_test;
+mod targets_duplicate_test;
 mod targets_store_test;
 mod tcp_check_test;
 mod team_api_test;

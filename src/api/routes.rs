@@ -18,6 +18,8 @@ use crate::request::rate_limit::rate_limit_middleware;
 
 const SINGLE_BODY_LIMIT: usize = 64 * 1024;
 const BULK_BODY_LIMIT: usize = 8 * 1024 * 1024;
+/// A hundred copies, each a long URL and a name.
+const DUPLICATE_BODY_LIMIT: usize = 256 * 1024;
 
 pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
     // Idle-entry janitor for the per-org/user limiter map. Co-located with
@@ -33,6 +35,11 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
     let bulk = Router::new()
         .route("/targets/bulk", post(handlers::targets::bulk_create))
         .route("/targets/bulk-action", post(handlers::targets::bulk_action))
+        // Here for the idempotency layer: one call creates many monitors.
+        .route(
+            "/targets/{id}/duplicate",
+            post(handlers::targets::duplicate).layer(DefaultBodyLimit::max(DUPLICATE_BODY_LIMIT)),
+        )
         // `.merge`d below *after* v1's auth + rate-limit layers, so — like
         // `logo` — these routes must carry their own copies or they ship
         // unauthenticated and un-rate-limited (a bulk endpoint is the worst

@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% import "_register.html" as reg %}
+{% block title %}Duplicate monitor · Uptimepage{% endblock %}
+{% block content %}
+<section class="space-y-6">
+  <form id="duplicate-form"
+        data-action="/api/v1/targets/{{ id }}/duplicate"
+        data-copy-name="{{ copy_name() }}"
+        data-max="{{ max_copies }}"
+        {% if let Some(a) = address %}data-source-address="{{ a.source }}" data-url-kind="{{ a.url }}"{% endif %}
+        {% if let Some(h) = headroom %}data-headroom="{{ h }}"{% endif %}
+        novalidate
+        class="mx-auto w-full max-w-7xl">
+
+    <div class="form-grid grid grid-cols-1 gap-6 lg:grid-cols-[17rem_1fr] lg:items-start lg:gap-8 xl:grid-cols-[17rem_1fr_15rem]">
+
+    <aside class="type-rail lg:sticky lg:top-6">
+      <span class="form-legend">what to watch</span>
+      <div class="check-type-cards check-type-cards--rail mt-3" role="group" aria-label="Monitor type">
+        {% for (on, label, desc) in kind_cards() %}
+        {% call reg::chooser_card_static(on, label, desc) %}{% endcall %}
+        {% endfor %}
+      </div>
+      <p class="mt-2 font-mono text-xs text-quiet"># every copy keeps the type</p>
+    </aside>
+
+    <div class="space-y-6">
+
+    <header class="space-y-1">
+      <a href="/targets/{{ id }}" class="inline-block text-sm text-muted hover:text-body">← monitor</a>
+      <h1 class="page-title"><span class="page-title__prefix" aria-hidden="true">$</span>duplicate {{ name }}</h1>
+      <p class="text-sm text-muted">
+        {% if let Some(a) = address %}
+        Each copy runs with every setting of this monitor. Give each one its own {{ a.label }}.
+        {% else %}
+        Each copy runs with every setting of this monitor.
+        {% endif %}
+      </p>
+    </header>
+
+    <div id="form-errors" role="alert" aria-live="polite"
+         class="hidden alert-card alert-card--error"></div>
+
+    <fieldset>
+      <legend class="float-left mb-3 w-full"><span class="form-legend">copies</span></legend>
+      <div class="clear-both space-y-2">
+        <div data-copy-rows class="space-y-2">
+          {% if let Some(a) = address %}
+          {% call reg::copy_row(true, a.label, a.placeholder, a.source, copy_name()) %}{% endcall %}
+          {% else %}
+          {% call reg::copy_row(false, "", "", "", copy_name()) %}{% endcall %}
+          {% endif %}
+        </div>
+        <template id="copy-row-template">
+          {% if let Some(a) = address %}
+          {% call reg::copy_row(true, a.label, a.placeholder, "", "name") %}{% endcall %}
+          {% else %}
+          {% call reg::copy_row(false, "", "", "", "name") %}{% endcall %}
+          {% endif %}
+        </template>
+        <button type="button" data-copy-add class="scope-token">+ add copy</button>
+        <p data-copy-limit role="status" aria-live="polite" class="text-xs text-state-warn-strong empty:mb-0"></p>
+        <span class="block text-xs text-muted">
+          {% if let Some(a) = address %}
+          Paste a list into a {{ a.label }} box to add a row for each one. An empty name follows the {{ a.label }}.
+          {% else %}
+          An empty name becomes <code>{{ copy_name() }}</code>.
+          {% endif %}
+        </span>
+      </div>
+    </fieldset>
+
+    <section class="sticker-card space-y-3 p-5" aria-labelledby="carried-label">
+      <h2 id="carried-label" class="panel-label">carried from {{ name }}</h2>
+      <dl class="grid grid-cols-[6.5rem_1fr] gap-x-4 gap-y-1.5 text-sm">
+        {% for c in carried %}
+        <dt class="pt-0.5 font-mono text-xs text-muted">{{ c.label }}</dt>
+        <dd class="break-words font-mono">{{ c.value }}</dd>
+        {% endfor %}
+      </dl>
+      <p class="font-mono text-xs text-quiet"># not carried: owner (the copies are yours), history, incidents, status pages, share links</p>
+    </section>
+
+    </div>
+
+    <aside class="action-rail lg:col-span-2 xl:col-span-1 xl:sticky xl:top-6">
+      <div class="flex flex-wrap items-center gap-3 xl:flex-col xl:items-stretch">
+        <button type="submit" data-copy-submit
+                class="sticker-btn sticker-btn--primary px-4 py-2 text-sm font-medium motion-safe:hover:-translate-y-0.5">
+          create 1 monitor
+        </button>
+        <a href="/targets/{{ id }}" class="btn-ghost px-4 py-2 text-center text-sm">cancel</a>
+        {% if let Some(h) = headroom %}
+        <span data-copy-room class="text-xs text-muted xl:text-center">{{ h }} monitor{% if *h != 1 %}s{% endif %} left on your plan</span>
+        {% endif %}
+        <span class="text-xs text-quiet xl:text-center">
+          tip: <kbd class="rounded border px-1.5 py-0.5">⌘/Ctrl</kbd> +
+               <kbd class="rounded border px-1.5 py-0.5">Enter</kbd> to create
+        </span>
+      </div>
+    </aside>
+    </div>
+  </form>
+</section>
+
+<script defer src="{{ "js/ui/api_form.js"|asset }}"></script>
+<script defer src="{{ "js/ui/duplicate_form.js"|asset }}"></script>
+{% endblock %}

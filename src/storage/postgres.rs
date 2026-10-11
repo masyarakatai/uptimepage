@@ -14,8 +14,8 @@ use crate::config::PostgresConfig;
 use crate::domain::metrics::{TagCount, TargetsSummary};
 use crate::domain::target::MAX_TAGS_PER_TARGET;
 use crate::domain::{
-    CheckSpec, MONITOR_DELETED_MESSAGE, NewTarget, NewTargetWithRegions, OrgId,
-    RegionIncidentPolicy, Target, TargetAlerts, TargetUpdate, UserId, WriteSource,
+    CheckSpec, MONITOR_DELETED_MESSAGE, NewTarget, OrgId, PlacedTarget, RegionIncidentPolicy,
+    Target, TargetAlerts, TargetUpdate, UserId, WriteSource,
 };
 use crate::error::{AppError, Result};
 use crate::security::Cipher;
@@ -857,7 +857,7 @@ impl TargetStore for PostgresTargetStore {
     async fn bulk_create(
         &self,
         org: OrgId,
-        items: Vec<NewTargetWithRegions>,
+        items: Vec<PlacedTarget>,
         source: WriteSource,
         max_targets: i64,
         max_flow_checks: i64,
@@ -869,8 +869,16 @@ impl TargetStore for PostgresTargetStore {
             .iter()
             .filter(|i| matches!(i.target.check, CheckSpec::Flow(_)))
             .count() as i64;
-        let (items, region_sets): (Vec<NewTarget>, Vec<Vec<String>>) =
-            items.into_iter().map(|i| (i.target, i.regions)).unzip();
+        let mut region_sets: Vec<Vec<String>> = Vec::with_capacity(items.len());
+        let mut escalation_policies: Vec<Option<Uuid>> = Vec::with_capacity(items.len());
+        let items: Vec<NewTarget> = items
+            .into_iter()
+            .map(|i| {
+                region_sets.push(i.regions);
+                escalation_policies.push(i.escalation_policy_id);
+                i.target
+            })
+            .collect();
 
         // Same lock-then-count-then-write pattern as the singular path:
         // the per-org advisory lock makes the count accurate against a
@@ -878,23 +886,28 @@ impl TargetStore for PostgresTargetStore {
         // READ COMMITTED). All-or-nothing on the cap.
         // Ids are minted here so each row's region set can be keyed to it
         // without leaning on RETURNING order, which Postgres does not promise.
+        // A policy deleted since the caller read it binds nothing, as in
+        // `set_target_policy`.
         const SQL: &str = r#"INSERT INTO targets (id, org_id, name, check_spec, interval_secs, enabled, tags, alerts,
                                     group_name, owner_user_id, write_source,
                                     alert_confirmations, notify_recovery, renotify_interval_secs,
-                                    recovery_period_secs, region_policy)
+                                    recovery_period_secs, region_policy, escalation_policy_id)
                SELECT u.id, $9, u.name, u.check_spec, u.interval_secs, u.enabled,
                       ARRAY(SELECT jsonb_array_elements_text(u.tags)),
                       u.alerts,
                       u.group_name, u.owner_user_id,
                       $10,
                       u.alert_confirmations, u.notify_recovery, u.renotify_interval_secs,
-                      u.recovery_period_secs, u.region_policy
+                      u.recovery_period_secs, u.region_policy,
+                      (SELECT p.id FROM escalation_policies p
+                        WHERE p.id = u.escalation_policy_id AND p.org_id = $9 AND p.deleted_at IS NULL)
                FROM UNNEST($1::text[], $2::jsonb[], $3::int4[], $4::bool[], $5::jsonb[], $6::jsonb[],
                            $7::text[], $8::uuid[], $11::int4[], $12::bool[], $13::int4[],
-                           $14::jsonb[], $15::uuid[], $16::int4[])
+                           $14::jsonb[], $15::uuid[], $16::int4[], $17::uuid[])
                     AS u(name, check_spec, interval_secs, enabled, tags, alerts,
                          group_name, owner_user_id, alert_confirmations, notify_recovery,
-                         renotify_interval_secs, region_policy, id, recovery_period_secs)
+                         renotify_interval_secs, region_policy, id, recovery_period_secs,
+                         escalation_policy_id)
                RETURNING id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
                       alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
                       group_name, owner_user_id,
@@ -992,6 +1005,7 @@ impl TargetStore for PostgresTargetStore {
                 .bind(&policies)
                 .bind(&ids)
                 .bind(&recovery_periods)
+                .bind(&escalation_policies)
                 .fetch_all(&mut *tx)
                 .await
                 .context("bulk insert targets")?
@@ -1031,6 +1045,7 @@ impl TargetStore for PostgresTargetStore {
                 .bind(&policies)
                 .bind(&ids)
                 .bind(&recovery_periods)
+                .bind(&escalation_policies)
                 .fetch_all(&mut *tx)
                 .await
                 .context("bulk insert targets")?

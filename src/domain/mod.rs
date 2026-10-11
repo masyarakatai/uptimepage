@@ -1,6 +1,7 @@
 pub mod agent_wire;
 pub mod alert;
 pub mod check;
+pub mod check_address;
 pub mod check_error;
 pub mod consent;
 pub mod credential;
@@ -45,6 +46,7 @@ pub use check::{
     default_recovery_period_secs_for_kind, interval_hints_for_kind, is_monitorable,
     min_interval_secs_for_kind, publishes_no_expiry, reduced_domain_hint, registered_domain,
 };
+pub use check_address::AddressError;
 pub use check_error::{ErrorClass, ErrorFamily, classify_check_error, humanize_check_error};
 pub use credential::{CredentialAction, CredentialOrigin, LinkedIdentity, OauthProvider, WaysIn};
 pub use escalation_policy::{
@@ -114,7 +116,7 @@ pub use status_page::{
 };
 pub use subscriber::{NewSubscriber, Subscriber, SubscriberChannel};
 pub use subscription::{BillingStatus, Interval, Landing, Subscription};
-pub use target::{NewTarget, NewTargetWithRegions, RegionIncidentPolicy, Target, TargetUpdate};
+pub use target::{NewTarget, PlacedTarget, RegionIncidentPolicy, Target, TargetUpdate};
 pub use user::{AppTheme, User, UserId};
 pub use variable::{
     MAX_VAR_KEY_LEN, NewVariable, ResolvedVar, VarKeyError, VarMap, Variable, VariableId,

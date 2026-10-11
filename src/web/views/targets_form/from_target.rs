@@ -1,4 +1,4 @@
-//! A stored monitor read back into form fields, for the edit and copy paths.
+//! A stored monitor read back into form fields, for the edit path.
 
 use crate::domain::{CheckSpec, ExpectedStatus, HttpMethod, Target};
 use crate::error::AppError;
@@ -8,13 +8,6 @@ use super::fields::{
     TcpFields, TlsCertFields, flow_fields_from,
 };
 use super::model::{EscalationOffer, FormModel};
-
-/// Whether `form_from_target` produces an edit form (PATCH the same monitor)
-/// or a copy (POST a new monitor seeded from an existing one).
-pub(super) enum FormKind {
-    Edit,
-    Copy,
-}
 
 pub(super) fn empty_create_form() -> FormModel {
     FormModel {
@@ -56,7 +49,7 @@ pub(super) fn empty_create_form() -> FormModel {
         flow_available: false,
     }
 }
-pub(super) fn form_from_target(t: Target, kind: FormKind) -> Result<FormModel, AppError> {
+pub(super) fn form_from_target(t: Target) -> Result<FormModel, AppError> {
     let tags = t.tags;
     let group_name = t.group_name.unwrap_or_default();
     let owner_user_id = t.owner_user_id.map(|id| id.to_string()).unwrap_or_default();
@@ -135,34 +128,17 @@ pub(super) fn form_from_target(t: Target, kind: FormKind) -> Result<FormModel, A
         }
     };
 
-    let (mode, id, action, submit_method, name) = match kind {
-        FormKind::Edit => (
-            "edit",
-            t.id.to_string(),
-            format!("/api/v1/targets/{}", t.id),
-            "PATCH",
-            t.name,
-        ),
-        FormKind::Copy => (
-            "create",
-            String::new(),
-            "/api/v1/targets".into(),
-            "POST",
-            format!("{} (copy)", t.name),
-        ),
-    };
-
     let alert_confirmations = t.alert_confirmations;
     let notify_recovery = t.notify_recovery;
     let renotify_interval_secs = t.renotify_interval_secs;
     let recovery_period_secs = t.recovery_period_secs;
 
     Ok(FormModel {
-        mode,
-        id,
-        action,
-        submit_method,
-        name,
+        mode: "edit",
+        id: t.id.to_string(),
+        action: format!("/api/v1/targets/{}", t.id),
+        submit_method: "PATCH",
+        name: t.name,
         interval_s: t.interval.as_secs(),
         // Overwritten by the handler with the org plan's real floor.
         min_interval_s: 60,
@@ -200,7 +176,7 @@ pub(super) fn form_from_target(t: Target, kind: FormKind) -> Result<FormModel, A
     })
 }
 
-pub(super) fn http_fields_from(h: crate::domain::HttpCheck) -> HttpFields {
+pub(crate) fn http_fields_from(h: crate::domain::HttpCheck) -> HttpFields {
     let expected_status_input = match h.expected_status {
         ExpectedStatus::Exact(c) => c.to_string(),
         ExpectedStatus::Range { min, max } => format!("{min}-{max}"),

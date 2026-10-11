@@ -6,6 +6,8 @@ pub const INVALID_CONTENT_TYPE: &str = "INVALID_CONTENT_TYPE";
 pub const MISSING_FIELD: &str = "MISSING_FIELD";
 pub const INVALID_URL_SCHEME: &str = "INVALID_URL_SCHEME";
 pub const INVALID_URL_FORMAT: &str = "INVALID_URL_FORMAT";
+/// A duplicate's address does not fit its monitor's kind.
+pub const INVALID_ADDRESS: &str = "INVALID_ADDRESS";
 pub const SSRF_BLOCKED: &str = "SSRF_BLOCKED";
 pub const INVALID_INTERVAL: &str = "INVALID_INTERVAL";
 pub const INVALID_TIMEOUT: &str = "INVALID_TIMEOUT";

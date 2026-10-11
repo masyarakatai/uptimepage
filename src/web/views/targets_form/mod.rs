@@ -24,13 +24,15 @@ pub use fields::{
     CadenceHint, DnsFields, DomainExpiryFields, DurationChoice, FlowFields, FlowStepFields,
     HeaderPair, HeartbeatFields, HttpFields, PingFields, TcpFields, TlsCertFields,
 };
+pub(crate) use model::KIND_CARDS;
 pub use model::{
     ChannelChoice, ConfirmationChoice, FormModel, IntervalChoice, KindCard, OwnerChoice,
     RegionChoice, RegionGroup, SecondsChoice, ThresholdChoice,
 };
 pub use prefill::NewParams;
 
-use from_target::{FormKind, empty_create_form, form_from_target};
+pub(crate) use from_target::http_fields_from;
+use from_target::{empty_create_form, form_from_target};
 use model::{EscalationOffer, region_groups, region_threshold_choices};
 use options::{ensure_tags_listed, form_options, plan_min_interval};
 use prefill::{apply_kind_param, prefill_host, prefill_url};
@@ -58,42 +60,25 @@ pub async fn new_form(
     State(state): State<AppState>,
     Query(params): Query<NewParams>,
 ) -> WebResult<FormPage> {
-    let (mut form, alerts) = match params.from {
-        Some(id) => {
-            let target = state
-                .target_store
-                .get(org, id)
-                .await?
-                .ok_or_else(|| AppError::not_found("TARGET_NOT_FOUND", "monitor not found"))?;
-            let alerts = target.alerts.clone();
-            (form_from_target(target, FormKind::Copy)?, alerts)
+    let mut form = empty_create_form();
+    form.owner_user_id = user_id.0.to_string();
+    if let Some(kind) = params.kind.as_deref()
+        && apply_kind_param(&mut form, kind)
+    {
+        if let Some(host) = params.host.as_deref() {
+            prefill_host(&mut form, host);
         }
-        None => {
-            let mut form = empty_create_form();
-            form.owner_user_id = user_id.0.to_string();
-            if let Some(kind) = params.kind.as_deref()
-                && apply_kind_param(&mut form, kind)
-            {
-                if let Some(host) = params.host.as_deref() {
-                    prefill_host(&mut form, host);
-                }
-                if let Some(url) = params.url.as_deref() {
-                    prefill_url(&mut form, url);
-                }
-            }
-            (form, TargetAlerts::default())
+        if let Some(url) = params.url.as_deref() {
+            prefill_url(&mut form, url);
         }
-    };
+    }
     let owner_id = form.owner_user_id.clone();
     let (channels, owner_options, group_options, tag_options, plan, available) =
-        form_options(&state, org, &alerts, &owner_id).await?;
+        form_options(&state, org, &TargetAlerts::default(), &owner_id).await?;
     form.channels = channels;
     // Otherwise the first monitor most people create alerts nobody. With
-    // several channels the guess would be wrong as often as right. A copy
-    // keeps the source monitor's bindings.
-    if params.from.is_none()
-        && let [only] = form.channels.as_mut_slice()
-    {
+    // several channels the guess would be wrong as often as right.
+    if let [only] = form.channels.as_mut_slice() {
         only.selected = true;
     }
     form.owner_options = owner_options;
@@ -104,7 +89,7 @@ pub async fn new_form(
         form.escalation = EscalationOffer::Locked;
     }
     form.flow_available = plan.max_flow_checks > 0;
-    // `?kind=flow` and a copy both pick the kind before the plan is known.
+    // `?kind=flow` picks the kind before the plan is known.
     if form.check_type == "flow" && !form.flow_available {
         form.check_type = "http";
         form.interval_s = crate::domain::interval_hints_for_kind("http").default;
@@ -170,7 +155,7 @@ pub async fn edit_form(
         .ok_or_else(|| AppError::not_found("TARGET_NOT_FOUND", "monitor not found"))?;
     let alerts = target.alerts.clone();
     let region_policy = target.region_policy;
-    let mut form = form_from_target(target, FormKind::Edit)?;
+    let mut form = form_from_target(target)?;
     let owner_id = form.owner_user_id.clone();
     let (channels, owner_options, group_options, tag_options, plan, available) =
         form_options(&state, org, &alerts, &owner_id).await?;

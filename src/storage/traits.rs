@@ -10,8 +10,8 @@ use crate::domain::metrics::{
     PriorPeriodSummary, RegionLatencySeries, RegionRollup, TagCount, TargetsSummary,
 };
 use crate::domain::{
-    CheckResult, CheckStatus, HeartbeatPingRecord, NewTarget, NewTargetWithRegions,
-    ObservedCadence, OrgId, Target, TargetUpdate, UserId, WriteSource,
+    CheckResult, CheckStatus, HeartbeatPingRecord, NewTarget, ObservedCadence, OrgId, PlacedTarget,
+    Target, TargetUpdate, UserId, WriteSource,
 };
 use crate::error::Result;
 
@@ -208,7 +208,7 @@ pub trait TargetStore: Send + Sync {
     async fn bulk_create(
         &self,
         org: OrgId,
-        items: Vec<NewTargetWithRegions>,
+        items: Vec<PlacedTarget>,
         source: WriteSource,
         max_targets: i64,
         max_flow_checks: i64,

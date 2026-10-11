@@ -127,6 +127,65 @@ async fn idempotency_key_replays_bulk_action() {
 }
 
 #[tokio::test]
+async fn one_idempotency_key_on_two_routes_is_two_requests() {
+    let app = app();
+    let mut ids = Vec::new();
+    for host in ["a.example.com", "b.example.com"] {
+        let payload = json!({
+            "name": host,
+            "check": {
+                "type": "http",
+                "url": format!("https://{host}/"),
+                "method": "GET",
+                "timeout": 5000,
+                "follow_redirects": false,
+                "max_redirects": 0,
+                "expected_status": { "kind": "exact", "value": 200 },
+                "headers": {},
+                "verify_tls": true
+            },
+            "interval": 60
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/targets")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        ids.push(body_json(resp).await["id"].as_str().unwrap().to_string());
+    }
+
+    let body = json!({ "copies": [{ "name": "again" }] }).to_string();
+    let mut urls = Vec::new();
+    for id in &ids {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/targets/{id}/duplicate"))
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "dup-1")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        urls.push(body_json(resp).await[0]["check"]["url"].clone());
+    }
+    assert_eq!(
+        urls,
+        [
+            json!("https://a.example.com/"),
+            json!("https://b.example.com/")
+        ]
+    );
+}
+
+#[tokio::test]
 async fn openapi_json_carries_charset_suffix() {
     let resp = app()
         .oneshot(

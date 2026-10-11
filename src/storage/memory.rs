@@ -9,8 +9,8 @@ use crate::domain::metrics::{
 };
 use crate::domain::target::MAX_TAGS_PER_TARGET;
 use crate::domain::{
-    AlertBinding, CheckResult, CheckStatus, NewTarget, NewTargetWithRegions, OrgId, Target,
-    TargetUpdate, UserId, WriteSource,
+    AlertBinding, CheckResult, CheckStatus, NewTarget, OrgId, PlacedTarget, Target, TargetUpdate,
+    UserId, WriteSource,
 };
 use crate::error::Result;
 use crate::storage::traits::{
@@ -958,7 +958,7 @@ impl TargetStore for InMemoryTargetStore {
     async fn bulk_create(
         &self,
         _org: OrgId,
-        items: Vec<NewTargetWithRegions>,
+        items: Vec<PlacedTarget>,
         source: WriteSource,
         max_targets: i64,
         max_flow_checks: i64,

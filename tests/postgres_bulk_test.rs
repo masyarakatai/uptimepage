@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use sqlx::PgPool;
 use uptimepage::domain::{
-    CheckSpec, ExpectedStatus, NewTarget, NewTargetWithRegions, RegionIncidentPolicy, WriteSource,
+    CheckSpec, ExpectedStatus, NewTarget, PlacedTarget, RegionIncidentPolicy, WriteSource,
 };
 use uptimepage::security::Cipher;
 use uptimepage::storage::{PostgresTargetStore, TargetStore};
@@ -39,12 +39,13 @@ async fn store_with_default_org(
     (store, org_id)
 }
 
-fn unplaced(items: Vec<NewTarget>) -> Vec<NewTargetWithRegions> {
+fn unplaced(items: Vec<NewTarget>) -> Vec<PlacedTarget> {
     items
         .into_iter()
-        .map(|target| NewTargetWithRegions {
+        .map(|target| PlacedTarget {
             target,
             regions: Vec::new(),
+            escalation_policy_id: None,
         })
         .collect()
 }
@@ -164,13 +165,15 @@ async fn bulk_create_places_each_row_in_one_write(pool: PgPool) {
     let mut counted = make("counted", vec![]);
     counted.region_policy = Some(RegionIncidentPolicy::Count(2));
     let items = vec![
-        NewTargetWithRegions {
+        PlacedTarget {
             target: counted,
             regions: vec!["bulk-eu".into(), "bulk-us".into()],
+            escalation_policy_id: None,
         },
-        NewTargetWithRegions {
+        PlacedTarget {
             target: make("single", vec![]),
             regions: vec!["bulk-us".into()],
+            escalation_policy_id: None,
         },
     ];
 

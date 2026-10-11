@@ -338,7 +338,7 @@ async fn an_update_can_decline_to_claim_authorship() {
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
 async fn the_recovery_period_round_trips_through_every_write() {
-    use uptimepage::domain::NewTargetWithRegions;
+    use uptimepage::domain::PlacedTarget;
     use uptimepage::storage::AdminRepo;
 
     let Some((db, name)) = common::fresh_test_db("targets_recovery").await else {
@@ -389,13 +389,15 @@ async fn the_recovery_period_round_trips_through_every_write() {
         .bulk_create(
             org.id,
             vec![
-                NewTargetWithRegions {
+                PlacedTarget {
                     target: held("bulk-a", 120),
                     regions: vec![],
+                    escalation_policy_id: None,
                 },
-                NewTargetWithRegions {
+                PlacedTarget {
                     target: held("bulk-b", 0),
                     regions: vec![],
+                    escalation_policy_id: None,
                 },
             ],
             WriteSource::Api,

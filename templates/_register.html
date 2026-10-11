@@ -90,6 +90,21 @@
 </div>
 {% endmacro %}
 
+{# One copy on the duplicate page, shared by the first row and the <template>
+   that paste and "add copy" clone. A passive source has no address input. #}
+{% macro copy_row(has_address, label, placeholder, address, name_hint) %}
+<div data-copy-row class="flex flex-wrap items-center gap-2">
+  {% if has_address %}
+  <input type="text" name="copy_address" value="{{ address }}"
+         placeholder="{{ placeholder }}" aria-label="{{ label }}"
+         autocomplete="off" spellcheck="false" class="flex-[2] min-w-[14rem] field font-mono">
+  {% endif %}
+  <input type="text" name="copy_name" placeholder="{{ name_hint }}" aria-label="Name"
+         autocomplete="off" spellcheck="false" class="flex-1 min-w-[10rem] field">
+  {% call row_remove("data-copy-remove", "Remove copy") %}{% endcall %}
+</div>
+{% endmacro %}
+
 {# One flow step row, shared by the prefill loop and the clone <template>.
    Only the fields the op uses are visible; flow_steps.js re-toggles on change. #}
 {% macro flow_step_row(op, url, selector, value, contains) %}
