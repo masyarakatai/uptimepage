@@ -594,23 +594,30 @@ fn host_canonicalization_is_pinned_to_a_fixed_corpus() {
     assert!(canon(&over_253).is_err(), "254-character host accepted");
 }
 
+fn dns_spec(domain: &str, record_type: crate::domain::DnsRecordType) -> CheckSpec {
+    CheckSpec::Dns(crate::domain::DnsCheck {
+        domain: domain.into(),
+        record_type,
+        resolver: None,
+        expected_contains: None,
+        timeout: std::time::Duration::from_secs(3),
+    })
+}
+
+fn dns_domain(spec: CheckSpec) -> String {
+    match spec {
+        CheckSpec::Dns(d) => d.domain,
+        _ => panic!("variant changed"),
+    }
+}
+
 #[test]
 fn dns_names_accept_underscore_labels_and_keep_the_other_rules() {
-    use crate::domain::{CheckSpec, DnsCheck, DnsRecordType};
-    use std::time::Duration;
+    use crate::domain::DnsRecordType;
 
     let canon = |input: &str| {
-        let mut spec = CheckSpec::Dns(DnsCheck {
-            domain: input.into(),
-            record_type: DnsRecordType::Txt,
-            resolver: None,
-            expected_contains: None,
-            timeout: Duration::from_secs(3),
-        });
-        canonicalize_check(&mut spec).map(|()| match spec {
-            CheckSpec::Dns(d) => d.domain,
-            _ => panic!("variant changed"),
-        })
+        let mut spec = dns_spec(input, DnsRecordType::Txt);
+        canonicalize_check(&mut spec).map(|()| dns_domain(spec))
     };
 
     for (input, want) in [
@@ -636,6 +643,45 @@ fn dns_names_accept_underscore_labels_and_keep_the_other_rules() {
         &over_253,
     ] {
         assert!(canon(input).is_err(), "{input:?} accepted");
+    }
+}
+
+#[test]
+fn an_address_is_a_dns_domain_only_for_ptr() {
+    use crate::domain::DnsRecordType;
+    use crate::security::ssrf::SsrfGuard;
+
+    let vet = |input: &str, record_type| {
+        let mut spec = dns_spec(input, record_type);
+        canonicalize_check(&mut spec)?;
+        validate_check(&spec, &SsrfGuard::strict())?;
+        Ok::<_, AppError>(dns_domain(spec))
+    };
+
+    for (input, stored) in [
+        ("192.0.2.1", "192.0.2.1"),
+        ("2001:db8::1", "2001:db8::1"),
+        ("[2001:DB8::1]", "2001:db8::1"),
+        ("::ffff:192.0.2.1", "::ffff:192.0.2.1"),
+        ("1.2.0.192.in-addr.arpa", "1.2.0.192.in-addr.arpa"),
+    ] {
+        assert_eq!(vet(input, DnsRecordType::Ptr).unwrap(), stored, "{input:?}");
+    }
+
+    for record_type in [
+        DnsRecordType::A,
+        DnsRecordType::Aaaa,
+        DnsRecordType::Txt,
+        DnsRecordType::Mx,
+    ] {
+        for input in ["192.0.2.1", "2001:db8::1"] {
+            let err = vet(input, record_type).expect_err("an address outside PTR must reject");
+            let AppError::BadRequest { code, field, .. } = err else {
+                panic!("expected a bad request, got {err:?}");
+            };
+            assert_eq!(code, codes::INVALID_DNS_PARAMS);
+            assert_eq!(field.as_deref(), Some("check.domain"));
+        }
     }
 }
 

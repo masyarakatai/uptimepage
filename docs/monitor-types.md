@@ -142,6 +142,8 @@ Resolves a name and checks the answer.
 
 Pick a record type (`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`), optionally a specific resolver to query, and optionally a substring the answer must contain.
 
+The name can carry underscore labels, so mail records such as `_dmarc.example.com` and `s1._domainkey.example.com` can be watched. A `PTR` check also takes an IP address, `192.0.2.1` or `2001:db8::1`, and looks up its reverse name; every other record type refuses an address, because it would look the address up as a name and never find it.
+
 That last option is the point of the check. Without it, any answer at all counts as up, so you learn only that the name still resolves. With it, you learn that it resolves **to the right place** — which is what catches a hijacked record, a bad registrar change, or a regional misroute that a plain HTTP check from one location would sail straight past.
 
 An empty answer, including NXDOMAIN, is down. So is a mismatch when you have set an expected substring, and so is a resolver that fails outright. Querying a specific resolver is how you verify propagation: point one monitor at your authoritative server and another at a public resolver, and a gap between them is a propagation problem.

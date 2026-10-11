@@ -563,6 +563,7 @@ pub enum NewCheck {
     },
     /// A DNS record resolving, optionally to an expected value.
     Dns {
+        /// Name to resolve. A `ptr` lookup also takes an IP address.
         domain: String,
         /// `a` (default), `aaaa`, `cname`, `mx`, `ns`, `txt`, `soa`, `ptr`,
         /// `caa`, `srv`.

@@ -202,7 +202,7 @@ pub const DOCS: &[DocPage] = &[
         section: Section::Guide,
         scope: Scope::Everyone,
         created: "2026-07-22",
-        lastmod: "2026-10-07",
+        lastmod: "2026-10-11",
         source: include_str!("../../docs/monitor-types.md"),
         dir: "",
     },

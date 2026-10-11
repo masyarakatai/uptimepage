@@ -810,6 +810,19 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                     "check.domain",
                 ));
             }
+            // PTR is the one type an address answers to: the worker turns it
+            // into the reverse name. Any other type would query the address as
+            // a name and fail on every tick.
+            if d.record_type != crate::domain::DnsRecordType::Ptr && d.address().is_some() {
+                return Err(AppError::bad_request_field(
+                    codes::INVALID_DNS_PARAMS,
+                    format!(
+                        "{} records are looked up by name, not by address; only PTR takes an IP",
+                        d.record_type.as_str()
+                    ),
+                    "check.domain",
+                ));
+            }
             validate_timeout(d.timeout)?;
             if let Some(resolver) = &d.resolver
                 && !resolver.is_empty()

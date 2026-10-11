@@ -254,8 +254,12 @@ Resolves `domain` and reads the answers. `record_type` is one of `A`, `AAAA`,
 `CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`. A trailing dot on the
 domain is tolerated, and so are underscore labels, so `_dmarc.example.com`,
 `s1._domainkey.example.com` and `_sip._tcp.example.com` can be watched;
-host-based checks still refuse them. `resolver` takes `ip` or `ip:port` (`1.1.1.1`,
-`8.8.8.8:53`) to query one specific server instead of the process default.
+host-based checks still refuse them. A `PTR` check takes either the address
+(`192.0.2.1`, `2001:db8::1`), which is looked up as its `in-addr.arpa` or
+`ip6.arpa` name, or that reverse name itself; every other record type refuses
+an address with `400 INVALID_DNS_PARAMS`. `resolver` takes `ip` or `ip:port`
+(`1.1.1.1`, `8.8.8.8:53`) to query one specific server instead of the process
+default.
 
 Status: an empty answer set — including NXDOMAIN and no-records — is `down`.
 With `expected_contains` set, an answer set where no value contains that

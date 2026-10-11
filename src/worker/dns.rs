@@ -8,7 +8,7 @@ use serde::Serialize;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::domain::{CheckResult, CheckStatus, DnsCheck};
+use crate::domain::{CheckResult, CheckStatus, DnsCheck, DnsRecordType};
 use crate::http_client::{HttpClients, build_single_resolver};
 
 pub async fn execute_dns_check(
@@ -86,7 +86,7 @@ async fn run_check(check: &DnsCheck, clients: &HttpClients) -> anyhow::Result<Dn
 
     let record_type = RecordType::from_str(check.record_type.as_str())
         .map_err(|e| anyhow::anyhow!("invalid record type: {e}"))?;
-    let name = query_name(&check.domain)?;
+    let name = query_name(check)?;
     let lookup = match resolver.lookup(name, record_type).await {
         Ok(l) => l,
         Err(e) if e.is_nx_domain() || e.is_no_records_found() => {
@@ -102,10 +102,16 @@ async fn run_check(check: &DnsCheck, clients: &HttpClients) -> anyhow::Result<Dn
     Ok(classify(check, &answers))
 }
 
-// UTF-8 parsing applies STD3 per label and refuses an underscore inside one
+// A PTR check on an address queries its in-addr.arpa / ip6.arpa name. UTF-8
+// parsing applies STD3 per label and refuses an underscore inside one
 // (`foo_bar`); the relaxed parse falls back to plain ASCII for those.
-fn query_name(domain: &str) -> anyhow::Result<Name> {
-    Ok(Name::from_str_relaxed(domain)?)
+fn query_name(check: &DnsCheck) -> anyhow::Result<Name> {
+    if check.record_type == DnsRecordType::Ptr
+        && let Some(ip) = check.address()
+    {
+        return Ok(Name::from(ip));
+    }
+    Ok(Name::from_str_relaxed(&check.domain)?)
 }
 
 fn classify(check: &DnsCheck, answers: &[String]) -> DnsVerdict {
@@ -150,15 +156,21 @@ fn classify(check: &DnsCheck, answers: &[String]) -> DnsVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::DnsRecordType;
     use std::time::Duration;
 
     fn check(expected: Option<&str>) -> DnsCheck {
         DnsCheck {
-            domain: "example.com".into(),
-            record_type: DnsRecordType::A,
-            resolver: None,
             expected_contains: expected.map(str::to_string),
+            ..lookup("example.com", DnsRecordType::A)
+        }
+    }
+
+    fn lookup(domain: &str, record_type: DnsRecordType) -> DnsCheck {
+        DnsCheck {
+            domain: domain.into(),
+            record_type,
+            resolver: None,
+            expected_contains: None,
             timeout: Duration::from_secs(3),
         }
     }
@@ -166,11 +178,28 @@ mod tests {
     #[test]
     fn underscore_names_parse_as_relative_query_names() {
         for domain in ["_dmarc.example.com", "foo_bar.example.com", "example.com"] {
-            let name = query_name(domain).unwrap();
+            let name = query_name(&lookup(domain, DnsRecordType::Txt)).unwrap();
             assert_eq!(name.to_ascii(), domain);
             assert!(!name.is_fqdn(), "{domain} became absolute");
         }
-        assert_eq!(query_name("bähn.de").unwrap().to_ascii(), "xn--bhn-qla.de");
+        let idn = query_name(&lookup("bähn.de", DnsRecordType::A)).unwrap();
+        assert_eq!(idn.to_ascii(), "xn--bhn-qla.de");
+    }
+
+    #[test]
+    fn ptr_on_an_address_queries_its_reverse_name() {
+        let name = |domain| {
+            query_name(&lookup(domain, DnsRecordType::Ptr))
+                .unwrap()
+                .to_ascii()
+        };
+        assert_eq!(name("192.0.2.1"), "1.2.0.192.in-addr.arpa.");
+        assert_eq!(
+            name("2001:db8::1"),
+            "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa."
+        );
+        assert_eq!(name("::ffff:192.0.2.1"), "1.2.0.192.in-addr.arpa.");
+        assert_eq!(name("1.2.0.192.in-addr.arpa"), "1.2.0.192.in-addr.arpa");
     }
 
     #[test]

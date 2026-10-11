@@ -484,7 +484,8 @@ impl DnsRecordType {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DnsCheck {
     /// Name to resolve (FQDN; trailing dot tolerated). Underscore labels such
-    /// as `_dmarc` are accepted.
+    /// as `_dmarc` are accepted. A PTR lookup also takes an IP address and
+    /// queries its reverse name; other types refuse one.
     #[schema(example = "api.example.com")]
     pub domain: String,
     pub record_type: DnsRecordType,
@@ -502,6 +503,18 @@ pub struct DnsCheck {
     #[serde(with = "duration_ms")]
     #[schema(value_type = u64, minimum = 100, maximum = 60000, example = 3000)]
     pub timeout: Duration,
+}
+
+impl DnsCheck {
+    /// The domain read as an IP address, which a PTR check looks up by its
+    /// reverse name. IPv4-mapped IPv6 folds to IPv4, whose in-addr.arpa name
+    /// is where that record lives.
+    pub fn address(&self) -> Option<std::net::IpAddr> {
+        self.domain
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|ip| ip.to_canonical())
+    }
 }
 
 /// A browser-driven login/transaction flow: a step sequence replayed against a
