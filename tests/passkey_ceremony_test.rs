@@ -1,7 +1,8 @@
 //! Both passkey ceremonies through the router, answered by a software
 //! authenticator: a registered passkey signs its account in, a challenge
-//! answers once and only the ceremony and account it was issued to, and the
-//! user handle in an assertion is never trusted on its own.
+//! answers once and only the ceremony and account it was issued to, a
+//! registration asks for a passkey sign-in can find, and the user handle in an
+//! assertion is never trusted on its own.
 //!
 //! The soft authenticator keeps no resident keys, so each sign-in names the
 //! credential and attaches the account id as a discoverable one would. Neither
@@ -27,6 +28,7 @@ use webauthn_authenticator_rs::prelude::{
     RequestChallengeResponse, Url, WebauthnAuthenticator,
 };
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+use webauthn_rs_proto::ResidentKeyRequirement;
 
 const BASE: &str = "https://app.test";
 
@@ -121,9 +123,7 @@ impl Rig {
     ) -> RegisterPublicKeyCredential {
         let cookie = self.signed_in(user).await;
         let (handle, options) = self.start_registration(&cookie).await;
-        let credential = authenticator
-            .do_registration(origin(), options)
-            .expect("authenticator registers");
+        let credential = registration_for(authenticator, options);
         let finished = self
             .finish_registration(&cookie, &handle, &credential)
             .await;
@@ -166,6 +166,20 @@ impl Rig {
 
 fn origin() -> Url {
     Url::parse(BASE).unwrap()
+}
+
+/// What an authenticator answers a registration with. The soft one refuses to
+/// be asked for a resident key, so the request is dropped before it sees it.
+fn registration_for(
+    authenticator: &mut SoftPasskey,
+    mut options: CreationChallengeResponse,
+) -> RegisterPublicKeyCredential {
+    if let Some(selection) = options.public_key.authenticator_selection.as_mut() {
+        selection.require_resident_key = false;
+    }
+    authenticator
+        .do_registration(origin(), options)
+        .expect("authenticator registers")
 }
 
 /// What a discoverable authenticator holding `credential` for `account` sends.
@@ -318,7 +332,7 @@ async fn a_challenge_answers_only_the_ceremony_and_account_it_was_issued_to() {
     let mut authenticator = SoftPasskey::new(true);
 
     let (handle, options) = rig.start_registration(&taras_cookie).await;
-    let credential = authenticator.do_registration(origin(), options).unwrap();
+    let credential = registration_for(&mut authenticator, options);
     let hijacked = rig
         .finish_registration(&olena_cookie, &handle, &credential)
         .await;
@@ -333,7 +347,7 @@ async fn a_challenge_answers_only_the_ceremony_and_account_it_was_issued_to() {
     );
 
     let (handle, options) = rig.start_registration(&olena_cookie).await;
-    let credential = authenticator.do_registration(origin(), options).unwrap();
+    let credential = registration_for(&mut authenticator, options);
     let as_login = rig
         .post(
             "/auth/passkey/login/finish",
@@ -377,7 +391,13 @@ async fn a_registration_that_cannot_sign_in_is_refused() {
     let mut authenticator = SoftPasskey::new(true);
 
     let (handle, options) = rig.start_registration(&cookie).await;
-    let credential = authenticator.do_registration(origin(), options).unwrap();
+    let selection = options.public_key.authenticator_selection.as_ref().unwrap();
+    assert_eq!(
+        selection.resident_key,
+        Some(ResidentKeyRequirement::Required)
+    );
+    assert!(selection.require_resident_key);
+    let credential = registration_for(&mut authenticator, options);
     let mut not_resident = serde_json::to_value(&credential).unwrap();
     not_resident["extensions"]["credProps"] = json!({ "rk": false });
     let refused = rig
@@ -405,7 +425,7 @@ async fn a_registration_that_cannot_sign_in_is_refused() {
     assert_eq!(malformed.code(), "PASSKEY_MALFORMED");
 
     let (handle, options) = rig.start_registration(&cookie).await;
-    let mut credential = authenticator.do_registration(origin(), options).unwrap();
+    let mut credential = registration_for(&mut authenticator, options);
     credential.response.client_data_json = b"{}".to_vec();
     let unverified = rig.finish_registration(&cookie, &handle, &credential).await;
     assert_eq!(unverified.code(), "PASSKEY_REJECTED");

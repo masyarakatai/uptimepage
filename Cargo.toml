@@ -172,6 +172,8 @@ webauthn-rs = { version = "=0.6.1-dev", default-features = false, features = [
     "conditional-ui",
     "resident-key-support",
 ] }
+# The registration options webauthn-rs builds, which name their types only here.
+webauthn-rs-proto = "=0.6.1-dev"
 
 # OpenAPI schema derivation
 utoipa = { version = "5.5", features = ["axum_extras", "chrono", "uuid", "url"] }

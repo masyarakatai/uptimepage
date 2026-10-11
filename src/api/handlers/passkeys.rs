@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 use utoipa::ToSchema;
 use webauthn_rs::prelude::*;
+use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::app::AppState;
 use crate::auth::login_audit::{self, LoginMethod};
@@ -91,9 +92,16 @@ pub async fn register_start(
     // Offering a credential the account already holds lets the authenticator
     // replace it rather than quietly minting a second one for the same device.
     let exclude = passkeys::credential_ids(pool, user.id).await?;
-    let (options, ceremony) = webauthn
+    let (mut options, ceremony) = webauthn
         .start_passkey_registration(user.id.0, &user.email, &user.email, Some(exclude))
         .map_err(|e| AppError::Other(anyhow::anyhow!("start passkey registration: {e}")))?;
+    // webauthn-rs discourages a resident key, and an authenticator that obeys
+    // mints one sign-in can never use. Finishing ignores this field, so the
+    // stored ceremony still matches.
+    if let Some(selection) = options.public_key.authenticator_selection.as_mut() {
+        selection.resident_key = Some(ResidentKeyRequirement::Required);
+        selection.require_resident_key = true;
+    }
     let handle = passkeys::generate_handle();
     passkeys::put_state(pool, &handle, Some(user.id), &ceremony).await?;
     Ok(Json(CeremonyStart {
