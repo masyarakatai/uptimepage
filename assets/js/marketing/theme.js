@@ -52,8 +52,9 @@
     });
     document.addEventListener("click", (e) => {
         if (!e.target.closest("[data-mk-theme-toggle]")) return;
-        clicked = root.dataset.mkTheme === "dark" ? "light" : "dark";
-        remember(clicked);
+        const pick = root.dataset.mkTheme === "dark" ? "light" : "dark";
+        remember(pick);
         apply();
+        window.umami?.track("theme-toggle", { to: pick });
     });
 })();

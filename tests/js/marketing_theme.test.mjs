@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../../assets/js/marketing/theme.js", import.meta.url), "utf8");
 
-function harness({ pick, account, writes = "allowed", dark = false } = {}) {
+function harness({ pick, account, writes = "allowed", dark = false, tracker = true } = {}) {
     const jar = new Map();
     if (pick) jar.set("sm_theme_pick", pick);
     if (account) jar.set("sm_app_theme", account);
@@ -27,12 +27,14 @@ function harness({ pick, account, writes = "allowed", dark = false } = {}) {
         addEventListener: (name, fn) => { events[name] = fn; },
     };
     const os = { matches: dark, addEventListener: (name, fn) => { events[`os:${name}`] = fn; } };
+    const tracked = [];
+    const window = tracker ? { umami: { track: (name, data) => tracked.push([name, { ...data }]) } } : {};
     vm.runInNewContext(source, {
-        document, matchMedia: () => os,
+        document, window, matchMedia: () => os,
         location: { hostname: "www.uptimepage.test", protocol: "https:" },
     });
     return {
-        root, jar, toggles,
+        root, jar, toggles, tracked,
         click() { events.click({ target: { closest: () => toggles[0] } }); },
         visible() { events.visibilitychange(); },
         flipOS() { os.matches = !os.matches; events["os:change"](); },
@@ -77,4 +79,17 @@ test("a marketing pick overrides the account mirror without changing it", () => 
         assert.equal(h.root.dataset.mkTheme, picked);
         assert.equal(h.jar.get("sm_theme_pick"), picked);
     }
+});
+
+test("each toggle reports the mode it switched to", () => {
+    const h = harness();
+    h.click();
+    h.click();
+    assert.deepEqual(h.tracked, [["theme-toggle", { to: "dark" }], ["theme-toggle", { to: "light" }]]);
+});
+
+test("the toggle works when the tracker is blocked", () => {
+    const h = harness({ tracker: false });
+    h.click();
+    assert.equal(h.root.dataset.mkTheme, "dark");
 });
