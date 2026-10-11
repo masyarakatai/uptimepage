@@ -141,12 +141,7 @@ pub async fn duplicate(
             i64::from(plan.max_flow_checks),
         )
         .await?;
-    // The copies are committed: a ping row that fails here is minted by the
-    // scheduler's next refresh, and reporting an error would invite a retry
-    // that doubles them.
-    if let Err(err) = ops.settle_created(org, &created, &regions).await {
-        tracing::warn!(org_id = %org.0, error = %err, "duplicate settled partially");
-    }
+    ops.settle_created(org, &created, &regions).await;
     Ok((StatusCode::CREATED, Redacted::new(created)))
 }
 

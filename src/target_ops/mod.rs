@@ -108,27 +108,30 @@ impl TargetOps<'_> {
             self.targets.set_target_regions(org, t.id, &regions).await?;
         }
         self.settle_created(org, std::slice::from_ref(&t), &regions)
-            .await?;
+            .await;
         Ok(t)
     }
 
     /// What monitors that now exist in `regions` still need: a heartbeat's ping
     /// row, a manual monitor's first state, and a first check, so each can be
     /// pinged and shows a state at once.
-    pub(crate) async fn settle_created(
-        &self,
-        org: OrgId,
-        created: &[Target],
-        regions: &[String],
-    ) -> Result<()> {
+    ///
+    /// The monitors are committed, so nothing here fails the write: an error
+    /// would invite a retry that creates them twice. A ping row that cannot be
+    /// minted is left, with the rest after it, to the scheduler's next refresh;
+    /// stopping at the first keeps a database outage from stalling the request
+    /// once per monitor.
+    pub(crate) async fn settle_created(&self, org: OrgId, created: &[Target], regions: &[String]) {
         for t in created.iter().filter(|t| t.check.as_heartbeat().is_some()) {
-            self.ensure_heartbeat(org, t.id).await?;
+            if let Err(err) = self.ensure_heartbeat(org, t.id).await {
+                tracing::warn!(org_id = %org.0, target_id = %t.id, error = %err, "ping rows left to the scheduler");
+                break;
+            }
         }
         self.report_initial_states(org, created);
         for t in created {
             self.dispatch_first_check(org, t, regions).await;
         }
-        Ok(())
     }
 
     /// A manual monitor is up from the moment it exists, so it reports that now
