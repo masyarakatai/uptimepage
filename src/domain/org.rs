@@ -66,6 +66,14 @@ pub struct PublicOrgBranding {
     pub public_website_url: Option<String>,
 }
 
+/// A page's public name: its display override if non-blank, else the org name.
+pub fn page_display_name<'a>(display_override: Option<&'a str>, org_name: &'a str) -> &'a str {
+    display_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(org_name)
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PublicStyle {
@@ -158,6 +166,7 @@ pub enum BrandingError {
     BrandColorFormat,
     AboutTooLong,
     DisplayNameLength,
+    DisplayNameControl,
     WebsiteUrl,
 }
 
@@ -167,6 +176,7 @@ impl std::fmt::Display for BrandingError {
             Self::BrandColorFormat => "brand color must be a 6-digit hex like #3b82f6",
             Self::AboutTooLong => "public about may be at most 500 characters",
             Self::DisplayNameLength => "display name must be 1-80 characters",
+            Self::DisplayNameControl => "display name must not contain control characters",
             Self::WebsiteUrl => "website must be an http(s) address, at most 200 characters",
         };
         f.write_str(s)
@@ -181,7 +191,7 @@ impl BrandingError {
         match self {
             Self::BrandColorFormat => "public_brand_color",
             Self::AboutTooLong => "public_about",
-            Self::DisplayNameLength => "public_display_name",
+            Self::DisplayNameLength | Self::DisplayNameControl => "public_display_name",
             Self::WebsiteUrl => "public_website_url",
         }
     }
@@ -211,6 +221,9 @@ impl PublicOrgBranding {
             let len = n.chars().count();
             if !(1..=80).contains(&len) {
                 return Err(BrandingError::DisplayNameLength);
+            }
+            if n.chars().any(char::is_control) {
+                return Err(BrandingError::DisplayNameControl);
             }
         }
         if let Some(u) = &self.public_website_url
@@ -400,6 +413,24 @@ mod tests {
         assert_eq!(b.validate(), Err(BrandingError::DisplayNameLength));
         b.public_display_name = Some("y".repeat(81));
         assert_eq!(b.validate(), Err(BrandingError::DisplayNameLength));
+        for bad in ["Ac\u{1}me", "Acme\r\nBcc: x@example.com", "Ac\u{7f}me"] {
+            b.public_display_name = Some(bad.into());
+            assert_eq!(
+                b.validate(),
+                Err(BrandingError::DisplayNameControl),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn page_display_name_prefers_a_non_blank_override_else_the_org() {
+        assert_eq!(page_display_name(None, "Acme"), "Acme");
+        assert_eq!(page_display_name(Some("  "), "Acme"), "Acme");
+        assert_eq!(
+            page_display_name(Some(" Acme Public "), "Acme"),
+            "Acme Public"
+        );
     }
 
     #[test]

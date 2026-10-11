@@ -286,7 +286,10 @@ async fn fanout_lists_verified_recent_public_updates_only() {
     assert_eq!(p.update_id, fresh);
     assert_ne!(p.update_id, stale);
     assert_eq!(p.incident_title(), "Elevated errors");
-    assert_eq!(p.page_name, "Acme");
+    assert_eq!(
+        p.page_name, "sub",
+        "no display name: the org's, as on the page"
+    );
     assert_eq!(p.phase, "investigating");
 
     // Claiming is exclusive: the first wins, an immediate re-claim loses.

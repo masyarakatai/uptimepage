@@ -112,23 +112,16 @@ pub struct OrgPublicSource {
     pg: PgPool,
     rss_lookback_days: u32,
     rss_max_items: u32,
-    site_name: String,
 }
 
 impl OrgPublicSource {
-    pub fn new(
-        aggregator: Arc<OrgAggregator>,
-        cache: PageCache,
-        pg: PgPool,
-        site_name: impl Into<String>,
-    ) -> Self {
+    pub fn new(aggregator: Arc<OrgAggregator>, cache: PageCache, pg: PgPool) -> Self {
         Self {
             aggregator,
             cache,
             pg,
             rss_lookback_days: 90,
             rss_max_items: 50,
-            site_name: site_name.into(),
         }
     }
 }
@@ -198,9 +191,90 @@ impl PublicSource for OrgPublicSource {
         page: PageRef,
         q: IncidentListQuery,
     ) -> Result<CursorPage<PublicIncident>, PublicAppError> {
-        // The page's component set + per-page names, reused from the cached
-        // page snapshot.
         let data = self.cached(page).await?;
+        self.incidents_in(&data, page, q).await
+    }
+
+    async fn incident_by_id(
+        &self,
+        page: PageRef,
+        id: Uuid,
+    ) -> Result<PublicIncident, PublicAppError> {
+        let data = self.cached(page).await?;
+        let names = data.component_names.clone();
+        let component_ids: Vec<Uuid> = names.keys().copied().collect();
+        let row: Option<IncidentRow> = sqlx::query_as::<_, IncidentRow>(&format!(
+            r#"SELECT i.id, i.target_id,
+                      i.started_at, i.ended_at, i.severity, i.status_at_start,
+                      i.origin, i.regions_up, i.recovered_from, i.recovered_until,
+                      i.recovering_since,
+                      i.public_title, i.public_description, {kept}
+               FROM incidents i
+               WHERE i.id = $1
+                 AND i.org_id = $2
+                 AND {on_page}
+                 AND i.visibility = 'public'"#,
+            on_page = on_page("$3", "$4"),
+            kept = kept_component_name("$4"),
+        ))
+        .bind(id)
+        .bind(page.org.0)
+        .bind(&component_ids)
+        .bind(page.page.0)
+        .fetch_optional(&self.pg)
+        .await
+        .context("public get incident")
+        .map_err(PublicAppError::Internal)?;
+
+        let row = row.ok_or(PublicAppError::NotFound)?;
+        let tr = Tr::new(data.settings.locale);
+        let mut hydrated = self.hydrate(page.org, vec![row], &names, tr).await?;
+        let mut incident = hydrated.pop().ok_or(PublicAppError::NotFound)?;
+        incident.postmortem = self.published_postmortem(page.org, id).await?;
+        Ok(incident)
+    }
+
+    async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
+        let p = self.page(page).await?;
+        Ok(PublicMaintenanceList {
+            active: p.active_maintenance.clone(),
+            upcoming: p.upcoming_maintenance.clone(),
+        })
+    }
+
+    async fn incidents_rss(
+        &self,
+        page: PageRef,
+        links: FeedLinks<'_>,
+    ) -> Result<String, PublicAppError> {
+        let q = IncidentListQuery {
+            limit: self.rss_max_items,
+            cursor: None,
+            ongoing_only: false,
+        };
+        let data = self.cached(page).await?;
+        let listed = self.incidents_in(&data, page, q).await?;
+        Ok(build_rss(
+            &data.page.site_name,
+            links,
+            data.settings.locale,
+            &listed.items,
+        ))
+    }
+
+    async fn invalidate(&self, page: crate::domain::StatusPageId) {
+        self.cache.invalidate(page).await;
+    }
+}
+
+impl OrgPublicSource {
+    /// Incidents on `page`, against the component set of snapshot `data`.
+    async fn incidents_in(
+        &self,
+        data: &PageData,
+        page: PageRef,
+        q: IncidentListQuery,
+    ) -> Result<CursorPage<PublicIncident>, PublicAppError> {
         let names = data.component_names.clone();
         let component_ids: Vec<Uuid> = names.keys().copied().collect();
 
@@ -269,74 +343,6 @@ impl PublicSource for OrgPublicSource {
         Ok(CursorPage::new(incidents, next_cursor))
     }
 
-    async fn incident_by_id(
-        &self,
-        page: PageRef,
-        id: Uuid,
-    ) -> Result<PublicIncident, PublicAppError> {
-        let data = self.cached(page).await?;
-        let names = data.component_names.clone();
-        let component_ids: Vec<Uuid> = names.keys().copied().collect();
-        let row: Option<IncidentRow> = sqlx::query_as::<_, IncidentRow>(&format!(
-            r#"SELECT i.id, i.target_id,
-                      i.started_at, i.ended_at, i.severity, i.status_at_start,
-                      i.origin, i.regions_up, i.recovered_from, i.recovered_until,
-                      i.recovering_since,
-                      i.public_title, i.public_description, {kept}
-               FROM incidents i
-               WHERE i.id = $1
-                 AND i.org_id = $2
-                 AND {on_page}
-                 AND i.visibility = 'public'"#,
-            on_page = on_page("$3", "$4"),
-            kept = kept_component_name("$4"),
-        ))
-        .bind(id)
-        .bind(page.org.0)
-        .bind(&component_ids)
-        .bind(page.page.0)
-        .fetch_optional(&self.pg)
-        .await
-        .context("public get incident")
-        .map_err(PublicAppError::Internal)?;
-
-        let row = row.ok_or(PublicAppError::NotFound)?;
-        let tr = Tr::new(data.settings.locale);
-        let mut hydrated = self.hydrate(page.org, vec![row], &names, tr).await?;
-        let mut incident = hydrated.pop().ok_or(PublicAppError::NotFound)?;
-        incident.postmortem = self.published_postmortem(page.org, id).await?;
-        Ok(incident)
-    }
-
-    async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
-        let p = self.page(page).await?;
-        Ok(PublicMaintenanceList {
-            active: p.active_maintenance.clone(),
-            upcoming: p.upcoming_maintenance.clone(),
-        })
-    }
-
-    async fn incidents_rss(
-        &self,
-        page: PageRef,
-        links: FeedLinks<'_>,
-    ) -> Result<String, PublicAppError> {
-        let q = IncidentListQuery {
-            limit: self.rss_max_items,
-            cursor: None,
-            ongoing_only: false,
-        };
-        let listed = self.list_incidents(page, q).await?;
-        let locale = self.locale(page).await;
-        Ok(build_rss(&self.site_name, links, locale, &listed.items))
-    }
-
-    async fn invalidate(&self, page: crate::domain::StatusPageId) {
-        self.cache.invalidate(page).await;
-    }
-}
-
-impl OrgPublicSource {
     async fn hydrate(
         &self,
         org: OrgId,
@@ -568,23 +574,7 @@ fn phase_id(p: IncidentStatusPhase) -> &'static str {
 /// A `PublicSource` that returns an empty page and `NotFound` for everything
 /// else. Useful as a placeholder in test rigs that don't exercise the public
 /// surface, and as a safe fallback for environments without ClickHouse.
-pub struct NoopPublicSource {
-    site_name: String,
-}
-
-impl NoopPublicSource {
-    pub fn new(site_name: impl Into<String>) -> Self {
-        Self {
-            site_name: site_name.into(),
-        }
-    }
-}
-
-impl Default for NoopPublicSource {
-    fn default() -> Self {
-        Self::new("uptimepage")
-    }
-}
+pub struct NoopPublicSource;
 
 #[async_trait]
 impl PublicSource for NoopPublicSource {
@@ -595,7 +585,7 @@ impl PublicSource for NoopPublicSource {
                 label: "All Systems Operational".into(),
             },
             generated_at: Utc::now(),
-            site_name: self.site_name.clone(),
+            site_name: String::new(),
             groups: Vec::new(),
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
@@ -642,7 +632,7 @@ impl PublicSource for NoopPublicSource {
         _page: PageRef,
         links: FeedLinks<'_>,
     ) -> Result<String, PublicAppError> {
-        Ok(build_rss(&self.site_name, links, Locale::default(), &[]))
+        Ok(build_rss("", links, Locale::default(), &[]))
     }
 }
 
@@ -829,5 +819,19 @@ mod tests {
             "<pubDate>{}</pubDate>",
             inc.updates.last().unwrap().posted_at.to_rfc2822()
         )));
+    }
+
+    #[test]
+    fn a_control_character_in_a_name_stays_out_of_the_feed() {
+        let xml = build_rss(
+            "Ac\u{1}me",
+            links("https://acme.example.com"),
+            Locale::En,
+            &[],
+        );
+        assert!(
+            xml.contains("<title>Acme Status Incidents</title>"),
+            "{xml}"
+        );
     }
 }

@@ -13,7 +13,9 @@ use crate::error::Result;
 use crate::i18n::Tr;
 use crate::security::sha256_hex;
 use crate::security::token_hash::generate_raw_token;
-use crate::storage::status_pages::{PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN};
+use crate::storage::status_pages::{
+    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
+};
 
 pub const CONFIRM_TTL_HOURS: i64 = 24;
 /// Confirm mints per subscriber per 24 h — bounds re-subscribe mail spam.
@@ -312,7 +314,7 @@ pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingUpdate
                          (SELECT isp.component_name FROM incident_status_pages isp
                           WHERE isp.incident_id = i.id AND isp.org_id = i.org_id
                             AND isp.status_page_id = s.status_page_id), '') AS component_name,
-                COALESCE(NULLIF(sp.public_display_name, ''), sp.name) AS page_name,
+                {PAGE_PUBLIC_NAME} AS page_name,
                 sp.public_locale,
                 sp.slug::text AS slug,
                 sp.custom_domain::text AS custom_domain,

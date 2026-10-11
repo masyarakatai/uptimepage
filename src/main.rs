@@ -393,11 +393,10 @@ async fn main() -> Result<()> {
     );
     drop(result_tx);
 
-    let aggregator_cfg = AggregatorConfig::default();
     let aggregator = Arc::new(OrgAggregator::new(
         pg_pool.clone(),
         ch_client_for_public,
-        aggregator_cfg.clone(),
+        AggregatorConfig::default(),
         cipher.clone(),
     ));
     let public_cache = PageCache::new(&cfg.public_status);
@@ -405,7 +404,6 @@ async fn main() -> Result<()> {
         aggregator,
         public_cache,
         pg_pool.clone(),
-        aggregator_cfg.site_name.clone(),
     ));
 
     let pg_pool_for_stores = pg_pool.clone();

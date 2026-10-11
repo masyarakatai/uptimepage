@@ -21,7 +21,9 @@ use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::http_outbound::post_bytes_with_headers;
 use crate::i18n::Tr;
 use crate::request::host::resolve_status_page;
-use crate::storage::status_pages::{self, PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN};
+use crate::storage::status_pages::{
+    self, PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
+};
 use crate::storage::subscribers::{self, CONFIRM_TTL_HOURS};
 use crate::templates::filters;
 use crate::web::error::WebResult;
@@ -436,7 +438,7 @@ struct PageMeta {
 
 async fn page_meta(pool: &sqlx::PgPool, page_id: Uuid) -> Option<PageMeta> {
     let sql = format!(
-        "SELECT COALESCE(NULLIF(sp.public_display_name, ''), sp.name), sp.slug::text,
+        "SELECT {PAGE_PUBLIC_NAME}, sp.slug::text,
                 sp.custom_domain::text, {PAGE_CUSTOM_DOMAIN_PUBLISHED}
          FROM status_pages sp {PAGE_PLAN_JOIN} WHERE sp.id = $1"
     );

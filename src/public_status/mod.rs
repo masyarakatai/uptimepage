@@ -29,8 +29,10 @@ pub use source::{IncidentListQuery, NoopPublicSource, OrgPublicSource, PublicSou
 
 /// `"{name} Status"`, unless the name already ends in the word "status".
 pub fn status_title(name: &str) -> String {
-    let name = name.trim_end();
-    if names_status(name) {
+    let name = name.trim();
+    if name.is_empty() {
+        "Status".to_owned()
+    } else if names_status(name) {
         name.to_owned()
     } else {
         format!("{name} Status")
@@ -51,6 +53,8 @@ mod tests {
     #[test]
     fn status_title_does_not_repeat_a_trailing_status() {
         assert_eq!(status_title("Acme"), "Acme Status");
+        assert_eq!(status_title(""), "Status");
+        assert_eq!(status_title("  "), "Status");
         assert_eq!(status_title("Acme status"), "Acme status");
         assert_eq!(status_title("ACME STATUS "), "ACME STATUS");
         assert_eq!(status_title("Acme · Status"), "Acme · Status");

@@ -436,6 +436,7 @@ pub struct PublicMaintenanceList {
 pub struct PublicStatusPage {
     pub overall: OverallStatus,
     pub generated_at: DateTime<Utc>,
+    /// The page's public name: its display name, else the org's name.
     pub site_name: String,
     pub groups: Vec<PublicComponentGroup>,
     pub active_incidents: Vec<PublicIncident>,

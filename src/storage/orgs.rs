@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::domain::quota::Plan;
 use crate::domain::{
     Membership, OrgId, Organization, PageRef, PublicOrgBranding, PublicStyle, Role, StatusPageId,
-    UserId,
+    UserId, page_display_name,
 };
 use crate::error::{AppError, Result};
 use crate::storage::accounts;
@@ -1481,14 +1481,8 @@ pub struct OrgBranding {
 }
 
 impl OrgBranding {
-    /// Header name: the page's display override if non-blank, else the org name.
     pub fn resolved_display_name(&self) -> &str {
-        self.branding
-            .public_display_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(self.name.as_str())
+        page_display_name(self.branding.public_display_name.as_deref(), &self.name)
     }
 }
 

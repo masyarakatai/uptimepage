@@ -214,7 +214,7 @@ pub fn build_test_app_with_seedable_incidents(
         uptimepage::worker::host_throttle::HostThrottle::permissive(),
         test_domain_expiry_runtime(),
     ));
-    let public_source = Arc::new(NoopPublicSource::default());
+    let public_source = Arc::new(NoopPublicSource);
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let narration = Arc::new(InMemoryIncidentNarrationStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> = narration.clone();
@@ -458,7 +458,7 @@ pub async fn build_test_app_with_pg_state(
         uptimepage::worker::host_throttle::HostThrottle::permissive(),
         test_domain_expiry_runtime(),
     ));
-    let public_source = Arc::new(NoopPublicSource::default());
+    let public_source = Arc::new(NoopPublicSource);
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(InMemoryIncidentNarrationStore::new());
@@ -632,7 +632,7 @@ fn assemble_pg_router_tweaked(
         uptimepage::worker::host_throttle::HostThrottle::permissive(),
         test_domain_expiry_runtime(),
     ));
-    let public_source = Arc::new(NoopPublicSource::default());
+    let public_source = Arc::new(NoopPublicSource);
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(PgIncidentNarrationStore::new(pool.clone()));
     // Postgres for the same reason as the incident store: the in-memory
@@ -783,7 +783,7 @@ pub fn build_test_app_state_with_email(
         uptimepage::worker::host_throttle::HostThrottle::permissive(),
         test_domain_expiry_runtime(),
     ));
-    let public_source = Arc::new(NoopPublicSource::default());
+    let public_source = Arc::new(NoopPublicSource);
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(InMemoryIncidentNarrationStore::new());

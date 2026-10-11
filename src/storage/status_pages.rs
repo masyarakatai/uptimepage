@@ -17,6 +17,11 @@ pub(crate) const PAGE_PLAN_JOIN: &str = "JOIN organizations sp_org ON sp_org.id 
      JOIN accounts sp_acct ON sp_acct.id = sp_org.account_id \
      JOIN plans sp_plan ON sp_plan.id = sp_acct.plan_id";
 
+/// A page's public name as [`crate::domain::page_display_name`] resolves it,
+/// for a query that aliases the page `sp` and joins [`PAGE_PLAN_JOIN`].
+pub(crate) const PAGE_PUBLIC_NAME: &str =
+    "COALESCE(NULLIF(btrim(sp.public_display_name), ''), sp_org.name)";
+
 /// Verified plus a plan that sells one. Permits routing and certificate
 /// issuance; it does not move a published URL.
 pub(crate) const PAGE_CUSTOM_DOMAIN_SERVED: &str =

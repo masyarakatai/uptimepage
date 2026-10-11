@@ -90,7 +90,7 @@ pub use on_call::{
 };
 pub use org::{
     AccountId, BrandingError, OrgId, Organization, PublicOrgBranding, PublicStyle, SlugError,
-    validate_slug,
+    page_display_name, validate_slug,
 };
 pub use page_asset::{AssetSlot, SlotPolicy};
 pub use preferences::{DisplayPrefs, TimeFormat};

@@ -123,6 +123,13 @@ mod tests {
     }
 
     #[test]
+    fn a_control_character_in_a_label_stays_out_of_the_svg() {
+        let svg = render_badge("Ac\u{1}me", "operational", COLOR_GREEN);
+        assert!(!svg.contains('\u{1}'));
+        assert!(svg.contains(">Acme<"), "{svg}");
+    }
+
+    #[test]
     fn a_german_page_badge_reads_german() {
         let de = Tr::new(crate::domain::Locale::De);
         assert_eq!(

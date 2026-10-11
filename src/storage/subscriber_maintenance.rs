@@ -11,7 +11,9 @@ use uuid::Uuid;
 use crate::domain::Locale;
 use crate::error::Result;
 use crate::storage::admin::not_held_sql;
-use crate::storage::status_pages::{PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN};
+use crate::storage::status_pages::{
+    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
+};
 use crate::storage::subscribers::{
     CLAIM_ORPHAN_MINUTES, FANOUT_LOOKBACK_HOURS, FANOUT_MAX_ATTEMPTS,
 };
@@ -57,7 +59,7 @@ pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingMainte
              SELECT s.id AS subscriber_id, mw.id AS maintenance_id, s.org_id, s.channel, s.target,
                     s.verified_at,
                     mw.title, mw.description, mw.starts_at, mw.ends_at, mw.created_at,
-                    COALESCE(NULLIF(sp.public_display_name, ''), sp.name) AS page_name,
+                    {PAGE_PUBLIC_NAME} AS page_name,
                     sp.public_locale,
                     sp.slug::text AS slug,
                     sp.custom_domain::text AS custom_domain,

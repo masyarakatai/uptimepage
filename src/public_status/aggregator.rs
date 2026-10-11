@@ -26,8 +26,8 @@ use crate::domain::{
     ComponentHistoryResponse, DayState, Downtime, ImpactSpan, IncidentSeverity,
     IncidentStatusPhase, Locale, OrgId, PublicComponent, PublicComponentGroup,
     PublicComponentStatus, PublicIncident, PublicIncidentUpdate, PublicMaintenance,
-    PublicStatusPage, Recovered, StatusPageId, outage_parts, stored_incident_impact,
-    uptime_pct_from_downtime,
+    PublicStatusPage, Recovered, StatusPageId, outage_parts, page_display_name,
+    stored_incident_impact, uptime_pct_from_downtime,
 };
 use crate::error::Result;
 use crate::i18n::Tr;
@@ -45,7 +45,6 @@ use super::overall_status::{
 /// are wired through.
 #[derive(Debug, Clone)]
 pub struct AggregatorConfig {
-    pub site_name: String,
     pub history_days: u32,
     pub recent_incidents_days: u32,
     pub max_recent_incidents: u32,
@@ -55,7 +54,6 @@ pub struct AggregatorConfig {
 impl Default for AggregatorConfig {
     fn default() -> Self {
         Self {
-            site_name: "uptimepage".into(),
             history_days: 90,
             recent_incidents_days: 30,
             max_recent_incidents: 50,
@@ -139,7 +137,7 @@ impl OrgAggregator {
         PageSettings,
     )> {
         let now = Utc::now();
-        let (components, settings) = tokio::try_join!(
+        let (components, (settings, site_name)) = tokio::try_join!(
             self.load_page_components(page, org),
             self.load_settings(page, org),
         )?;
@@ -245,7 +243,7 @@ impl OrgAggregator {
             PublicStatusPage {
                 overall,
                 generated_at: now,
-                site_name: self.cfg.site_name.clone(),
+                site_name,
                 groups,
                 active_incidents,
                 recent_incidents,
@@ -298,11 +296,17 @@ impl OrgAggregator {
 
     // ── private helpers ─────────────────────────────────────────────────────
 
-    /// A missing row reads as hidden, so a fault publishes nothing.
-    async fn load_settings(&self, page: StatusPageId, org: OrgId) -> Result<PageSettings> {
-        let row: Option<(bool, String)> = sqlx::query_as(
-            "SELECT public_hide_from_search, public_locale \
-             FROM status_pages WHERE id = $1 AND org_id = $2",
+    /// The page's settings and public name. A missing row reads as hidden, so
+    /// a fault publishes nothing.
+    async fn load_settings(
+        &self,
+        page: StatusPageId,
+        org: OrgId,
+    ) -> Result<(PageSettings, String)> {
+        let row: Option<(bool, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT sp.public_hide_from_search, sp.public_locale, sp.public_display_name, o.name \
+             FROM status_pages sp JOIN organizations o ON o.id = sp.org_id \
+             WHERE sp.id = $1 AND sp.org_id = $2 AND o.deleted_at IS NULL",
         )
         .bind(page.0)
         .bind(org.0)
@@ -310,14 +314,20 @@ impl OrgAggregator {
         .await
         .context("load page settings")?;
         Ok(match row {
-            Some((hide_from_search, locale)) => PageSettings {
-                hide_from_search,
-                locale: Locale::from_db(&locale),
-            },
-            None => PageSettings {
-                hide_from_search: true,
-                locale: Locale::default(),
-            },
+            Some((hide_from_search, locale, display_name, org_name)) => (
+                PageSettings {
+                    hide_from_search,
+                    locale: Locale::from_db(&locale),
+                },
+                page_display_name(display_name.as_deref(), &org_name).to_owned(),
+            ),
+            None => (
+                PageSettings {
+                    hide_from_search: true,
+                    locale: Locale::default(),
+                },
+                String::new(),
+            ),
         })
     }
 

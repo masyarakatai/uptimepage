@@ -402,8 +402,15 @@ pub async fn page_editor(
         None => Vec::new(),
     };
 
+    let page_name = match state.db.as_ref() {
+        Some(pool) => crate::storage::load_page_branding(pool, page_id)
+            .await?
+            .map(|ob| ob.resolved_display_name().to_owned())
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    let badge_alt = badge_alt_label(&page_name);
     let public_display_name = b.public_display_name.clone().unwrap_or_default();
-    let badge_alt = badge_alt_label(&public_display_name, &page.name);
 
     let mut groups: Vec<String> = rows
         .iter()
@@ -450,15 +457,10 @@ pub async fn page_editor(
     .into_response())
 }
 
-/// Overall-badge alt text: prefer the public display name, else the page name.
-/// Strips `"` so the value can't break out of the copied `alt="…"` attribute.
-fn badge_alt_label(display_name: &str, name: &str) -> String {
-    let label = if display_name.is_empty() {
-        name
-    } else {
-        display_name
-    };
-    crate::public_status::status_title(&label.replace('"', ""))
+/// Overall-badge alt text. Strips `"` so the value can't break out of the
+/// copied `alt="…"` attribute.
+fn badge_alt_label(page_name: &str) -> String {
+    crate::public_status::status_title(&page_name.replace('"', ""))
 }
 
 #[cfg(test)]
@@ -566,11 +568,10 @@ mod tests {
     }
 
     #[test]
-    fn badge_alt_prefers_display_name_and_strips_quotes() {
-        assert_eq!(badge_alt_label("", "acme"), "acme Status");
-        assert_eq!(badge_alt_label("Acme Public", "acme"), "Acme Public Status");
-        assert_eq!(badge_alt_label("Acme \"Pro\"", "acme"), "Acme Pro Status");
-        assert_eq!(badge_alt_label("Acme status", "acme"), "Acme status");
+    fn badge_alt_strips_quotes() {
+        assert_eq!(badge_alt_label("Acme Public"), "Acme Public Status");
+        assert_eq!(badge_alt_label("Acme \"Pro\""), "Acme Pro Status");
+        assert_eq!(badge_alt_label("Acme status"), "Acme status");
     }
 
     /// Slug and branding ride one PATCH, so the editor must offer one save

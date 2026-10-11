@@ -1230,7 +1230,7 @@ async fn published_postmortem_surfaces_on_public_incident() {
         let page_id = seed_page_with_target(&pool, org_id, target_id).await;
         let cfg = uptimepage::config::PublicStatusConfig::default();
         let agg = Arc::new(OrgAggregator::new(pool.clone(), ch, AggregatorConfig::default(), None));
-        let source = OrgPublicSource::new(agg, PageCache::new(&cfg), pool.clone(), "uptimepage");
+        let source = OrgPublicSource::new(agg, PageCache::new(&cfg), pool.clone());
         let page_ref = PageRef { page: page_id, org: org_id };
 
         // A draft postmortem (published_at NULL) must not surface.
@@ -1360,7 +1360,7 @@ async fn a_page_incident_shows_only_on_the_pages_it_names() {
         assert!(page.active_incidents.iter().all(|i| i.id != incident.id));
         assert_eq!(page.overall.state, OverallState::Operational);
 
-        let source = OrgPublicSource::new(agg, PageCache::new(&cfg), pool.clone(), "uptimepage");
+        let source = OrgPublicSource::new(agg, PageCache::new(&cfg), pool.clone());
         let on = PageRef {
             page: posted,
             org: org_id,
@@ -1388,6 +1388,79 @@ async fn a_page_incident_shows_only_on_the_pages_it_names() {
             .bind(incident.id)
             .execute(&pool)
             .await;
+    })
+    .await;
+}
+
+/// The feed, badge and JSON carry the page's own name: its display name when
+/// set, else the org's, never the operator's.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL + CLICKHOUSE_URL"]
+async fn a_page_is_named_by_its_display_name_else_its_org() {
+    use uptimepage::domain::PageRef;
+    use uptimepage::public_status::source::FeedLinks;
+    use uptimepage::public_status::{OrgPublicSource, PageCache, PublicSource};
+
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    let Some(ch) = common::ch_client_from_env().await else {
+        return;
+    };
+    purge_prefix(&pool, "agg-name-").await;
+
+    let org_id = seed_org(&pool, "agg-name").await;
+    let target = PostgresTargetStore::from_pool(pool.clone(), None)
+        .create(
+            org_id,
+            public_target(&format!("agg-name-{}", Uuid::now_v7())),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .expect("create public target");
+
+    with_cleanup(&pool.clone(), target.id, async move {
+        let page_id = seed_page_with_target(&pool, org_id, target.id).await;
+        let agg = Arc::new(OrgAggregator::new(
+            pool.clone(),
+            ch,
+            AggregatorConfig::default(),
+            None,
+        ));
+        let page_ref = PageRef {
+            page: page_id,
+            org: org_id,
+        };
+        let links = FeedLinks {
+            page: "https://example.test",
+            origin: "https://example.test",
+        };
+
+        for (display_name, expected) in [
+            (None, "Agg Test"),
+            (Some("  "), "Agg Test"),
+            (Some(" Meddle "), "Meddle"),
+        ] {
+            sqlx::query("UPDATE status_pages SET public_display_name = $2 WHERE id = $1")
+                .bind(page_id.0)
+                .bind(display_name)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let (page, ..) = agg.build(page_id, org_id).await.expect("aggregator build");
+            assert_eq!(page.site_name, expected, "display name {display_name:?}");
+
+            let cfg = uptimepage::config::PublicStatusConfig::default();
+            let source = OrgPublicSource::new(agg.clone(), PageCache::new(&cfg), pool.clone());
+            let rss = source.incidents_rss(page_ref, links).await.expect("rss");
+            assert!(
+                rss.contains(&format!("<title>{expected} Status Incidents</title>")),
+                "feed title for {display_name:?}: {rss}"
+            );
+        }
     })
     .await;
 }

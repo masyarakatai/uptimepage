@@ -305,6 +305,20 @@ pub async fn update_org(
             ));
         }
     };
+    if new_name.is_some() {
+        match state.status_page_store.list(org_id).await {
+            Ok(pages) => {
+                for page in pages {
+                    state.public_source.invalidate(page.id).await;
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                org = %org_id.0,
+                "org rename: page lookup failed; public pages keep the old name until their cache expires"
+            ),
+        }
+    }
 
     Ok(Json(org.into()))
 }
