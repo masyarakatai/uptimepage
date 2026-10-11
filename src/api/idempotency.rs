@@ -12,7 +12,7 @@ use moka::sync::Cache;
 
 /// `POST /targets/bulk`, `POST /targets/bulk-action` and
 /// `POST /targets/{id}/duplicate` accept an optional `Idempotency-Key` header.
-/// The server replays the prior response for 24h, keyed by
+/// The server replays the prior successful response for 24h, keyed by
 /// `(caller credential, header value, method + path, body hash)`.
 pub const TTL: Duration = Duration::from_secs(24 * 3600);
 pub const HEADER_NAME: HeaderName = HeaderName::from_static("idempotency-key");
@@ -61,8 +61,8 @@ impl Default for IdempotencyCache {
 }
 
 /// axum middleware: if `Idempotency-Key` is set, replay the cached response
-/// for the `(caller, key, body-hash)` tuple — or capture the downstream
-/// response and cache it. Pass-through when the header is absent.
+/// for the `(caller, key, body-hash)` tuple — or capture a successful
+/// downstream response and cache it. Pass-through when the header is absent.
 pub async fn middleware(
     State(cache): State<Arc<IdempotencyCache>>,
     req: Request,
@@ -113,14 +113,22 @@ pub async fn middleware(
 
     let req = Request::from_parts(parts, Body::from(body_bytes));
     let resp = next.run(req).await;
+    // An error changed nothing, so there is nothing to protect from a retry,
+    // and replaying a 429 or a 5xx would refuse the retry the key exists for.
+    if !resp.status().is_success() {
+        return resp;
+    }
 
-    // Capture the response body so it can be replayed. Failures to read the
-    // body return a 500 — the handler succeeded but the response is corrupt.
+    // The handler built this body in memory, so it is read whole: a size cap
+    // here would turn a committed success into an error the client retries.
     let (resp_parts, resp_body) = resp.into_parts();
-    let resp_bytes = match axum::body::to_bytes(resp_body, MAX_BODY).await {
+    let resp_bytes = match axum::body::to_bytes(resp_body, usize::MAX).await {
         Ok(b) => b,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "response body too large")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response body unreadable",
+            )
                 .into_response_local();
         }
     };
@@ -161,5 +169,58 @@ impl IntoResponseLocal for (StatusCode, &'static str) {
         let mut resp = Response::new(Body::from(self.1));
         *resp.status_mut() = self.0;
         resp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
+
+    /// A route that answers its nth call with `statuses[n]`, behind the cache.
+    fn app(statuses: &'static [StatusCode]) -> (Router, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let router = Router::new()
+            .route(
+                "/bulk",
+                post(move || {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    async move { statuses.get(n).copied().unwrap_or(StatusCode::IM_A_TEAPOT) }
+                }),
+            )
+            .layer(from_fn_with_state(
+                Arc::new(IdempotencyCache::new()),
+                middleware,
+            ));
+        (router, calls)
+    }
+
+    async fn send(app: &Router) -> StatusCode {
+        let req = Request::post("/bulk")
+            .header(&HEADER_NAME, "retry-1")
+            .body(Body::from("{}"))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn a_retry_after_an_error_runs_again_and_only_a_success_replays() {
+        let (app, calls) = app(&[
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            StatusCode::CREATED,
+        ]);
+        assert_eq!(send(&app).await, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(send(&app).await, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(send(&app).await, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(send(&app).await, StatusCode::CREATED);
+        assert_eq!(send(&app).await, StatusCode::CREATED);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 }

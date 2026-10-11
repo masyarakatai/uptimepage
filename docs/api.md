@@ -891,7 +891,7 @@ Returns every tag currently in use across the caller's targets (enabled or disab
 
 ## Idempotency
 
-`POST /api/v1/targets/bulk`, `POST /api/v1/targets/bulk-action` and `POST /api/v1/targets/{id}/duplicate` accept an optional `Idempotency-Key` header. The server stores the response for 24 hours keyed by `(header value, method and path, body hash)`. A retry with the same key and body to the same path returns the original response without re-executing. The same key with a different body, or sent to a different path, executes normally. The cache is in-process; entries are lost on restart.
+`POST /api/v1/targets/bulk`, `POST /api/v1/targets/bulk-action` and `POST /api/v1/targets/{id}/duplicate` accept an optional `Idempotency-Key` header. The server stores a successful (`2xx`) response for 24 hours keyed by `(Authorization and Cookie headers, header value, method and path, body hash)`. A retry with the same credentials, key and body to the same path, sent after the first request has answered, returns the original response without re-executing. An error is not stored, so a retry after a `429`, a `5xx` or a refused request runs again. The same key with a different body, or sent to a different path, executes normally. The cache is in-process; entries are lost on restart.
 
 ```http
 POST /api/v1/targets/bulk-action HTTP/1.1
