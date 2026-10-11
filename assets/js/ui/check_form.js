@@ -176,6 +176,12 @@ import { parseDuration } from "./_duration.js";
             form.dataset.recoveryTouched = "1";
             return;
         }
+        if (evt.target.name === "dns_match") {
+            showDnsMatch(evt.target.value);
+            form.querySelector(`[data-dns-match-field='${evt.target.value}']`)
+                ?.querySelector("input, textarea")?.focus();
+            return;
+        }
         if (evt.target.name !== "check_type") return;
         const want = evt.target.value;
         document.querySelectorAll("[data-variant]").forEach(el => {
@@ -188,6 +194,18 @@ import { parseDuration } from "./_duration.js";
         // So the next keystroke after a rail switch is already the useful one.
         focusFirstField(want);
     });
+
+    // Substring and exact set exclude each other: only the picked one shows
+    // and is sent.
+    function showDnsMatch(mode) {
+        form.querySelectorAll("[data-dns-match-field]").forEach((el) => {
+            el.classList.toggle("hidden", el.dataset.dnsMatchField !== mode);
+        });
+    }
+
+    // A reload can restore a different radio than the server rendered.
+    const dnsMatch = form.querySelector("[name='dns_match']:checked");
+    if (dnsMatch) showDnsMatch(dnsMatch.value);
 
     const initialKind = currentCheckType();
     applyKindIntervalDefaults(initialKind);
@@ -650,13 +668,25 @@ import { parseDuration } from "./_duration.js";
         if (checkType === "dns") {
             const timeout = numField("dns_timeout_ms", 100, 60000, "Timeout", "check.timeout");
             if (timeout.error) return timeout;
+            const exact = data.get("dns_match") === "exact";
+            const records = (data.get("dns_expected_records") || "")
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+            if (exact && records.length === 0) {
+                return {
+                    error: "List the records the answer must hold, one per line.",
+                    field: "check.expected_records",
+                };
+            }
             return {
                 check: {
                     type: "dns",
                     domain: data.get("dns_domain"),
                     record_type: data.get("dns_record_type"),
                     resolver: blankToNull(data.get("dns_resolver")),
-                    expected_contains: blankToNull(data.get("dns_expected_contains")),
+                    expected_contains: exact ? null : blankToNull(data.get("dns_expected_contains")),
+                    expected_records: exact ? records : null,
                     timeout: timeout.value,
                 },
             };
@@ -1054,6 +1084,7 @@ import { parseDuration } from "./_duration.js";
         "check.record_type": "dns_record_type",
         "check.resolver": "dns_resolver",
         "check.expected_contains": "dns_expected_contains",
+        "check.expected_records": "dns_expected_records",
         "check.server_name": "tls_server_name",
         "interval": "interval_s",
         "renotify_interval_secs": "renotify_secs",

@@ -1,5 +1,5 @@
 use super::{default_region_set, flow_capable_set};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use url::Host;
@@ -582,6 +582,62 @@ pub(crate) fn validate_cert_days(
     Ok(())
 }
 
+// A value the record type can never answer with, or a second spelling of one
+// already listed, would hold the check down or drift from what Terraform reads
+// back, so both are refused up front.
+fn validate_expected_records(d: &crate::domain::DnsCheck) -> Result<()> {
+    use crate::domain::DnsCheck;
+    use crate::domain::dns_record::{parse_expected, record_key};
+    let refuse = |message: String| {
+        AppError::bad_request_field(codes::INVALID_DNS_PARAMS, message, "check.expected_records")
+    };
+    let Some(records) = d.exact_records() else {
+        return Ok(());
+    };
+    if d.contains_needle().is_some() {
+        return Err(refuse(
+            "expected_records and expected_contains cannot both be set".into(),
+        ));
+    }
+    if records.len() > DnsCheck::MAX_EXPECTED_RECORDS {
+        return Err(refuse(format!(
+            "at most {} expected records",
+            DnsCheck::MAX_EXPECTED_RECORDS
+        )));
+    }
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for (i, value) in records.iter().enumerate() {
+        let n = i + 1;
+        if value.trim().is_empty() {
+            return Err(refuse(format!("expected record {n} is empty")));
+        }
+        if value.chars().count() > DnsCheck::MAX_EXPECTED_RECORD_LEN {
+            return Err(refuse(format!(
+                "expected record {n} is longer than {} characters",
+                DnsCheck::MAX_EXPECTED_RECORD_LEN
+            )));
+        }
+        if value.trim().chars().any(char::is_control) {
+            return Err(refuse(format!(
+                "expected record {n} holds a line break or other control character"
+            )));
+        }
+        let rdata = parse_expected(d.record_type, value).ok_or_else(|| {
+            refuse(format!(
+                "expected record {n} is not a {} value; write it as the answer shows it, e.g. {}",
+                d.record_type.as_str(),
+                d.record_type.example_record()
+            ))
+        })?;
+        if let Some(first) = seen.insert(record_key(&rdata), n) {
+            return Err(refuse(format!(
+                "expected record {n} repeats record {first}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard) -> Result<()> {
     use crate::domain::CheckSpec;
     match check {
@@ -824,6 +880,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                 ));
             }
             validate_timeout(d.timeout)?;
+            validate_expected_records(d)?;
             if let Some(resolver) = &d.resolver
                 && !resolver.is_empty()
             {

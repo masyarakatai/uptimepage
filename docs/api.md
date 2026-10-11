@@ -245,7 +245,17 @@ Sends one ICMP echo request per resolved (SSRF-filtered) address until a reply a
   "domain": "api.example.com",
   "record_type": "A",
   "resolver": "1.1.1.1",           // optional; omit for the process resolver
-  "expected_contains": "192.0.2.1", // optional strict match
+  "expected_contains": "192.0.2.1", // optional substring match
+  "timeout": 3000
+}
+```
+
+```jsonc
+{
+  "type": "dns",
+  "domain": "example.com",
+  "record_type": "MX",
+  "expected_records": ["10 mail.example.com.", "20 alt.example.com."], // optional exact set
   "timeout": 3000
 }
 ```
@@ -268,8 +278,28 @@ surfaces rather than passing because *something* resolved. Without it, any
 non-empty answer is `up`. A resolver failure (SERVFAIL, network error) is also
 `down`; only the outer check timeout records an `error`.
 
-The result carries `domain`, `record_type`, the `answers` list,
-`expected_contains`, and `matched` so a failure shows what actually resolved.
+`expected_records` is the strict form: list every record the name should
+hold, and the check is `down` when the answer differs in any way, a record
+added, removed or changed. Write each value as the result's `answers` shows
+it: `192.0.2.1` for A, `10 mail.example.com.` for MX, `0 issue
+"letsencrypt.org"` for CAA, the joined text for TXT. Zone-file spellings work
+too: quoted TXT strings (`"v=DKIM1; " "p=..."`), `xn--` labels and leading
+zeros. Order and TTL are ignored. Names compare case-insensitively with the
+trailing dot optional, addresses by value (`2001:0db8::1` is `2001:db8::1`),
+and TXT exactly, case included. An SOA value carries the zone's serial, so an
+SOA set fails on every zone edit. Up to 50 values of up to 2048 characters
+each; an empty list is the same as none. Setting both `expected_records` and
+`expected_contains`, a value not in the type's form (an MX without its
+preference, an A value that is not an IPv4 address), or one value twice is
+`400 INVALID_DNS_PARAMS`.
+
+The result carries `domain`, `record_type`, the `answers` list (records of
+the queried type), `expected_contains`, and `matched` so a failure shows what
+actually resolved. On an aliased name the CNAME chain that led to the answers
+is listed apart as `aliases`; `expected_contains` matches it too, an exact set
+does not.
+With `expected_records` set it also carries `missing` (expected values no
+answer carries) and `unexpected` (answers nothing expected).
 
 ### Heartbeat (inbound dead-man's-switch)
 

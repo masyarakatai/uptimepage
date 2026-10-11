@@ -733,20 +733,12 @@ fn edit_form_maps_heartbeat_target_fields() {
     assert!(html.contains(r#"name="check_type" value="heartbeat""#));
 }
 
-#[test]
-fn edit_form_maps_dns_target_fields() {
-    use crate::domain::{DnsCheck, DnsRecordType};
+fn dns_target(check: crate::domain::DnsCheck) -> Target {
     use std::time::Duration;
-    let t = Target {
+    Target {
         id: uuid::Uuid::nil(),
         name: "dns".into(),
-        check: CheckSpec::Dns(DnsCheck {
-            domain: "api.example.com".into(),
-            record_type: DnsRecordType::Cname,
-            resolver: Some("1.1.1.1".into()),
-            expected_contains: Some("edge.cdn".into()),
-            timeout: Duration::from_millis(2_500),
-        }),
+        check: CheckSpec::Dns(check),
         interval: Duration::from_secs(60),
         enabled: true,
         tags: vec![],
@@ -762,7 +754,20 @@ fn edit_form_maps_dns_target_fields() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         plan_hold_at: None,
-    };
+    }
+}
+
+#[test]
+fn edit_form_maps_dns_target_fields() {
+    use crate::domain::{DnsCheck, DnsRecordType};
+    let t = dns_target(DnsCheck {
+        domain: "api.example.com".into(),
+        record_type: DnsRecordType::Cname,
+        resolver: Some("1.1.1.1".into()),
+        expected_contains: Some("edge.cdn".into()),
+        expected_records: None,
+        timeout: std::time::Duration::from_millis(2_500),
+    });
     let form = form_from_target(t).unwrap();
     assert_eq!(form.check_type, "dns");
     assert_eq!(form.dns.domain, "api.example.com");
@@ -781,6 +786,37 @@ fn edit_form_maps_dns_target_fields() {
     assert!(html.contains(r#"value="api.example.com""#));
     assert!(html.contains(r#"value="edge.cdn""#));
     assert!(html.contains(r#"value="1.1.1.1""#));
+    assert!(html.contains(r#"value="contains" class="sr-only" checked"#));
+}
+
+#[test]
+fn edit_form_opens_an_exact_dns_set_one_record_per_line() {
+    use crate::domain::{DnsCheck, DnsRecordType};
+    let t = dns_target(DnsCheck {
+        domain: "example.com".into(),
+        record_type: DnsRecordType::Mx,
+        resolver: None,
+        expected_contains: None,
+        expected_records: Some(vec![
+            "10 mail.example.com.".into(),
+            "20 alt.example.com.".into(),
+        ]),
+        timeout: std::time::Duration::from_secs(3),
+    });
+    let form = form_from_target(t).unwrap();
+    assert_eq!(
+        form.dns.expected_records,
+        "10 mail.example.com.\n20 alt.example.com."
+    );
+    let html = FormPage {
+        active_tab: "targets",
+        form,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains(r#"value="exact" class="sr-only" checked"#));
+    assert!(html.contains(">10 mail.example.com.\n20 alt.example.com.</textarea>"));
+    assert!(html.contains(r#"data-dns-match-field="contains" class="field-outline hidden""#));
 }
 
 #[test]

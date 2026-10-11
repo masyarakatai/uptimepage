@@ -1129,6 +1129,7 @@ fn the_non_http_kinds_report_what_they_assert() {
     // so a value round-tripped from `get_monitor` still parses.
     assert_eq!(dns.record_type, "CNAME");
     assert_eq!(dns.expected_contains.as_deref(), Some("edge"));
+    assert!(dns.expected_records.is_none());
 
     let CheckConfig::TlsCert(tls) = cfg(
         r#"{"type":"tls_cert","host":"acme.com","port":8443,"warn_days":21,"critical_days":3,"timeout":5000}"#,
@@ -1204,12 +1205,14 @@ fn every_creatable_kind_converts_with_the_defaults_it_documents() {
         record_type: None,
         resolver: None,
         expected_contains: None,
+        expected_records: Some(vec!["192.0.2.1".into()]),
         timeout_ms: None,
     }) else {
         panic!("expected dns");
     };
     assert_eq!(dns.record_type, crate::domain::DnsRecordType::A);
     assert!(dns.resolver.is_none(), "defaults to the agent's own");
+    assert_eq!(dns.expected_records, Some(vec!["192.0.2.1".to_string()]));
 
     let CheckSpec::TlsCert(tls) = spec(NewCheck::TlsCert {
         host: "example.com".into(),
@@ -1256,6 +1259,7 @@ fn an_unknown_method_or_record_type_names_the_choices() {
         record_type: Some("alias".into()),
         resolver: None,
         expected_contains: None,
+        expected_records: None,
         timeout_ms: None,
     })
     .unwrap_err();
@@ -1267,6 +1271,7 @@ fn an_unknown_method_or_record_type_names_the_choices() {
             record_type: Some("CNAME".into()),
             resolver: None,
             expected_contains: None,
+            expected_records: None,
             timeout_ms: None,
         })
         .is_ok()

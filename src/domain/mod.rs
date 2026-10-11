@@ -5,6 +5,7 @@ pub mod check_address;
 pub mod check_error;
 pub mod consent;
 pub mod credential;
+pub mod dns_record;
 pub mod escalation_policy;
 pub mod heartbeat;
 pub mod incident;

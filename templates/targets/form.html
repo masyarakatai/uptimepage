@@ -335,7 +335,8 @@
       <div class="clear-both space-y-5">
       <p class="mb-5 text-xs text-muted">
         Resolves a record and (optionally) asserts a substring appears in
-        the answer. NXDOMAIN or an empty answer set fails the check.
+        the answer, or that the answer is exactly the records you list.
+        NXDOMAIN or an empty answer set fails the check.
       </p>
       <div class="field-join">
         <select name="dns_record_type" data-sm-combobox aria-label="DNS record type" class="field-join__method">
@@ -354,12 +355,29 @@
                placeholder="api.example.com"
                autocomplete="off" spellcheck="false" class="field-join__url font-mono">
       </div>
-      <label class="field-outline">
-        <span class="field-outline__label">Expected to contain (optional)</span>
-        <input name="dns_expected_contains" type="text" value="{{ form.dns.expected_contains }}"
-               placeholder="192.0.2.1"
-               autocomplete="off" spellcheck="false" class="w-full field font-mono">
-      </label>
+      {% let exact = !form.dns.expected_records.is_empty() %}
+      <div class="space-y-3">
+        <div class="sm-rail" role="radiogroup" aria-label="Answer match">
+          <label class="sm-rail__seg">
+            <input type="radio" name="dns_match" value="contains" class="sr-only"{% if !exact %} checked{% endif %}>contains
+          </label>
+          <label class="sm-rail__seg">
+            <input type="radio" name="dns_match" value="exact" class="sr-only"{% if exact %} checked{% endif %}>exact set
+          </label>
+        </div>
+        <label data-dns-match-field="contains" class="field-outline{% if exact %} hidden{% endif %}">
+          <span class="field-outline__label">Expected to contain (optional)</span>
+          <input name="dns_expected_contains" type="text" value="{{ form.dns.expected_contains }}"
+                 placeholder="192.0.2.1"
+                 autocomplete="off" spellcheck="false" class="w-full field font-mono">
+        </label>
+        <label data-dns-match-field="exact" class="field-outline{% if !exact %} hidden{% endif %}">
+          <span class="field-outline__label">Expected records</span>
+          <textarea name="dns_expected_records" rows="4" placeholder="10 mail.example.com.&#10;20 alt.example.com."
+                    autocomplete="off" spellcheck="false" class="w-full field font-mono">{{ form.dns.expected_records }}</textarea>
+          <span class="mt-1 block text-xs text-muted">One record per line, written as the check's answers show it. A record added, removed or changed fails the check.</span>
+        </label>
+      </div>
       <div class="flex flex-wrap gap-3">
         <label class="field-outline flex-1 min-w-48">
           <span class="field-outline__label">Resolver (optional)</span>

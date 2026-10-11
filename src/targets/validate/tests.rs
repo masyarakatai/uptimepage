@@ -600,6 +600,7 @@ fn dns_spec(domain: &str, record_type: crate::domain::DnsRecordType) -> CheckSpe
         record_type,
         resolver: None,
         expected_contains: None,
+        expected_records: None,
         timeout: std::time::Duration::from_secs(3),
     })
 }
@@ -682,6 +683,83 @@ fn an_address_is_a_dns_domain_only_for_ptr() {
             assert_eq!(code, codes::INVALID_DNS_PARAMS);
             assert_eq!(field.as_deref(), Some("check.domain"));
         }
+    }
+}
+
+#[test]
+fn an_exact_record_set_is_refused_when_it_could_never_match() {
+    use crate::domain::{DnsCheck, DnsRecordType};
+    use crate::security::ssrf::SsrfGuard;
+
+    let vet = |record_type, records: &[&str], contains: Option<&str>| {
+        let mut spec = dns_spec("example.com", record_type);
+        if let CheckSpec::Dns(d) = &mut spec {
+            d.expected_records = Some(records.iter().map(|r| r.to_string()).collect());
+            d.expected_contains = contains.map(str::to_string);
+        }
+        validate_check(&spec, &SsrfGuard::strict())
+    };
+
+    for (record_type, records, contains) in [
+        (DnsRecordType::A, &["192.0.2.1", "192.0.2.2"][..], None),
+        (DnsRecordType::Aaaa, &["2001:db8::1"][..], Some("")),
+        (DnsRecordType::Mx, &["10 mail.example.com."][..], None),
+        (
+            DnsRecordType::Srv,
+            &["10 5 5060 sip.example.com."][..],
+            None,
+        ),
+        (
+            DnsRecordType::Caa,
+            &["0 issue \"letsencrypt.org\""][..],
+            None,
+        ),
+        (
+            DnsRecordType::Soa,
+            &["ns1.example.com. hostmaster.example.com. 1 7200 3600 1209600 3600"][..],
+            None,
+        ),
+        (DnsRecordType::Ns, &["NS1.Example.NET"][..], None),
+        (DnsRecordType::Cname, &["app_1.cdn.example.net."][..], None),
+        (DnsRecordType::A, &[][..], Some("192.0.2")),
+    ] {
+        assert!(
+            vet(record_type, records, contains).is_ok(),
+            "{records:?} refused"
+        );
+    }
+
+    let too_many: Vec<String> = (0..=DnsCheck::MAX_EXPECTED_RECORDS)
+        .map(|i| format!("192.0.2.{i}"))
+        .collect();
+    let too_many: Vec<&str> = too_many.iter().map(String::as_str).collect();
+    let too_long = "a".repeat(DnsCheck::MAX_EXPECTED_RECORD_LEN + 1);
+    for (record_type, records, contains) in [
+        (DnsRecordType::A, &["192.0.2.1"][..], Some("192.0.2")),
+        (DnsRecordType::A, &too_many[..], None),
+        (DnsRecordType::Txt, &[too_long.as_str()][..], None),
+        (DnsRecordType::Txt, &["v=spf1 -all", "  "][..], None),
+        (DnsRecordType::A, &["2001:db8::1"][..], None),
+        (DnsRecordType::Aaaa, &["192.0.2.1"][..], None),
+        (DnsRecordType::A, &["mail.example.com"][..], None),
+        (DnsRecordType::Mx, &["mail.example.com."][..], None),
+        (DnsRecordType::Srv, &["5060 sip.example.com."][..], None),
+        (
+            DnsRecordType::Mx,
+            &["10 mail.example.com.", "010 Mail.example.com"][..],
+            None,
+        ),
+        (DnsRecordType::Caa, &["issue letsencrypt.org"][..], None),
+        (DnsRecordType::Cname, &["edge.example.net. extra"][..], None),
+        (DnsRecordType::Txt, &["v=spf1\n-all"][..], None),
+    ] {
+        let err = vet(record_type, records, contains)
+            .expect_err("an exact set that cannot match must reject");
+        let AppError::BadRequest { code, field, .. } = err else {
+            panic!("expected a bad request, got {err:?}");
+        };
+        assert_eq!(code, codes::INVALID_DNS_PARAMS);
+        assert_eq!(field.as_deref(), Some("check.expected_records"));
     }
 }
 

@@ -217,6 +217,10 @@ pub(super) fn check_config(check: &CheckSpec) -> CheckConfig {
             record_type: d.record_type.as_str().to_string(),
             resolver: d.resolver.as_deref().map(sanitize_data),
             expected_contains: d.expected_contains.as_deref().map(sanitize_data),
+            expected_records: d
+                .expected_records
+                .as_ref()
+                .map(|records| records.iter().map(|r| sanitize_data(r)).collect()),
             timeout_ms: ms(&d.timeout),
         }),
         CheckSpec::TlsCert(c) => CheckConfig::TlsCert(TlsCertCheckConfig {

@@ -499,6 +499,16 @@ pub struct DnsCheck {
     #[serde(default)]
     #[schema(nullable = true, example = "192.0.2.1")]
     pub expected_contains: Option<String>,
+    /// Optional exact record set: the answer must hold every listed value and
+    /// nothing else, so a record added, removed or changed fails the check.
+    /// Values are written as the result's `answers` shows them, e.g.
+    /// `10 mail.example.com.` for MX. Names compare case-insensitively with
+    /// the trailing dot optional, addresses by value, TXT exactly; order and
+    /// TTL are ignored. An empty list is the same as none. Cannot be combined
+    /// with `expected_contains`.
+    #[serde(default)]
+    #[schema(nullable = true, max_items = 50, example = json!(["192.0.2.1", "192.0.2.2"]))]
+    pub expected_records: Option<Vec<String>>,
     /// Query timeout in milliseconds.
     #[serde(with = "duration_ms")]
     #[schema(value_type = u64, minimum = 100, maximum = 60000, example = 3000)]
@@ -506,6 +516,20 @@ pub struct DnsCheck {
 }
 
 impl DnsCheck {
+    pub const MAX_EXPECTED_RECORDS: usize = 50;
+    /// Room for a 4096-bit DKIM key, the longest TXT value people watch.
+    pub const MAX_EXPECTED_RECORD_LEN: usize = 2048;
+
+    /// The expected substring, unless blank.
+    pub fn contains_needle(&self) -> Option<&str> {
+        self.expected_contains.as_deref().filter(|s| !s.is_empty())
+    }
+
+    /// The exact record set, unless empty.
+    pub fn exact_records(&self) -> Option<&[String]> {
+        self.expected_records.as_deref().filter(|r| !r.is_empty())
+    }
+
     /// The domain read as an IP address, which a PTR check looks up by its
     /// reverse name. IPv4-mapped IPv6 folds to IPv4, whose in-addr.arpa name
     /// is where that record lives.

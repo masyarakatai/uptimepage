@@ -433,12 +433,14 @@ pub(super) fn new_check_spec(check: &NewCheck) -> Result<CheckSpec, McpToolError
             record_type,
             resolver,
             expected_contains,
+            expected_records,
             timeout_ms,
         } => CheckSpec::Dns(DnsCheck {
             domain: domain.clone(),
             record_type: parse_record_type(record_type.as_deref())?,
             resolver: resolver.clone(),
             expected_contains: expected_contains.clone(),
+            expected_records: expected_records.clone(),
             timeout: ms(*timeout_ms, 5_000),
         }),
         NewCheck::TlsCert {

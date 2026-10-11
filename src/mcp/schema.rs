@@ -198,6 +198,9 @@ pub struct DnsCheckConfig {
     /// Substring at least one answer must contain, when set. An empty answer,
     /// NXDOMAIN, or a missing substring all fail the check.
     pub expected_contains: Option<String>,
+    /// The exact record set the answer must hold, when set: any record
+    /// added, removed or changed fails the check.
+    pub expected_records: Option<Vec<String>>,
     pub timeout_ms: u64,
 }
 
@@ -572,6 +575,11 @@ pub enum NewCheck {
         resolver: Option<String>,
         /// Text the answer must contain.
         expected_contains: Option<String>,
+        /// Every record the answer must hold and nothing else, written as a
+        /// result's `answers` shows them (`10 mail.example.com.` for MX). Any
+        /// record added, removed or changed fails the check. Not combined
+        /// with `expected_contains`.
+        expected_records: Option<Vec<String>>,
         timeout_ms: Option<u64>,
     },
     /// A TLS certificate's remaining validity.

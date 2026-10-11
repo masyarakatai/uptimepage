@@ -98,6 +98,7 @@ pub(super) fn form_from_target(t: Target) -> Result<FormModel, AppError> {
                 record_type: d.record_type.as_str(),
                 resolver: d.resolver.unwrap_or_default(),
                 expected_contains: d.expected_contains.unwrap_or_default(),
+                expected_records: d.expected_records.unwrap_or_default().join("\n"),
                 timeout_ms: d.timeout.as_millis() as u64,
             };
             "dns"

@@ -169,6 +169,8 @@ pub struct DnsFields {
     pub record_type: &'static str,
     pub resolver: String,
     pub expected_contains: String,
+    /// One record per line.
+    pub expected_records: String,
     pub timeout_ms: u64,
 }
 
@@ -179,6 +181,7 @@ impl Default for DnsFields {
             record_type: "A",
             resolver: String::new(),
             expected_contains: String::new(),
+            expected_records: String::new(),
             timeout_ms: 3_000,
         }
     }
