@@ -950,7 +950,7 @@ async fn incident_update(State(cfg): State<Arc<MarketingCfg>>, headers: HeaderMa
 
 pub const DNS_LOOKUP_PATH: &str = "/tools/dns-lookup";
 const DNS_LOOKUP_CREATED: &str = "2026-08-05";
-pub const DNS_LOOKUP_LASTMOD: &str = "2026-08-05";
+pub const DNS_LOOKUP_LASTMOD: &str = "2026-10-12";
 pub const DNS_LOOKUP_TITLE: &str = "DNS Lookup: Compare Two Resolvers Side by Side";
 const DNS_LOOKUP_LABEL: &str = "DNS lookup";
 pub const DNS_LOOKUP_DESCRIPTION: &str = "Check A, MX, NS, TXT and CAA records against Cloudflare and Google at once and see where they disagree. Free, no sign-up, runs in your browser.";

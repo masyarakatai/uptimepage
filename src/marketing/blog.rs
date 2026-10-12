@@ -781,6 +781,7 @@ mod tests {
         "best-open-source-status-pages",
         "wordpress-missed-schedule",
         "on-call-rotation-small-team",
+        "monitor-dns-record-changes",
     ];
 
     #[test]
