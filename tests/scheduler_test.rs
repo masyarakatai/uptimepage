@@ -11,7 +11,7 @@ use axum::routing::get;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use uptimepage::domain::{CheckStatus, OrgId, Target};
+use uptimepage::domain::{CheckResult, CheckStatus, OrgId, Target};
 use uptimepage::error::{AppError, Result as SmResult};
 use uptimepage::pipeline::{BatcherConfig, ResultBatcher};
 use uptimepage::scheduler::{Scheduler, TargetRegistry, stop_probing};
@@ -21,6 +21,17 @@ use uptimepage::worker::circuit_breaker::CIRCUIT_OPEN_REASON;
 use uptimepage::worker::{ResultFanout, WorkerPool};
 
 use crate::common::{breaker_cfg, http_target, scheduler_cfg, spawn_router, test_client};
+
+fn test_pool(tx: mpsc::Sender<CheckResult>) -> Arc<WorkerPool> {
+    Arc::new(WorkerPool::new(
+        50,
+        test_client(),
+        breaker_cfg(),
+        ResultFanout::new(tx),
+        uptimepage::worker::host_throttle::HostThrottle::permissive(),
+        common::test_domain_expiry_runtime(),
+    ))
+}
 
 async fn spawn_counting_mock() -> (std::net::SocketAddr, Arc<AtomicU32>) {
     let counter = Arc::new(AtomicU32::new(0));
@@ -55,14 +66,7 @@ async fn scheduler_runs_target_periodically() {
     let registry = Arc::new(TargetRegistry::new(store));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(30)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.clone().run(shutdown.clone()));
@@ -85,11 +89,10 @@ async fn scheduler_runs_target_periodically() {
     assert!(counter.load(Ordering::Relaxed) >= 3);
 }
 
-// Coverage smoke for the stagger code path: confirms the deterministic
-// phase-offset scheduling still produces results promptly. Cadence-steadiness
-// is locked structurally by the `stagger_offset` unit tests (bounded,
-// deterministic); this test asserts only that the driver keeps ticking, not
-// exact wall-clock timing.
+// Coverage smoke for slot scheduling: confirms the driver keeps producing
+// results promptly. Cadence is locked by the `until_slot` unit tests; this
+// test asserts only that the driver keeps ticking, not exact wall-clock
+// timing.
 #[tokio::test]
 async fn scheduler_runs_staggered_target() {
     let (addr, counter) = spawn_counting_mock().await;
@@ -102,14 +105,7 @@ async fn scheduler_runs_staggered_target() {
     let registry = Arc::new(TargetRegistry::new(store));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(30)));
     let shutdown = CancellationToken::new();
     let start = tokio::time::Instant::now();
@@ -128,8 +124,8 @@ async fn scheduler_runs_staggered_target() {
     handle.await.unwrap().unwrap();
 
     assert!(received >= 3, "expected ≥3 results, got {received}");
-    // First check is immediate, the rest one interval apart: 3 results must
-    // arrive well inside a window that a stalled/never-firing loop would miss.
+    // First check within half an interval, the rest one interval apart: 3
+    // results must arrive well inside a window a stalled loop would miss.
     assert!(
         elapsed < interval * 8,
         "3 staggered checks took {elapsed:?}, expected < {:?}",
@@ -175,14 +171,7 @@ async fn dispatch_skips_when_target_probe_already_in_flight() {
     let registry = Arc::new(TargetRegistry::new(store));
     let (tx, _rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool.clone(), scheduler_cfg(30)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.clone().run(shutdown.clone()));
@@ -212,14 +201,7 @@ async fn scheduler_picks_up_new_targets_on_refresh() {
     let registry = Arc::new(TargetRegistry::new(store.clone()));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(1)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.clone().run(shutdown.clone()));
@@ -260,14 +242,7 @@ async fn mid_check(addr: std::net::SocketAddr, arrived: &AtomicU32) -> Probing {
     )]));
     let (tx, rx) = mpsc::channel(64);
     let sink = Arc::new(InMemorySink::new());
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(
         Arc::new(TargetRegistry::new(store)),
         pool.clone(),
@@ -466,14 +441,7 @@ async fn scheduler_recovers_after_transient_refresh_failures() {
     let registry = Arc::new(TargetRegistry::new(source.clone()));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(1)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.run(shutdown.clone()));
@@ -516,15 +484,7 @@ async fn scheduler_shutdown_observed_during_slow_refresh() {
 
     let registry = Arc::new(TargetRegistry::new(Arc::new(HangingSource)));
     let (tx, _rx) = mpsc::channel(64);
-    let pool = Arc::new(WorkerPool::new(
-        10,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
-    let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(1)));
+    let scheduler = Arc::new(Scheduler::new(registry, test_pool(tx), scheduler_cfg(1)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.run(shutdown.clone()));
 
@@ -554,14 +514,7 @@ async fn worker_pool_breaker_opens_after_failures() {
     let registry = Arc::new(TargetRegistry::new(store));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool.clone(), scheduler_cfg(30)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.run(shutdown.clone()));
@@ -620,14 +573,7 @@ async fn scheduler_applies_update_and_removal() {
     let registry = Arc::new(TargetRegistry::new(source.clone()));
     let (tx, mut rx) = mpsc::channel(64);
 
-    let pool = Arc::new(WorkerPool::new(
-        50,
-        test_client(),
-        breaker_cfg(),
-        ResultFanout::new(tx),
-        uptimepage::worker::host_throttle::HostThrottle::permissive(),
-        common::test_domain_expiry_runtime(),
-    ));
+    let pool = test_pool(tx);
     let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(1)));
     let shutdown = CancellationToken::new();
     let handle = tokio::spawn(scheduler.clone().run(shutdown.clone()));
@@ -672,4 +618,88 @@ async fn scheduler_applies_update_and_removal() {
 
     shutdown.cancel();
     handle.await.unwrap().unwrap();
+}
+
+const FLEET: usize = 200;
+
+/// Monitors nobody has touched for a day, so none is due a quick first probe.
+fn fleet(addr: std::net::SocketAddr) -> Vec<(OrgId, Target)> {
+    let org = OrgId(uuid::Uuid::from_u128(1));
+    (0..FLEET)
+        .map(|_| {
+            let mut target = http_target(addr, "/ping", 60_000);
+            target.updated_at = chrono::Utc::now() - chrono::Duration::days(1);
+            (org, target)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn monitors_loaded_at_start_are_not_all_probed_at_once() {
+    let (addr, counter) = spawn_counting_mock().await;
+    let source = Arc::new(MutableSource::new(fleet(addr)));
+    let (tx, mut rx) = mpsc::channel(FLEET * 2);
+    let scheduler = Arc::new(Scheduler::new(
+        Arc::new(TargetRegistry::new(source)),
+        test_pool(tx),
+        scheduler_cfg(30),
+    ));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let probed = counter.load(Ordering::Relaxed);
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+    rx.close();
+
+    assert!(probed < 40, "{probed} of {FLEET} probed in the first 3 s");
+}
+
+#[tokio::test]
+async fn a_fleet_that_arrives_after_an_empty_start_is_not_probed_at_once() {
+    let (addr, counter) = spawn_counting_mock().await;
+    let source = Arc::new(MutableSource::new(vec![]));
+    let (tx, mut rx) = mpsc::channel(FLEET * 2);
+    let scheduler = Arc::new(Scheduler::new(
+        Arc::new(TargetRegistry::new(source.clone())),
+        test_pool(tx),
+        scheduler_cfg(1),
+    ));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    source.set(fleet(addr));
+    // One refresh to pick the fleet up, then 3 s of probing.
+    tokio::time::sleep(Duration::from_millis(4_100)).await;
+    let probed = counter.load(Ordering::Relaxed);
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+    rx.close();
+
+    assert!(
+        probed < 40,
+        "{probed} of {FLEET} probed within 4 s of arriving"
+    );
+}
+
+#[tokio::test]
+async fn a_monitor_added_while_running_is_probed_within_seconds() {
+    let (addr, _counter) = spawn_counting_mock().await;
+    let source = Arc::new(MutableSource::new(vec![]));
+    let registry = Arc::new(TargetRegistry::new(source.clone()));
+    let (tx, mut rx) = mpsc::channel(64);
+    let scheduler = Arc::new(Scheduler::new(registry, test_pool(tx), scheduler_cfg(1)));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let org = OrgId(uuid::Uuid::from_u128(1));
+    source.set(vec![(org, http_target(addr, "/ping", 3_600_000))]);
+    let first = tokio::time::timeout(Duration::from_secs(8), rx.recv()).await;
+
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+    assert!(matches!(first, Ok(Some(_))), "no probe for the new monitor");
 }

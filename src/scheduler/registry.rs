@@ -125,7 +125,7 @@ impl TargetRegistry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration as StdDuration;
@@ -154,7 +154,7 @@ mod tests {
         }
     }
 
-    fn a_target(interval: StdDuration) -> Target {
+    pub(crate) fn a_target(interval: StdDuration) -> Target {
         Target {
             id: Uuid::now_v7(),
             name: "api".into(),

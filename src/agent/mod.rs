@@ -554,6 +554,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
     let registry = Arc::new(TargetRegistry::new(source));
     let mut sched_cfg = cfg.scheduler.clone();
     sched_cfg.target_refresh_interval_secs = cfg.agent.pull_interval_secs;
+    sched_cfg.region = region;
     let scheduler = Arc::new(Scheduler::new(registry.clone(), pool.clone(), sched_cfg));
     let batcher = ResultBatcher::new(
         result_rx,

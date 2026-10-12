@@ -1,11 +1,9 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use metrics::{Counter, Gauge, counter, gauge, histogram};
 use tokio::sync::mpsc;
@@ -14,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::config::SchedulerConfig;
+use crate::domain::Target;
 use crate::error::Result;
 use crate::metric_names;
 use crate::scheduler::registry::{RegistryDiff, ScheduledTarget, TargetRegistry};
@@ -30,9 +29,18 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 /// within the same window.
 const REFRESH_BACKOFF_CAP_MULTIPLIER: u64 = 10;
 
-/// First-probe stagger cap: bounds the boot/refresh-batch burst while
-/// keeping a freshly-added target's first result within a few seconds.
+/// A target someone is waiting on gets its first result within this, or within
+/// half its interval when that is shorter.
 const INITIAL_PROBE_SPREAD: Duration = Duration::from_secs(5);
+
+/// A target that first appears this soon after its last change was just
+/// created or resumed. Several refresh intervals wide, so an agent that pulls
+/// late still counts it.
+const RECENT_EDIT: Duration = Duration::from_secs(300);
+
+/// A target whose slot is further off than this after start gets its first
+/// result within it instead, spread so the start is still no burst.
+const STARTUP_SPREAD: Duration = Duration::from_secs(300);
 
 /// Diff backlog tolerated before the refresher back-pressures.
 const REFRESH_CHANNEL_BOUND: usize = 8;
@@ -49,15 +57,14 @@ pub struct Scheduler {
     scheduled: Arc<AtomicUsize>,
 }
 
-/// A pending fire. `first` marks the initial staggered probe; `seq` is the
-/// schedule generation — an entry is live only while it matches the id's
-/// current `seq`, so a re-scheduled id's older entries drop on pop.
+/// A pending fire. `seq` is the schedule generation — an entry is live only
+/// while it matches the id's current `seq`, so a re-scheduled id's older
+/// entries drop on pop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Due {
     at: Instant,
     id: Uuid,
     seq: u64,
-    first: bool,
 }
 
 impl Scheduler {
@@ -188,7 +195,9 @@ impl Scheduler {
 
     /// Added and updated targets are (re)scheduled with a fresh generation, so
     /// any prior entry for the same id is superseded; removed ids drop from the
-    /// live map, leaving their stale entries to reap on pop.
+    /// live map, leaving their stale entries to reap on pop. An updated target
+    /// was edited or moved by its plan, so its new config probes within
+    /// seconds.
     fn apply_diff(
         &self,
         diff: &RegistryDiff,
@@ -197,8 +206,15 @@ impl Scheduler {
         next_seq: &mut u64,
     ) {
         let now = Instant::now();
-        for st in diff.added.iter().chain(diff.updated.iter()) {
-            schedule(st, heap, live, next_seq, now);
+        let wall = SystemTime::now();
+        let region = &self.cfg.region;
+        for st in &diff.added {
+            let wait = first_probe_in(&st.target, region, wall);
+            schedule(st.target.id, heap, live, next_seq, now + wait);
+        }
+        for st in &diff.updated {
+            let wait = quick_probe_in(&st.target, region);
+            schedule(st.target.id, heap, live, next_seq, now + wait);
         }
         for id in &diff.removed {
             live.remove(id);
@@ -208,6 +224,7 @@ impl Scheduler {
 
     fn drain_due(&self, heap: &mut BinaryHeap<Reverse<Due>>, live: &mut HashMap<Uuid, u64>) {
         let now = Instant::now();
+        let wall = SystemTime::now();
         loop {
             match heap.peek() {
                 Some(Reverse(due)) if due.at <= now => {}
@@ -222,16 +239,10 @@ impl Scheduler {
                 continue;
             };
             let base = st.target.interval;
-            let anchor = if due.first {
-                due.at + stagger_offset(due.id, base)
-            } else {
-                due.at
-            };
             heap.push(Reverse(Due {
-                at: next_tick(anchor, base, now),
+                at: now + until_slot(due.id, &self.cfg.region, base, wall, base / 2),
                 id: due.id,
                 seq: due.seq,
-                first: false,
             }));
             dispatch(&self.pool, st);
         }
@@ -253,41 +264,73 @@ impl Scheduler {
     }
 }
 
-/// Schedule a target's first probe within the initial-spread cap under a fresh
-/// monotonic generation, so any in-flight entry for the same id is superseded.
+/// Schedule a target's first probe under a fresh monotonic generation, so any
+/// in-flight entry for the same id is superseded.
 fn schedule(
-    st: &ScheduledTarget,
+    id: Uuid,
     heap: &mut BinaryHeap<Reverse<Due>>,
     live: &mut HashMap<Uuid, u64>,
     next_seq: &mut u64,
-    now: Instant,
+    at: Instant,
 ) {
-    let id = st.target.id;
     let seq = *next_seq;
     *next_seq = next_seq.wrapping_add(1);
     live.insert(id, seq);
-    let base = st.target.interval;
-    debug_assert!(!base.is_zero(), "target interval must be non-zero");
-    let cap = INITIAL_PROBE_SPREAD.min(base / 2);
-    heap.push(Reverse(Due {
-        at: now + stagger_offset(id, cap),
-        id,
-        seq,
-        first: true,
-    }));
+    heap.push(Reverse(Due { at, id, seq }));
 }
 
-/// First phase-aligned grid point strictly after `now` — the heap form of
-/// `MissedTickBehavior::Skip`, dropping any backlog while preserving phase.
-fn next_tick(sched: Instant, base: Duration, now: Instant) -> Instant {
-    let next = sched + base;
-    if next > now {
-        return next;
+/// A target this process has not scheduled yet probes within seconds when it
+/// was just created or resumed. Otherwise it starts on its slot, or within
+/// `STARTUP_SPREAD` when the slot is further off.
+fn first_probe_in(target: &Target, region: &str, now: SystemTime) -> Duration {
+    let changed = now
+        .duration_since(target.updated_at.into())
+        .unwrap_or_default();
+    if changed < RECENT_EDIT {
+        return quick_probe_in(target, region);
     }
-    let base_ns = base.as_nanos().max(1);
-    let behind_ns = now.saturating_duration_since(next).as_nanos();
-    let skips = ((behind_ns / base_ns) + 1).min(u32::MAX as u128) as u32;
-    next + base * skips
+    let slot = until_slot(target.id, region, target.interval, now, Duration::ZERO);
+    if slot <= STARTUP_SPREAD {
+        slot
+    } else {
+        stagger_offset(target.id, region, STARTUP_SPREAD)
+    }
+}
+
+fn quick_probe_in(target: &Target, region: &str) -> Duration {
+    debug_assert!(
+        !target.interval.is_zero(),
+        "target interval must be non-zero"
+    );
+    stagger_offset(
+        target.id,
+        region,
+        INITIAL_PROBE_SPREAD.min(target.interval / 2),
+    )
+}
+
+/// Time from `now` to the target's first slot at least `gap` away. Slots sit
+/// at a fixed offset per target and region on a wall-clock grid of the
+/// interval, so a restart resumes the rhythm of the process it replaced
+/// instead of probing every target at once. Regions keep their own offsets,
+/// so a blip shorter than the interval is not seen by all of them at once.
+fn until_slot(
+    id: Uuid,
+    region: &str,
+    interval: Duration,
+    now: SystemTime,
+    gap: Duration,
+) -> Duration {
+    let interval_ms = interval.as_millis().max(1);
+    let phase_ms = stagger_offset(id, region, interval).as_millis();
+    let from_ms = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .saturating_add(gap)
+        .as_millis();
+    let into_cycle = (from_ms + interval_ms - phase_ms) % interval_ms;
+    let wait_ms = (interval_ms - into_cycle) % interval_ms;
+    gap + Duration::from_millis(wait_ms as u64)
 }
 
 async fn sleep_until_opt(at: Option<Instant>) {
@@ -317,24 +360,36 @@ fn dispatch(pool: &WorkerPool, st: ScheduledTarget) {
     });
 }
 
-fn stagger_offset(id: Uuid, interval: Duration) -> Duration {
+/// FNV-1a over the raw bytes rather than std's hasher, whose algorithm may
+/// change with the toolchain and move every slot with it.
+fn stagger_offset(id: Uuid, region: &str, interval: Duration) -> Duration {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     let interval_ms = interval.as_millis() as u64;
     if interval_ms == 0 {
         return Duration::ZERO;
     }
-    let mut h = DefaultHasher::new();
-    id.hash(&mut h);
-    Duration::from_millis(h.finish() % interval_ms)
+    let hash = id
+        .as_bytes()
+        .iter()
+        .chain(region.as_bytes())
+        .fold(FNV_OFFSET, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(FNV_PRIME)
+        });
+    Duration::from_millis(hash % interval_ms)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Due, REFRESH_BACKOFF_CAP_MULTIPLIER, backoff_delay_secs, next_tick, stagger_offset,
+        Due, INITIAL_PROBE_SPREAD, RECENT_EDIT, REFRESH_BACKOFF_CAP_MULTIPLIER, STARTUP_SPREAD,
+        backoff_delay_secs, first_probe_in, quick_probe_in, stagger_offset, until_slot,
     };
+    use crate::domain::Target;
+    use crate::scheduler::registry::tests::a_target;
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::time::Instant;
     use uuid::Uuid;
 
@@ -342,9 +397,18 @@ mod tests {
     fn stagger_offset_is_deterministic() {
         let id = Uuid::from_u128(0x1234_5678_90AB_CDEF_1234_5678_90AB_CDEF);
         let base = Duration::from_secs(60);
-        let a = stagger_offset(id, base);
-        let b = stagger_offset(id, base);
+        let a = stagger_offset(id, REGION, base);
+        let b = stagger_offset(id, REGION, base);
         assert_eq!(a, b, "same id+interval must yield identical offset");
+    }
+
+    #[test]
+    fn stagger_offset_is_pinned_so_a_hash_change_moves_no_slot_unnoticed() {
+        let id = Uuid::from_u128(0x1234_5678_90AB_CDEF_1234_5678_90AB_CDEF);
+        assert_eq!(
+            stagger_offset(id, REGION, MINUTE),
+            Duration::from_millis(34_055)
+        );
     }
 
     #[test]
@@ -352,37 +416,17 @@ mod tests {
         let base = Duration::from_secs(60);
         for n in 0..1000u128 {
             let id = Uuid::from_u128(n);
-            let o = stagger_offset(id, base);
+            let o = stagger_offset(id, REGION, base);
             assert!(o < base, "offset {o:?} must be < interval {base:?}");
         }
     }
 
     #[test]
     fn stagger_offset_zero_interval_is_safe() {
-        assert_eq!(stagger_offset(Uuid::nil(), Duration::ZERO), Duration::ZERO);
-    }
-
-    #[test]
-    fn initial_offset_is_bounded_by_spread_cap() {
-        use super::INITIAL_PROBE_SPREAD;
-        let long_base = Duration::from_secs(3600);
-        for n in 0..1000u128 {
-            let cap = INITIAL_PROBE_SPREAD.min(long_base / 2);
-            let o = stagger_offset(Uuid::from_u128(n), cap);
-            assert!(
-                o < INITIAL_PROBE_SPREAD,
-                "first-probe offset {o:?} exceeded cap"
-            );
-        }
-        let short_base = Duration::from_secs(2);
-        for n in 0..1000u128 {
-            let cap = INITIAL_PROBE_SPREAD.min(short_base / 2);
-            let o = stagger_offset(Uuid::from_u128(n), cap);
-            assert!(
-                o < short_base,
-                "first-probe offset {o:?} >= interval {short_base:?}"
-            );
-        }
+        assert_eq!(
+            stagger_offset(Uuid::nil(), REGION, Duration::ZERO),
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -391,7 +435,7 @@ mod tests {
         let bucket_ms = base.as_millis() as u64 / 10;
         let mut buckets = [0u32; 10];
         for n in 0..1000u128 {
-            let o = stagger_offset(Uuid::from_u128(n + 0xDEAD_BEEF_0000), base);
+            let o = stagger_offset(Uuid::from_u128(n + 0xDEAD_BEEF_0000), REGION, base);
             let idx = (o.as_millis() as u64 / bucket_ms).min(9) as usize;
             buckets[idx] += 1;
         }
@@ -403,22 +447,131 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn next_tick_advances_one_interval_on_time() {
-        let base = Duration::from_secs(10);
-        let sched = Instant::now();
-        let now = sched + Duration::from_millis(1);
-        assert_eq!(next_tick(sched, base, now), sched + base);
+    const MINUTE: Duration = Duration::from_secs(60);
+    const REGION: &str = "eu-helsinki";
+
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
     }
 
-    #[tokio::test]
-    async fn next_tick_skips_backlog_when_behind() {
-        let base = Duration::from_secs(10);
-        let sched = Instant::now();
-        let now = sched + base + base * 2 + base / 2;
-        let next = next_tick(sched, base, now);
-        assert!(next > now, "next {next:?} must be strictly future");
-        assert_eq!(next, sched + base * 4);
+    #[test]
+    fn a_process_started_any_time_before_a_slot_lands_on_that_same_slot() {
+        let id = Uuid::from_u128(7);
+        let start = at(1_800_000_000);
+        let slot = start + until_slot(id, REGION, MINUTE, start, Duration::ZERO);
+        let mut now = start;
+        while now <= slot {
+            assert_eq!(
+                now + until_slot(id, REGION, MINUTE, now, Duration::ZERO),
+                slot
+            );
+            now += Duration::from_millis(3_700);
+        }
+        assert_eq!(
+            now + until_slot(id, REGION, MINUTE, now, Duration::ZERO),
+            slot + MINUTE
+        );
+    }
+
+    #[test]
+    fn the_next_slot_keeps_at_least_the_gap() {
+        let now = at(1_800_000_123);
+        for n in 0..1000u128 {
+            let wait = until_slot(Uuid::from_u128(n), REGION, MINUTE, now, MINUTE / 2);
+            assert!((MINUTE / 2..MINUTE * 3 / 2).contains(&wait), "{wait:?}");
+        }
+    }
+
+    #[test]
+    fn a_probe_fired_on_its_slot_is_next_due_one_interval_later() {
+        let id = Uuid::from_u128(42);
+        let start = at(1_800_000_000);
+        let slot = start + until_slot(id, REGION, MINUTE, start, Duration::ZERO);
+        let late = slot + Duration::from_millis(250);
+        assert_eq!(
+            late + until_slot(id, REGION, MINUTE, late, MINUTE / 2),
+            slot + MINUTE
+        );
+    }
+
+    const DAY: Duration = Duration::from_secs(86_400);
+
+    const NOW: u64 = 1_800_000_000;
+
+    /// Target `n` of a fleet on `interval`, last edited `edited` before `NOW`.
+    fn fleet_target(n: u128, interval: Duration, edited: Duration) -> Target {
+        let mut target = a_target(interval);
+        target.id = Uuid::from_u128(n + 0xFEED_0000);
+        target.updated_at = (at(NOW) - edited).into();
+        target
+    }
+
+    fn first_probes(interval: Duration) -> impl Iterator<Item = (Uuid, Duration)> {
+        (0..1000u128).map(move |n| {
+            let target = fleet_target(n, interval, DAY);
+            (target.id, first_probe_in(&target, REGION, at(NOW)))
+        })
+    }
+
+    #[test]
+    fn targets_loaded_at_start_are_spread_out() {
+        for interval in [MINUTE, DAY] {
+            let early = first_probes(interval)
+                .filter(|(_, wait)| *wait < INITIAL_PROBE_SPREAD)
+                .count();
+            assert!(
+                early < 150,
+                "{early} of 1000 every {interval:?} due within 5 s"
+            );
+        }
+    }
+
+    #[test]
+    fn a_frequent_target_starts_on_its_slot() {
+        for (id, wait) in first_probes(MINUTE) {
+            assert_eq!(
+                wait,
+                until_slot(id, REGION, MINUTE, at(NOW), Duration::ZERO)
+            );
+        }
+    }
+
+    #[test]
+    fn a_rarely_checked_target_gets_a_first_result_soon_after_start() {
+        for (_, wait) in first_probes(DAY) {
+            assert!(wait < STARTUP_SPREAD, "{wait:?}");
+        }
+    }
+
+    #[test]
+    fn regions_probe_a_target_at_their_own_moments() {
+        let now = at(1_800_000_000);
+        let apart = (0..1000u128)
+            .filter(|&n| {
+                let id = Uuid::from_u128(n);
+                until_slot(id, "eu-helsinki", MINUTE, now, Duration::ZERO)
+                    != until_slot(id, "us-east", MINUTE, now, Duration::ZERO)
+            })
+            .count();
+        assert!(apart > 990, "only {apart} of 1000 targets differ");
+    }
+
+    #[test]
+    fn a_target_just_created_or_resumed_is_probed_within_seconds() {
+        for n in 0..1000u128 {
+            let target = fleet_target(n, DAY, RECENT_EDIT / 2);
+            let wait = first_probe_in(&target, REGION, at(NOW));
+            assert!(wait < INITIAL_PROBE_SPREAD, "{wait:?}");
+        }
+    }
+
+    #[test]
+    fn a_quick_probe_lands_within_half_a_short_interval() {
+        let interval = Duration::from_secs(2);
+        for n in 0..1000u128 {
+            let target = fleet_target(n, interval, DAY);
+            assert!(quick_probe_in(&target, REGION) < interval / 2);
+        }
     }
 
     #[tokio::test]
@@ -430,7 +583,6 @@ mod tests {
                 at: base + Duration::from_secs(secs),
                 id: Uuid::from_u128(secs as u128),
                 seq: 0,
-                first: false,
             }));
         }
         let order: Vec<u64> = std::iter::from_fn(|| heap.pop())
