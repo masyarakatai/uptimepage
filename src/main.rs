@@ -1012,6 +1012,7 @@ async fn main() -> Result<()> {
                     "http.request",
                     method = %req.method(),
                     path = %path,
+                    org_id = tracing::field::Empty,
                 )
             })
             .on_response(DefaultOnResponse::new().level(tracing::Level::DEBUG)),

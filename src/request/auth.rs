@@ -301,60 +301,71 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self> {
-        let app_state = RequestState::from_ref(state);
+        let org = resolve_org(parts, state).await?;
+        // Names the org a session or API token acted for on this request's
+        // access and rejection lines; MCP binds its org elsewhere.
+        tracing::Span::current().record("org_id", tracing::field::display(org));
+        Ok(CurrentOrg(org))
+    }
+}
 
-        // API-token path: an unbound token MUST surface the org via
-        // `X-Uptimepage-Org` (no fallback — a missing/unknown header is a 400).
-        // A bound token implies its org; a header, if present, must match it.
-        // Either way `is_active_member` re-checks (defense vs revoked access).
-        if let Some(AuthContext::ApiToken { user_id, org, .. }) =
-            parts.extensions.get::<AuthContext>()
-        {
-            let pool = app_state.require_db()?;
-            let user_id = *user_id;
-            let org = match *org {
-                Some(bound) => {
-                    if let Some(hdr) = optional_org_from_header(parts, pool).await?
-                        && hdr != bound
-                    {
-                        return Err(AppError::forbidden_code(
-                            codes::ORG_HEADER_MISMATCH,
-                            "X-Uptimepage-Org names a different org than this token is bound to",
-                        ));
-                    }
-                    bound
+async fn resolve_org<S>(parts: &mut Parts, state: &S) -> Result<OrgId>
+where
+    S: Send + Sync,
+    RequestState: FromRef<S>,
+{
+    let app_state = RequestState::from_ref(state);
+
+    // API-token path: an unbound token MUST surface the org via
+    // `X-Uptimepage-Org` (no fallback — a missing/unknown header is a 400).
+    // A bound token implies its org; a header, if present, must match it.
+    // Either way `is_active_member` re-checks (defense vs revoked access).
+    if let Some(AuthContext::ApiToken { user_id, org, .. }) = parts.extensions.get::<AuthContext>()
+    {
+        let pool = app_state.require_db()?;
+        let user_id = *user_id;
+        let org = match *org {
+            Some(bound) => {
+                if let Some(hdr) = optional_org_from_header(parts, pool).await?
+                    && hdr != bound
+                {
+                    return Err(AppError::forbidden_code(
+                        codes::ORG_HEADER_MISMATCH,
+                        "X-Uptimepage-Org names a different org than this token is bound to",
+                    ));
                 }
-                None => explicit_org_from_header(parts, pool).await?,
-            };
-            if !is_active_member(pool, user_id, org).await? {
-                return Err(AppError::Forbidden);
+                bound
             }
-            return Ok(CurrentOrg(org));
-        }
-
-        let session = Session::from_request_parts(parts, state)
-            .await
-            .expect("Session extractor is infallible");
-
-        let user_id = session.user_id().ok_or(AppError::Unauthorized)?;
-        // Session must carry an active org. OAuth callback + signup stamp it
-        // on creation, so a healthy session always has it. A missing one is
-        // an unauthorised request, not a silent fallback to some default.
-        let active = session.active_org_id.ok_or(AppError::Unauthorized)?;
-
-        // Test-only fixture path: in-memory stores carry no `organizations`
-        // table, so the membership check has nothing to verify against. The
-        // session was injected through `Extension<Session>` and IS the test's
-        // assertion. In production `db` is always `Some`, so this branch
-        // never fires there.
-        let Some(pool) = app_state.db.as_ref() else {
-            return Ok(CurrentOrg(active));
+            None => explicit_org_from_header(parts, pool).await?,
         };
-        if !is_active_member(pool, user_id, active).await? {
+        if !is_active_member(pool, user_id, org).await? {
             return Err(AppError::Forbidden);
         }
-        Ok(CurrentOrg(active))
+        return Ok(org);
     }
+
+    let session = Session::from_request_parts(parts, state)
+        .await
+        .expect("Session extractor is infallible");
+
+    let user_id = session.user_id().ok_or(AppError::Unauthorized)?;
+    // Session must carry an active org. OAuth callback + signup stamp it
+    // on creation, so a healthy session always has it. A missing one is
+    // an unauthorised request, not a silent fallback to some default.
+    let active = session.active_org_id.ok_or(AppError::Unauthorized)?;
+
+    // Test-only fixture path: in-memory stores carry no `organizations`
+    // table, so the membership check has nothing to verify against. The
+    // session was injected through `Extension<Session>` and IS the test's
+    // assertion. In production `db` is always `Some`, so this branch
+    // never fires there.
+    let Some(pool) = app_state.db.as_ref() else {
+        return Ok(active);
+    };
+    if !is_active_member(pool, user_id, active).await? {
+        return Err(AppError::Forbidden);
+    }
+    Ok(active)
 }
 
 /// Redirect an unauthenticated visitor to `/login`, preserving where they

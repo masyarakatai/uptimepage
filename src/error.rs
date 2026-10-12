@@ -421,7 +421,13 @@ impl IntoResponse for AppError {
             }
         };
         if status.is_client_error() {
-            tracing::debug!(code = body.code, status = %status, "request rejected");
+            // The message stays out: a validator may quote what the user typed.
+            tracing::debug!(
+                code = body.code,
+                status = %status,
+                field = body.field.as_deref(),
+                "request rejected"
+            );
         }
         (status, Json(ApiError { error: body })).into_response()
     }

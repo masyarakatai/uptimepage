@@ -515,9 +515,12 @@ pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result
                 *host = canon;
                 Ok(())
             }
+            // The input stays out of the message: a connection string pasted
+            // as a host carries its password, and MCP records the message in
+            // its audit trail.
             Err(_) => Err(AppError::bad_request_field(
                 code,
-                format!("host '{raw}' is not a valid IDN domain"),
+                format!("{field} is not a valid domain name"),
                 field,
             )),
         }
@@ -890,7 +893,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                 let sock = crate::http_client::parse_resolver_addr(resolver).map_err(|_| {
                     AppError::bad_request_field(
                         codes::INVALID_DNS_PARAMS,
-                        format!("dns resolver '{resolver}' must be an IP or ip:port"),
+                        "dns resolver must be an IP or ip:port",
                         "check.resolver",
                     )
                 })?;

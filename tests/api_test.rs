@@ -883,3 +883,80 @@ async fn a_refused_dns_value_names_the_field_at_fault() {
         assert_eq!(body["error"]["field"], field, "{body}");
     }
 }
+
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+#[tokio::test]
+async fn a_refused_value_reaches_neither_the_response_nor_the_log() {
+    let logs = CapturedLogs::default();
+    let writer = logs.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    let app = app();
+
+    let mut tcp = tcp_target("db");
+    tcp["check"]["host"] = json!("postgres://alice:s3cret@db.example.com:5432/app");
+    let mut dns = dns_target("A", "example.com", Value::Null);
+    dns["check"]["resolver"] = json!("alice:s3cret@192.0.2.53");
+    for (payload, code, field) in [
+        (tcp, "INVALID_TCP_HOST", "check.host"),
+        (dns, "INVALID_DNS_PARAMS", "check.resolver"),
+    ] {
+        let (status, body) =
+            common::send_json(app.clone(), "POST", "/api/v1/targets", payload).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], code);
+        assert_eq!(body["error"]["field"], field);
+        for secret in ["alice", "s3cret"] {
+            assert!(!body.to_string().contains(secret), "{body}");
+        }
+    }
+
+    // The scheme error quotes what was sent, so only the log line keeps it out.
+    let (status, body) = common::send_json(
+        app,
+        "POST",
+        "/api/v1/targets",
+        ssrf_payload("s3cret://alice.example.com/"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "INVALID_URL_SCHEME");
+    assert_eq!(body["error"]["field"], "check.url");
+
+    let logged = logs.text();
+    for field in ["check.host", "check.resolver", "check.url"] {
+        assert!(
+            logged
+                .lines()
+                .any(|line| line.contains("request rejected") && line.contains(field)),
+            "{field}: {logged}"
+        );
+    }
+    for secret in ["alice", "s3cret"] {
+        assert!(!logged.contains(secret), "{logged}");
+    }
+}

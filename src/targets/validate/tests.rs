@@ -597,6 +597,42 @@ fn host_canonicalization_is_pinned_to_a_fixed_corpus() {
     assert!(canon(&over_253).is_err(), "254-character host accepted");
 }
 
+#[test]
+fn a_refused_host_is_not_echoed_back() {
+    use crate::domain::{CheckSpec, DnsRecordType, PingCheck};
+    use std::time::Duration;
+
+    let pasted = "postgres://alice:s3cret@db.example.com:5432/app";
+    let ping = CheckSpec::Ping(PingCheck {
+        host: pasted.into(),
+        timeout: Duration::from_secs(3),
+    });
+    for (mut spec, want_code, want_field) in [
+        (ping, codes::INVALID_PING_HOST, "check.host"),
+        (
+            dns_spec(pasted, DnsRecordType::A),
+            codes::INVALID_DNS_PARAMS,
+            "check.domain",
+        ),
+    ] {
+        let err = canonicalize_check(&mut spec).expect_err("a connection string is not a host");
+        let AppError::BadRequest {
+            code,
+            message,
+            field,
+        } = err
+        else {
+            panic!("expected a bad request, got {err:?}");
+        };
+        assert_eq!(code, want_code);
+        assert_eq!(field.as_deref(), Some(want_field));
+        assert!(
+            !message.contains("alice") && !message.contains("s3cret"),
+            "{message}"
+        );
+    }
+}
+
 fn dns_spec(domain: &str, record_type: crate::domain::DnsRecordType) -> CheckSpec {
     CheckSpec::Dns(crate::domain::DnsCheck {
         domain: domain.into(),
