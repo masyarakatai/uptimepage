@@ -93,23 +93,99 @@ pub fn record_key(rdata: &RData) -> String {
         RData::TXT(_) | RData::CAA(_) => shown.trim().to_owned(),
         _ => shown
             .split_whitespace()
-            .map(|token| token.strip_suffix('.').unwrap_or(token).to_lowercase())
+            .map(fold_token)
             .collect::<Vec<_>>()
             .join(" "),
     }
 }
 
-/// [`record_key`] of an expected value; one that does not parse keeps its
-/// own trimmed text and so matches nothing.
-pub fn expected_key(record_type: DnsRecordType, value: &str) -> String {
-    parse_expected(record_type, value)
-        .map(|rdata| record_key(&rdata))
-        .unwrap_or_else(|| value.trim().to_owned())
+/// One value of an exact set, as answers are matched against it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ExpectedRecord {
+    /// A whole record, by its [`record_key`].
+    Whole(String),
+    /// One MX record for this host, at any preference, by its folded name.
+    MxHost(String),
+}
+
+/// What an expected value matches. `None` when it is in neither form.
+pub fn parse_expected_record(record_type: DnsRecordType, value: &str) -> Option<ExpectedRecord> {
+    if let Some(rdata) = parse_expected(record_type, value) {
+        return Some(ExpectedRecord::Whole(record_key(&rdata)));
+    }
+    bare_mx_host(record_type, value)
+        .map(|host| ExpectedRecord::MxHost(fold_token(&host.to_string())))
+}
+
+/// [`parse_expected_record`] of a stored value; one that does not parse keeps
+/// its own trimmed text and so matches nothing.
+pub fn expected_record(record_type: DnsRecordType, value: &str) -> ExpectedRecord {
+    parse_expected_record(record_type, value)
+        .unwrap_or_else(|| ExpectedRecord::Whole(value.trim().to_owned()))
+}
+
+/// An MX answer's folded host, which a bare MX value claims it by, and its
+/// preference.
+pub fn mx_host_key(rdata: &RData) -> Option<(String, u16)> {
+    match rdata {
+        RData::MX(mx) => Some((fold_token(&mx.exchange.to_string()), mx.preference)),
+        _ => None,
+    }
+}
+
+// A lone number or IPv4 address has no letter, and an IPv6 address fails the
+// name parse on its colons: either would be a host that never answers.
+fn bare_mx_host(record_type: DnsRecordType, value: &str) -> Option<Name> {
+    let value = value.trim();
+    if record_type != DnsRecordType::Mx
+        || value.contains(char::is_whitespace)
+        || !value.chars().any(char::is_alphabetic)
+    {
+        return None;
+    }
+    Name::from_str_relaxed(value).ok()
+}
+
+fn fold_token(token: &str) -> String {
+    token.strip_suffix('.').unwrap_or(token).to_lowercase()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_mx_host_folds_like_the_answer_it_names() {
+        let answer = |value: &str| {
+            mx_host_key(&parse_expected(DnsRecordType::Mx, value).unwrap())
+                .unwrap()
+                .0
+        };
+        for (bare, answered) in [
+            ("Smtp.Google.com.", "1 smtp.google.com."),
+            ("пошта.укр", "10 xn--80a1acn3a.xn--j1amh."),
+        ] {
+            assert_eq!(
+                parse_expected_record(DnsRecordType::Mx, bare),
+                Some(ExpectedRecord::MxHost(answer(answered))),
+                "{bare:?}"
+            );
+        }
+        for refused in [
+            "10",
+            "192.0.2.10",
+            "2001:db8::1",
+            "::1",
+            "mail..example.com",
+        ] {
+            assert_eq!(
+                parse_expected_record(DnsRecordType::Mx, refused),
+                None,
+                "{refused:?}"
+            );
+        }
+        assert_eq!(parse_expected_record(DnsRecordType::Ns, "a b"), None);
+    }
 
     fn key(record_type: DnsRecordType, value: &str) -> String {
         record_key(&parse_expected(record_type, value).unwrap())

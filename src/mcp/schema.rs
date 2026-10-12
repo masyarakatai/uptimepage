@@ -605,9 +605,10 @@ pub enum NewCheck {
         /// Text the answer must contain.
         expected_contains: Option<String>,
         /// Every record the answer must hold and nothing else, written as a
-        /// result's `answers` shows them (`10 mail.example.com.` for MX). Any
-        /// record added, removed or changed fails the check. Not combined
-        /// with `expected_contains`.
+        /// result's `answers` shows them (`10 mail.example.com.` for MX, or a
+        /// bare `mail.example.com` to allow any preference). Any record
+        /// added, removed or changed fails the check. Not combined with
+        /// `expected_contains`.
         expected_records: Option<Vec<String>>,
         timeout_ms: Option<u64>,
     },

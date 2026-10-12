@@ -261,8 +261,8 @@ Sends one ICMP echo request per resolved (SSRF-filtered) address until a reply a
 ```
 
 Resolves `domain` and reads the answers. `record_type` is one of `A`, `AAAA`,
-`CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`. A trailing dot on the
-domain is tolerated, and so are underscore labels, so `_dmarc.example.com`,
+`CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`. Surrounding whitespace
+and a trailing dot on the domain are tolerated, and so are underscore labels, so `_dmarc.example.com`,
 `s1._domainkey.example.com` and `_sip._tcp.example.com` can be watched;
 host-based checks still refuse them. A `PTR` check takes either the address
 (`192.0.2.1`, `2001:db8::1`), which is looked up as its `in-addr.arpa` or
@@ -287,11 +287,15 @@ too: quoted TXT strings (`"v=DKIM1; " "p=..."`), `xn--` labels and leading
 zeros. Order and TTL are ignored. Names compare case-insensitively with the
 trailing dot optional, addresses by value (`2001:0db8::1` is `2001:db8::1`),
 and TXT exactly, case included. An SOA value carries the zone's serial, so an
-SOA set fails on every zone edit. Up to 50 values of up to 2048 characters
-each; an empty list is the same as none. Setting both `expected_records` and
-`expected_contains`, a value not in the type's form (an MX without its
-preference, an A value that is not an IPv4 address), or one value twice is
-`400 INVALID_DNS_PARAMS`.
+SOA set fails on every zone edit. An MX value may also be a bare host
+(`smtp.google.com`): it stands for one record for that host at any
+preference, so a preference change passes while a record added, removed or
+replaced still fails; write the preference to watch it too. When the host
+answers more than once, the bare value takes the lowest preference and the
+rest are unexpected. Up to 50 values of up to 2048 characters each; an empty list is the
+same as none. Setting both `expected_records` and `expected_contains`, a value
+not in the type's form (an A value that is not an IPv4 address, a bare number
+or address as an MX host), or one value twice is `400 INVALID_DNS_PARAMS`.
 
 The result carries `domain`, `record_type`, the `answers` list (records of
 the queried type), `expected_contains`, and `matched` so a failure shows what

@@ -758,3 +758,128 @@ async fn patch_refuses_a_check_of_another_kind() {
     assert_eq!(body["check"]["type"], "tcp");
     assert_eq!(body["check"]["port"], 5433);
 }
+
+fn dns_target(record_type: &str, domain: &str, expected_records: Value) -> Value {
+    json!({
+        "name": "dns",
+        "check": {
+            "type": "dns",
+            "domain": domain,
+            "record_type": record_type,
+            "expected_records": expected_records,
+            "timeout": 3000
+        },
+        "interval": 60
+    })
+}
+
+#[tokio::test]
+async fn a_dns_exact_set_keeps_a_bare_mx_host_as_typed() {
+    let records = json!(["smtp.google.com", "5 backup.example.com."]);
+    let (status, body) = common::send_json(
+        app(),
+        "POST",
+        "/api/v1/targets",
+        dns_target("MX", "example.com", records.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["check"]["expected_records"], records);
+}
+
+#[tokio::test]
+async fn a_pasted_host_is_stored_trimmed_on_create_and_update() {
+    let app = app();
+    let pasted = " example.com\n";
+    for (check, interval, stored_at, stored) in [
+        (
+            json!({"type": "tcp", "host": pasted, "port": 5432, "timeout": 1000}),
+            60,
+            "host",
+            "example.com",
+        ),
+        (
+            json!({"type": "ping", "host": pasted, "timeout": 3000}),
+            60,
+            "host",
+            "example.com",
+        ),
+        (
+            json!({
+                "type": "tls_cert", "host": pasted, "port": 443, "timeout": 10000,
+                "warn_days": 25, "critical_days": 7
+            }),
+            21600,
+            "host",
+            "example.com",
+        ),
+        (
+            json!({
+                "type": "domain_expiry", "domain": pasted, "timeout": 10000,
+                "warn_days": 90, "critical_days": 30
+            }),
+            43200,
+            "domain",
+            "example.com",
+        ),
+        (
+            json!({"type": "dns", "domain": " _dmarc.example.com ", "record_type": "TXT", "timeout": 3000}),
+            60,
+            "domain",
+            "_dmarc.example.com",
+        ),
+    ] {
+        let payload = json!({"name": "pasted", "check": check, "interval": interval});
+        let (status, created) =
+            common::send_json(app.clone(), "POST", "/api/v1/targets", payload).await;
+        assert_eq!(status, StatusCode::CREATED, "{check}: {created}");
+        assert_eq!(created["check"][stored_at], stored, "{created}");
+    }
+
+    let (status, created) =
+        common::send_json(app.clone(), "POST", "/api/v1/targets", tcp_target("db")).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let path = format!("/api/v1/targets/{}", created["id"].as_str().unwrap());
+    let patch = json!({
+        "check": {"type": "tcp", "host": "\tdb2.example.com ", "port": 5432, "timeout": 1000}
+    });
+    let (status, updated) = common::send_json(app, "PATCH", &path, patch).await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["check"]["host"], "db2.example.com");
+}
+
+#[tokio::test]
+async fn a_refused_dns_value_names_the_field_at_fault() {
+    let app = app();
+    for (record_type, domain, records, field) in [
+        (
+            "MX",
+            "example.com",
+            json!(["192.0.2.10"]),
+            "check.expected_records",
+        ),
+        (
+            "MX",
+            "example.com",
+            json!(["mail.example.com", "Mail.Example.com."]),
+            "check.expected_records",
+        ),
+        ("A", "192.0.2.1", Value::Null, "check.domain"),
+        ("A", "exa mple.com", Value::Null, "check.domain"),
+    ] {
+        let (status, body) = common::send_json(
+            app.clone(),
+            "POST",
+            "/api/v1/targets",
+            dns_target(record_type, domain, records.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{domain} {records}: {body}"
+        );
+        assert_eq!(body["error"]["code"], "INVALID_DNS_PARAMS", "{body}");
+        assert_eq!(body["error"]["field"], field, "{body}");
+    }
+}

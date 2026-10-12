@@ -483,7 +483,8 @@ impl DnsRecordType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DnsCheck {
-    /// Name to resolve (FQDN; trailing dot tolerated). Underscore labels such
+    /// Name to resolve (FQDN; surrounding whitespace and a trailing dot
+    /// tolerated). Underscore labels such
     /// as `_dmarc` are accepted. A PTR lookup also takes an IP address and
     /// queries its reverse name; other types refuse one.
     #[schema(example = "api.example.com")]
@@ -502,10 +503,11 @@ pub struct DnsCheck {
     /// Optional exact record set: the answer must hold every listed value and
     /// nothing else, so a record added, removed or changed fails the check.
     /// Values are written as the result's `answers` shows them, e.g.
-    /// `10 mail.example.com.` for MX. Names compare case-insensitively with
-    /// the trailing dot optional, addresses by value, TXT exactly; order and
-    /// TTL are ignored. An empty list is the same as none. Cannot be combined
-    /// with `expected_contains`.
+    /// `10 mail.example.com.` for MX. An MX value may also be a bare host,
+    /// which stands for one record for that host at any preference. Names
+    /// compare case-insensitively with the trailing dot optional, addresses
+    /// by value, TXT exactly; order and TTL are ignored. An empty list is the
+    /// same as none. Cannot be combined with `expected_contains`.
     #[serde(default)]
     #[schema(nullable = true, max_items = 50, example = json!(["192.0.2.1", "192.0.2.2"]))]
     pub expected_records: Option<Vec<String>>,

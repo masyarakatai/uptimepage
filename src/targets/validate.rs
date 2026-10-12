@@ -478,8 +478,8 @@ pub(crate) fn carry_flow_secrets(
     }
 }
 
-/// Normalises the host/domain of the check in place: IDN-encoded, ASCII
-/// lowercase, trailing dot stripped. After this runs, downstream stores the
+/// Normalises the host/domain of the check in place: surrounding whitespace
+/// trimmed, IDN-encoded, ASCII lowercase, trailing dot stripped. After this runs, downstream stores the
 /// canonical form and every layer (circuit breaker, host throttle, RDAP
 /// singleflight) keys on the same string regardless of how the user typed it.
 /// HTTP URLs are skipped — `url::Url` already canonicalises hosts on parse.
@@ -497,8 +497,11 @@ pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result
         code: &'static str,
         canon: fn(&str) -> std::result::Result<String, idna::Errors>,
     ) -> Result<()> {
-        let raw = std::mem::take(host);
-        let unbracketed = crate::domain::check::unbracket(&raw);
+        let pasted = std::mem::take(host);
+        // A pasted host often carries a stray space or newline, which IDN
+        // refuses as an invalid character.
+        let raw = pasted.trim();
+        let unbracketed = crate::domain::check::unbracket(raw);
         // IPs bypass IDN, but not canonicalisation: `2001:db8::1` and
         // `2001:db8:0:0::1` are one address written two ways, and storing them
         // verbatim gave each its own breaker and throttle bucket. Displaying
@@ -587,7 +590,7 @@ pub(crate) fn validate_cert_days(
 // back, so both are refused up front.
 fn validate_expected_records(d: &crate::domain::DnsCheck) -> Result<()> {
     use crate::domain::DnsCheck;
-    use crate::domain::dns_record::{parse_expected, record_key};
+    use crate::domain::dns_record::parse_expected_record;
     let refuse = |message: String| {
         AppError::bad_request_field(codes::INVALID_DNS_PARAMS, message, "check.expected_records")
     };
@@ -605,7 +608,7 @@ fn validate_expected_records(d: &crate::domain::DnsCheck) -> Result<()> {
             DnsCheck::MAX_EXPECTED_RECORDS
         )));
     }
-    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut seen = HashMap::new();
     for (i, value) in records.iter().enumerate() {
         let n = i + 1;
         if value.trim().is_empty() {
@@ -622,14 +625,14 @@ fn validate_expected_records(d: &crate::domain::DnsCheck) -> Result<()> {
                 "expected record {n} holds a line break or other control character"
             )));
         }
-        let rdata = parse_expected(d.record_type, value).ok_or_else(|| {
+        let key = parse_expected_record(d.record_type, value).ok_or_else(|| {
             refuse(format!(
-                "expected record {n} is not a {} value; write it as the answer shows it, e.g. {}",
+                "expected record {n} is not a valid {} value; write it as the answer shows it, e.g. {}",
                 d.record_type.as_str(),
                 d.record_type.example_record()
             ))
         })?;
-        if let Some(first) = seen.insert(record_key(&rdata), n) {
+        if let Some(first) = seen.insert(key, n) {
             return Err(refuse(format!(
                 "expected record {n} repeats record {first}"
             )));

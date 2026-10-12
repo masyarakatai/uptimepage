@@ -375,7 +375,7 @@
           <span class="field-outline__label">Expected records</span>
           <textarea name="dns_expected_records" rows="4" placeholder="10 mail.example.com.&#10;20 alt.example.com."
                     autocomplete="off" spellcheck="false" class="w-full field font-mono">{{ form.dns.expected_records }}</textarea>
-          <span class="mt-1 block text-xs text-muted">One record per line, written as the check's answers show it. A record added, removed or changed fails the check.</span>
+          <span class="mt-1 block text-xs text-muted">One record per line, written as the check's answers show it. An MX host without its preference allows any preference. A record added, removed or changed fails the check.</span>
         </label>
       </div>
       <div class="flex flex-wrap gap-3">

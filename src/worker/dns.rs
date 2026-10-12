@@ -8,7 +8,7 @@ use serde::Serialize;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::domain::dns_record::{expected_key, record_key};
+use crate::domain::dns_record::{ExpectedRecord, expected_record, mx_host_key, record_key};
 use crate::domain::{CheckResult, CheckStatus, DnsCheck, DnsRecordType};
 use crate::http_client::{HttpClients, build_single_resolver};
 
@@ -185,28 +185,54 @@ impl<'a> SetDiff<'a> {
         own: &[&Record],
         answers: &'a [String],
     ) -> Self {
-        let want = first_spelling(expected.iter().map(|v| (expected_key(record_type, v), v)));
-        let got = first_spelling(
-            own.iter()
-                .zip(answers)
-                .map(|(r, shown)| (record_key(&r.data), shown)),
+        let want = first_spelling(
+            expected
+                .iter()
+                .map(|v| (expected_record(record_type, v), v)),
         );
-        let absent = |side: &BTreeMap<String, &'a str>, other: &BTreeMap<String, &'a str>| {
-            side.iter()
-                .filter(|(key, _)| !other.contains_key(*key))
-                .map(|(_, value)| *value)
-                .collect()
-        };
+        // Each distinct answer once, with the host a bare MX value claims it by.
+        let mut got = BTreeMap::new();
+        for (r, shown) in own.iter().zip(answers) {
+            got.entry(record_key(&r.data))
+                .or_insert_with(|| (shown.as_str(), mx_host_key(&r.data)));
+        }
+        // Every value claims one answer. Whole values go first, so a bare
+        // host cannot take the answer a pinned one needs. A bare host takes its
+        // lowest preference, the record most likely to have been there.
+        let (whole, bare): (Vec<_>, Vec<_>) = want
+            .iter()
+            .partition(|(value, _)| matches!(value, ExpectedRecord::Whole(_)));
+        let mut missing = Vec::new();
+        for (value, shown) in whole.into_iter().chain(bare) {
+            let claim = match value {
+                ExpectedRecord::Whole(key) => got.contains_key(key).then(|| key.clone()),
+                ExpectedRecord::MxHost(host) => got
+                    .iter()
+                    .filter_map(|(key, (_, mx))| {
+                        mx.as_ref()
+                            .filter(|(h, _)| h == host)
+                            .map(|(_, preference)| (preference, key))
+                    })
+                    .min()
+                    .map(|(_, key)| key.clone()),
+            };
+            match claim {
+                Some(key) => {
+                    got.remove(&key);
+                }
+                None => missing.push(*shown),
+            }
+        }
         Self {
-            missing: absent(&want, &got),
-            unexpected: absent(&got, &want),
+            missing,
+            unexpected: got.into_values().map(|(shown, _)| shown).collect(),
         }
     }
 }
 
-fn first_spelling<'a>(
-    keyed: impl Iterator<Item = (String, &'a String)>,
-) -> BTreeMap<String, &'a str> {
+fn first_spelling<'a, K: Ord>(
+    keyed: impl Iterator<Item = (K, &'a String)>,
+) -> BTreeMap<K, &'a str> {
     let mut out = BTreeMap::new();
     for (key, value) in keyed {
         out.entry(key).or_insert(value.as_str());
@@ -408,6 +434,81 @@ mod tests {
         assert_eq!(
             d["unexpected"],
             serde_json::json!(["v=spf1 include:_spf.example.com include:evil.example ~all"])
+        );
+    }
+
+    #[test]
+    fn a_bare_mx_host_matches_it_at_any_preference() {
+        let check = exact(
+            DnsRecordType::Mx,
+            &["smtp.google.com", "5 backup.example.com"],
+        );
+        for answers in [
+            &["1 smtp.google.com.", "5 backup.example.com."][..],
+            &["30 SMTP.google.com", "5 backup.example.com."][..],
+        ] {
+            assert_eq!(
+                judge(&check, answers).status,
+                CheckStatus::Up,
+                "{answers:?}"
+            );
+        }
+
+        let v = judge(
+            &check,
+            &[
+                "1 smtp.google.com.",
+                "7 backup.example.com.",
+                "0 mx.attacker.example.",
+            ],
+        );
+        assert_eq!(v.status, CheckStatus::Down);
+        let d = details(&v);
+        assert_eq!(d["missing"], serde_json::json!(["5 backup.example.com"]));
+        assert_eq!(
+            d["unexpected"],
+            serde_json::json!(["0 mx.attacker.example.", "7 backup.example.com."])
+        );
+
+        let v = judge(&check, &["5 backup.example.com."]);
+        assert_eq!(v.status, CheckStatus::Down);
+        assert_eq!(
+            details(&v)["missing"],
+            serde_json::json!(["smtp.google.com"])
+        );
+    }
+
+    #[test]
+    fn a_bare_mx_host_stands_for_one_record() {
+        let bare = exact(DnsRecordType::Mx, &["smtp.google.com"]);
+        for (answers, extra) in [
+            (
+                ["1 smtp.google.com.", "50 smtp.google.com."],
+                "50 smtp.google.com.",
+            ),
+            (
+                ["10 smtp.google.com.", "5 smtp.google.com."],
+                "10 smtp.google.com.",
+            ),
+        ] {
+            let v = judge(&bare, &answers);
+            assert_eq!(v.status, CheckStatus::Down);
+            assert_eq!(details(&v)["unexpected"], serde_json::json!([extra]));
+        }
+
+        let both = exact(
+            DnsRecordType::Mx,
+            &["mail.example.com", "10 mail.example.com"],
+        );
+        assert_eq!(
+            judge(&both, &["20 mail.example.com.", "10 mail.example.com."]).status,
+            CheckStatus::Up
+        );
+        let v = judge(&both, &["10 mail.example.com."]);
+        assert_eq!(v.status, CheckStatus::Down);
+        assert_eq!(
+            details(&v)["missing"],
+            serde_json::json!(["mail.example.com"])
         );
     }
 

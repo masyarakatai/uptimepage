@@ -146,11 +146,39 @@ The name can carry underscore labels, so mail records such as `_dmarc.example.co
 
 That last option is the point of the check. Without it, any answer at all counts as up, so you learn only that the name still resolves. With it, you learn that it resolves **to the right place** — which is what catches a hijacked record, a bad registrar change, or a regional misroute that a plain HTTP check from one location would sail straight past.
 
-A substring passes as long as one answer contains it, so it misses an extra MX or NS record appearing next to yours, an SPF record rewritten around the part you watch, or one of several A records swapped. The exact set catches those: list every record, one per line, written as the check's answers show it (`10 mail.example.com.` for MX), and any record added, removed or changed fails the check. Order and TTL don't matter, names ignore case and the trailing dot, and TXT is compared exactly. A failure names what is missing and what is unexpected. Skip SOA here: its serial changes on every zone edit.
+A substring passes as long as one answer contains it, so it misses an extra MX or NS record appearing next to yours, an SPF record rewritten around the part you watch, or one of several A records swapped. The exact set catches those: list every record, one per line, written as the check's answers show it (`10 mail.example.com.` for MX), and any record added, removed or changed fails the check. Order and TTL don't matter, names ignore case and the trailing dot, and TXT is compared exactly. A failure names what is missing and what is unexpected. For MX you can leave the preference off, as the example below shows. Skip SOA here: its serial changes on every zone edit.
 
 An empty answer, including NXDOMAIN, is down. So is a mismatch when you have set an expected substring or record set, and so is a resolver that fails outright. Querying a specific resolver is how you verify propagation: point one monitor at your authoritative server and another at a public resolver, and a gap between them is a propagation problem.
 
 The default resolver caches and honours TTL, so checking faster than the record's TTL mostly re-reads the cache. Five minutes suits most records. Naming a resolver explicitly queries it directly, which is where a tighter interval starts to earn its keep.
+
+### An exact record set, by example
+
+Say `example.com` sends its mail through Google and keeps a backup server, and an MX check on it answers:
+
+```
+1 smtp.google.com.
+5 backup.example.com.
+```
+
+You set the exact set to:
+
+```
+smtp.google.com
+5 backup.example.com
+```
+
+The first line has no preference, so it asks for one `smtp.google.com` record at any preference. The second pins `backup.example.com` to preference 5. Each line stands for one record, line order doesn't matter, and no number is filled in for a line you left without one. Nothing else may appear in the answer.
+
+| The answer changes to | Result | What the failure names |
+|---|---|---|
+| `10 smtp.google.com.` and `5 backup.example.com.` | up | |
+| `1 smtp.google.com.` and `7 backup.example.com.` | down | missing `5 backup.example.com`, unexpected `7 backup.example.com.` |
+| both records, plus `0 mx.attacker.example.` | down | unexpected `0 mx.attacker.example.` |
+| both records, plus `50 smtp.google.com.` | down | unexpected `50 smtp.google.com.` |
+| `5 backup.example.com.` alone | down | missing `smtp.google.com` |
+
+Write the preference whenever a change to it matters to you. Every other record type is compared whole, so an `A` set of `192.0.2.1` and `192.0.2.2` fails as soon as either address goes away or a third one appears.
 
 ## Flow
 

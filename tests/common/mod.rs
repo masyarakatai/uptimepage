@@ -843,6 +843,16 @@ pub fn json_request(method: &str, path: &str, body: Value) -> Request<Body> {
         .expect("build request")
 }
 
+/// Sends a JSON request and decodes the JSON reply.
+pub async fn send_json(app: Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+    use tower::ServiceExt;
+    let resp = app
+        .oneshot(json_request(method, path, body))
+        .await
+        .expect("response");
+    (resp.status(), body_json(resp).await)
+}
+
 /// Sends a JSON request as the test owner signed in to `org` and decodes the
 /// JSON reply.
 pub async fn owner_json(
@@ -852,12 +862,13 @@ pub async fn owner_json(
     path: &str,
     body: Value,
 ) -> (StatusCode, Value) {
-    use tower::ServiceExt;
-    let resp = with_session(app, test_user_id(), Some(org), None)
-        .oneshot(json_request(method, path, body))
-        .await
-        .expect("response");
-    (resp.status(), body_json(resp).await)
+    send_json(
+        with_session(app, test_user_id(), Some(org), None),
+        method,
+        path,
+        body,
+    )
+    .await
 }
 
 /// Decodes the response body as JSON. Panics on non-JSON payloads.
