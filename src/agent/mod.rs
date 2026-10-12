@@ -3,6 +3,7 @@
 //! Postgres/ClickHouse/web/alerting — config lives in memory and a restart
 //! re-pulls.
 
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use backoff::ExponentialBackoffBuilder;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper::header::{self, AUTHORIZATION, IF_NONE_MATCH};
-use hyper::{Request, StatusCode};
+use hyper::{HeaderMap, Request, StatusCode};
 use metrics::counter;
 use secrecy::ExposeSecret;
 use tokio::sync::Mutex;
@@ -25,14 +26,14 @@ use crate::domain::agent_wire::{
     AgentTargetsResponse, DispatchBatch, DispatchReport, DispatchedCheck, FlowRunRecord,
     IngestRequestRef,
 };
-use crate::domain::{CheckResult, OrgId, Target};
+use crate::domain::{CheckResult, MAX_CHECK_TIMEOUT, OrgId, Target};
 use crate::error::{AppError, Result};
 use crate::http_client::HttpClients;
 use crate::http_client::client::build_clients;
 use crate::http_outbound::{self, OutboundHttpClient};
 use crate::metric_names;
 use crate::pipeline::{BatcherConfig, ResultBatcher};
-use crate::scheduler::{Scheduler, TargetRegistry};
+use crate::scheduler::{Scheduler, TargetRegistry, stop_probing};
 use crate::security::SsrfGuard;
 use crate::storage::admin::EnabledTargetSource;
 use crate::storage::traits::FlowRunSink;
@@ -43,11 +44,20 @@ use crate::worker::rdap::RdapClient;
 use crate::worker::rdap_singleflight::RdapSingleflight;
 use crate::worker::{ResultFanout, WorkerDeps, WorkerPool};
 
+/// Past the longest check budget, since a check can overrun it slightly, and
+/// inside the 180 s stop grace period with the final flush's own retries.
+const SETTLE: Duration = Duration::from_secs(MAX_CHECK_TIMEOUT.as_secs() + 15);
+
 const MAX_PULL_BYTES: usize = 32 << 20;
 /// One exchange with the control plane, headers and body together. A stall
 /// mid-body wedges this loop, and the region then stops probing while still
 /// reporting itself connected.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// The control plane records an agent visit at most every 30 s and, by
+/// default, calls the agent stale after 90 s, so even with one pull lost this
+/// one stays live.
+const SEEN_EVERY: Duration = Duration::from_secs(20);
+const SEEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct PullCache {
     etag: Option<String>,
@@ -93,23 +103,76 @@ impl AgentPullSource {
             Err(AppError::Other(anyhow::anyhow!(msg)))
         }
     }
+
+    fn pull_request(&self, etag: Option<&str>) -> Result<Request<Full<Bytes>>> {
+        let mut builder =
+            Request::get(&self.url).header(AUTHORIZATION, format!("Bearer {}", self.token));
+        if self.flow_capable {
+            builder = builder.header("x-flow-capable", "true");
+        }
+        if let Some(e) = etag {
+            builder = builder.header(IF_NONE_MATCH, e);
+        }
+        Ok(builder
+            .body(Full::new(Bytes::new()))
+            .context("building config-pull request")?)
+    }
+
+    /// Runs `stopping` while pulling every `every`, only so the control plane
+    /// keeps counting this agent live while its last checks settle. Replies
+    /// are dropped unread: nothing schedules from them any more.
+    pub async fn keep_seen_while(&self, stopping: impl Future<Output = ()>, every: Duration) {
+        tokio::select! {
+            () = stopping => {}
+            never = self.keep_seen(every) => match never {},
+        }
+    }
+
+    /// Tracks the config version on its own, so a change made while settling
+    /// is sent in full once rather than on every pull, and the cache stays as
+    /// the scheduler last read it. The first pull waits a full period: the
+    /// scheduler pulled moments ago.
+    async fn keep_seen(&self, every: Duration) -> Infallible {
+        let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        ticks.tick().await;
+        let mut etag = self.cache.lock().await.etag.clone();
+        loop {
+            match self.touch(etag.as_deref()).await {
+                Ok(answered) => etag = answered.or(etag),
+                Err(err) => tracing::warn!(error = %err, "agent keep-alive pull failed"),
+            }
+            ticks.tick().await;
+        }
+    }
+
+    async fn touch(&self, etag: Option<&str>) -> Result<Option<String>> {
+        let req = self.pull_request(etag)?;
+        let resp = tokio::time::timeout(SEEN_TIMEOUT, self.client.request(req))
+            .await
+            .context("timed out")?
+            .context("request failed")?;
+        let status = resp.status();
+        if status != StatusCode::NOT_MODIFIED && !status.is_success() {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "control plane returned {status}"
+            )));
+        }
+        Ok(etag_of(resp.headers()))
+    }
+}
+
+fn etag_of(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
 }
 
 #[async_trait]
 impl EnabledTargetSource for AgentPullSource {
     async fn list_all_enabled_targets(&self) -> Result<Vec<(OrgId, Target)>> {
         let etag = self.cache.lock().await.etag.clone();
-        let mut builder =
-            Request::get(&self.url).header(AUTHORIZATION, format!("Bearer {}", self.token));
-        if self.flow_capable {
-            builder = builder.header("x-flow-capable", "true");
-        }
-        if let Some(e) = &etag {
-            builder = builder.header(IF_NONE_MATCH, e.clone());
-        }
-        let req = builder
-            .body(Full::new(Bytes::new()))
-            .context("building config-pull request")?;
+        let req = self.pull_request(etag.as_deref())?;
 
         let at = tokio::time::Instant::now() + HTTP_TIMEOUT;
         let resp = match tokio::time::timeout_at(at, self.client.request(req)).await {
@@ -148,11 +211,7 @@ impl EnabledTargetSource for AgentPullSource {
                 .await;
         }
 
-        let new_etag = resp
-            .headers()
-            .get(header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
+        let new_etag = etag_of(resp.headers());
         let bytes = match tokio::time::timeout_at(
             at,
             Limited::new(resp.into_body(), MAX_PULL_BYTES).collect(),
@@ -423,12 +482,13 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         http_outbound::build_outbound_client(SsrfGuard::new(cfg.security.allow_private_targets));
 
     let flow_capable = cfg.flow.enabled;
-    let source: Arc<dyn EnabledTargetSource> = Arc::new(AgentPullSource::new(
+    let pull = Arc::new(AgentPullSource::new(
         outbound.clone(),
         &base,
         token.clone(),
         flow_capable,
     ));
+    let source: Arc<dyn EnabledTargetSource> = pull.clone();
     let results_url = Url::parse(&format!("{base}/api/agent/results"))
         .context("agent.control_plane_url is not a valid URL")?;
     let pending_flow_runs = Arc::new(PendingFlowRuns::default());
@@ -505,6 +565,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
     );
 
     let root = CancellationToken::new();
+    let flush = CancellationToken::new();
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         let token = root.clone();
@@ -515,7 +576,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         })
     };
     let batcher_handle = {
-        let token = root.clone();
+        let token = flush.clone();
         tokio::spawn(async move { batcher.run(token).await })
     };
     // Probe-side gauges (workers in-flight, open breakers, queue depth, RSS).
@@ -523,7 +584,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
     let sample_interval =
         Duration::from_millis(cfg.observability.gauge_sample_interval_ms.max(100));
     let sampler_handle = crate::scheduler::sampler::spawn(
-        pool,
+        pool.clone(),
         registry,
         None,
         &result_tx,
@@ -550,9 +611,18 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
 
     wait_for_signal().await;
     tracing::info!("agent shutting down");
-    root.cancel();
-    let _ = scheduler_handle.await;
-    let _ = batcher_handle.await;
+    pull.keep_seen_while(
+        stop_probing(
+            &root,
+            scheduler_handle,
+            &pool,
+            SETTLE,
+            flush,
+            batcher_handle,
+        ),
+        SEEN_EVERY,
+    )
+    .await;
     let _ = sampler_handle.await;
     let _ = job_handle.await;
     Ok(())

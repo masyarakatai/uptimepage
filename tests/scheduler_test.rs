@@ -9,11 +9,12 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uptimepage::domain::{CheckStatus, OrgId, Target};
 use uptimepage::error::{AppError, Result as SmResult};
 use uptimepage::pipeline::{BatcherConfig, ResultBatcher};
-use uptimepage::scheduler::{Scheduler, TargetRegistry};
+use uptimepage::scheduler::{Scheduler, TargetRegistry, stop_probing};
 use uptimepage::storage::admin::EnabledTargetSource;
 use uptimepage::storage::{InMemorySink, InMemoryTargetStore};
 use uptimepage::worker::circuit_breaker::CIRCUIT_OPEN_REASON;
@@ -242,25 +243,36 @@ async fn scheduler_picks_up_new_targets_on_refresh() {
     assert!(counter.load(Ordering::Relaxed) >= 1);
 }
 
-#[tokio::test]
-async fn shutdown_drains_in_flight_results() {
-    let (addr, counter) = spawn_counting_mock().await;
+struct Probing {
+    pool: Arc<WorkerPool>,
+    sink: Arc<InMemorySink>,
+    root: CancellationToken,
+    flush: CancellationToken,
+    scheduler: JoinHandle<()>,
+    batcher: JoinHandle<()>,
+}
+
+/// Wired as the agent and the brain wire it, returned once a check against
+/// `addr` is running.
+async fn mid_check(addr: std::net::SocketAddr, arrived: &AtomicU32) -> Probing {
     let store = Arc::new(InMemoryTargetStore::from_vec(vec![http_target(
-        addr, "/ping", 100,
+        addr, "/slow", 100,
     )]));
-    let registry = Arc::new(TargetRegistry::new(store));
     let (tx, rx) = mpsc::channel(64);
     let sink = Arc::new(InMemorySink::new());
-
     let pool = Arc::new(WorkerPool::new(
         50,
         test_client(),
         breaker_cfg(),
-        ResultFanout::new(tx.clone()),
+        ResultFanout::new(tx),
         uptimepage::worker::host_throttle::HostThrottle::permissive(),
         common::test_domain_expiry_runtime(),
     ));
-    let scheduler = Arc::new(Scheduler::new(registry, pool, scheduler_cfg(30)));
+    let scheduler = Arc::new(Scheduler::new(
+        Arc::new(TargetRegistry::new(store)),
+        pool.clone(),
+        scheduler_cfg(30),
+    ));
     let batcher = ResultBatcher::new(
         rx,
         sink.clone(),
@@ -269,34 +281,145 @@ async fn shutdown_drains_in_flight_results() {
             batch_timeout: Duration::from_secs(60),
         },
     );
-    let shutdown = CancellationToken::new();
-    let scheduler_handle = tokio::spawn(scheduler.run(shutdown.clone()));
-    let batcher_handle = tokio::spawn(batcher.run(shutdown.clone()));
+    let root = CancellationToken::new();
+    let flush = CancellationToken::new();
+    let scheduler = {
+        let token = root.clone();
+        tokio::spawn(async move { scheduler.run(token).await.unwrap() })
+    };
+    let batcher = tokio::spawn(batcher.run(flush.clone()));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while tokio::time::Instant::now() < deadline && counter.load(Ordering::Relaxed) < 1 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    while arrived.load(Ordering::Relaxed) == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "no check started");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(counter.load(Ordering::Relaxed) >= 1, "no checks ran");
-    assert_eq!(sink.len(), 0, "batcher should not have flushed yet");
+    Probing {
+        pool,
+        sink,
+        root,
+        flush,
+        scheduler,
+        batcher,
+    }
+}
 
-    shutdown.cancel();
-    drop(tx);
-    tokio::time::timeout(Duration::from_secs(5), scheduler_handle)
-        .await
-        .expect("scheduler did not exit")
-        .unwrap()
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), batcher_handle)
-        .await
-        .expect("batcher did not exit")
-        .unwrap();
+#[tokio::test]
+async fn a_check_running_at_shutdown_still_reaches_storage() {
+    let (addr, arrived) = spawn_slow_mock(Duration::from_millis(500)).await;
+    let p = mid_check(addr, &arrived).await;
+
+    stop_probing(
+        &p.root,
+        p.scheduler,
+        &p.pool,
+        Duration::from_secs(5),
+        p.flush,
+        p.batcher,
+    )
+    .await;
+
+    let stored = p.sink.snapshot();
+    assert_eq!(
+        stored.len(),
+        arrived.load(Ordering::Relaxed) as usize,
+        "every check that reached the server is stored"
+    );
+    assert!(stored.iter().all(|r| r.status == CheckStatus::Up));
+}
+
+#[tokio::test]
+async fn a_check_outlasting_the_settle_window_does_not_hold_the_flush() {
+    let (addr, arrived) = spawn_slow_mock(Duration::from_secs(30)).await;
+    let p = mid_check(addr, &arrived).await;
+
+    let started = tokio::time::Instant::now();
+    stop_probing(
+        &p.root,
+        p.scheduler,
+        &p.pool,
+        Duration::from_millis(200),
+        p.flush,
+        p.batcher,
+    )
+    .await;
 
     assert!(
-        !sink.is_empty(),
-        "shutdown should drain in-flight results, got {}",
-        sink.len()
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
     );
+    assert!(p.sink.is_empty());
+}
+
+#[tokio::test]
+async fn an_agent_stays_seen_while_its_checks_settle_and_stops_after() {
+    use axum::http::HeaderMap;
+    use axum::http::header::{ETAG, IF_NONE_MATCH};
+    const VERSION: &str = "\"v1\"";
+
+    let pulls = Arc::new(AtomicU32::new(0));
+    let full_pulls = Arc::new(AtomicU32::new(0));
+    let control_plane = {
+        let (pulls, full_pulls) = (pulls.clone(), full_pulls.clone());
+        spawn_router(Router::new().route(
+            "/api/agent/targets",
+            get(move |headers: HeaderMap| {
+                let (pulls, full_pulls) = (pulls.clone(), full_pulls.clone());
+                async move {
+                    pulls.fetch_add(1, Ordering::Relaxed);
+                    if headers.get(IF_NONE_MATCH).is_some_and(|v| v == VERSION) {
+                        (StatusCode::NOT_MODIFIED, [(ETAG, VERSION)], "")
+                    } else {
+                        full_pulls.fetch_add(1, Ordering::Relaxed);
+                        (StatusCode::OK, [(ETAG, VERSION)], "{}")
+                    }
+                }
+            }),
+        ))
+        .await
+    };
+    let agent = uptimepage::agent::AgentPullSource::new(
+        uptimepage::http_outbound::build_outbound_client(uptimepage::security::SsrfGuard::new(
+            true,
+        )),
+        &format!("http://{control_plane}"),
+        "token".into(),
+        false,
+    );
+    let (addr, arrived) = spawn_slow_mock(Duration::from_millis(800)).await;
+    let p = mid_check(addr, &arrived).await;
+    let every = Duration::from_millis(100);
+
+    agent
+        .keep_seen_while(
+            stop_probing(
+                &p.root,
+                p.scheduler,
+                &p.pool,
+                Duration::from_secs(5),
+                p.flush,
+                p.batcher,
+            ),
+            every,
+        )
+        .await;
+
+    assert_eq!(
+        p.sink.len(),
+        arrived.load(Ordering::Relaxed) as usize,
+        "the settled check is stored"
+    );
+    tokio::time::sleep(every).await;
+    let during = pulls.load(Ordering::Relaxed);
+    assert!(during >= 2, "pulled {during} times while the check settled");
+    assert_eq!(
+        full_pulls.load(Ordering::Relaxed),
+        1,
+        "a new config version is sent in full once"
+    );
+    tokio::time::sleep(every * 5).await;
+    assert_eq!(pulls.load(Ordering::Relaxed), during);
 }
 
 struct FailingThenSucceedingSource {

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use dashmap::{DashMap, DashSet};
 use metrics::{Counter, counter, histogram};
 use tokio::sync::{Semaphore, mpsc};
+use tokio_util::task::TaskTracker;
 
 use uuid::Uuid;
 
@@ -152,6 +153,7 @@ pub struct WorkerPool {
     /// Where a flow run's trace and page snapshot go. `None` leaves the run
     /// unrecorded, which costs history and nothing else.
     flow_runs: Option<Arc<dyn crate::storage::traits::FlowRunSink>>,
+    tasks: TaskTracker,
 }
 
 impl WorkerPool {
@@ -177,6 +179,7 @@ impl WorkerPool {
             in_flight: Arc::new(DashSet::new()),
             flow_engine: None,
             flow_runs: None,
+            tasks: TaskTracker::new(),
         }
     }
 
@@ -236,6 +239,11 @@ impl WorkerPool {
     pub fn in_flight(&self) -> usize {
         self.max_concurrent
             .saturating_sub(self.semaphore.available_permits())
+    }
+
+    /// Every check this pool started, with the flow run it recorded.
+    pub fn tasks(&self) -> &TaskTracker {
+        &self.tasks
     }
 
     pub fn open_breakers(&self) -> usize {
@@ -354,8 +362,9 @@ impl WorkerPool {
         let flow_engine = self.flow_engine.clone();
         let flow_runs = self.flow_runs.clone();
         let org_id = task.org_id;
+        let tasks = self.tasks.clone();
 
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             let _permit = permit;
             let _in_flight_guard = in_flight_guard;
             let breaker = get_or_init_breaker(&breakers, &task.breaker_key, breaker_cfg);
@@ -394,7 +403,7 @@ impl WorkerPool {
             // Detached so the permit is released on the verdict, not on the
             // telemetry write behind it.
             if let (Some(sink), Some(run)) = (flow_runs, flow_run) {
-                tokio::spawn(async move { sink.write_runs(&[run]).await });
+                tasks.spawn(async move { sink.write_runs(&[run]).await });
             }
         });
     }

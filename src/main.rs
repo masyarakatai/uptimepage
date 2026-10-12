@@ -43,6 +43,8 @@ use uptimepage::{
 };
 
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
+/// Inside `SHUTDOWN_DEADLINE`, leaving the last flush time to land.
+const PROBE_SETTLE: Duration = Duration::from_secs(SHUTDOWN_DEADLINE.as_secs() - 2);
 
 /// One INFO line per HTTP request for ops / Loki — method, path,
 /// status, latency, trace_id. Emitted at INFO and NOT coupled to the
@@ -353,6 +355,7 @@ async fn main() -> Result<()> {
     let batcher = ResultBatcher::new(result_rx, result_sink, batcher_cfg);
 
     let root = CancellationToken::new();
+    let flush = CancellationToken::new();
     // Always spawned: with probing off the source above narrows the schedule
     // to passive evaluation only.
     if !cfg.scheduler.enabled {
@@ -372,7 +375,7 @@ async fn main() -> Result<()> {
         })
     };
     let batcher_handle: JoinHandle<()> = {
-        let token = root.clone();
+        let token = flush.clone();
         tokio::spawn(async move { batcher.run(token).await })
     };
     let org_ttl_handle: JoinHandle<()> =
@@ -1056,8 +1059,14 @@ async fn main() -> Result<()> {
     tracing::info!("draining background tasks");
     let drain = async {
         let _ = tokio::join!(
-            scheduler_handle,
-            batcher_handle,
+            scheduler::stop_probing(
+                &root,
+                scheduler_handle,
+                &pool,
+                PROBE_SETTLE,
+                flush,
+                batcher_handle,
+            ),
             org_ttl_handle,
             sampler_handle,
             incident_writer_handle,
