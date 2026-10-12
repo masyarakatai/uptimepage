@@ -1,5 +1,5 @@
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -76,6 +76,7 @@ pub(crate) struct TimedConnection {
     pub stream: MaybeTls,
     pub timings: PhaseTimings,
     pub alpn_h2: bool,
+    pub remote_ip: Option<IpAddr>,
 }
 
 /// Connect-phase failures, typed so the probe attributes each to the right
@@ -91,11 +92,20 @@ pub(crate) enum ConnectError {
     Connect {
         err: io::Error,
         dns_ms: u16,
+        tried: Vec<IpAddr>,
+    },
+    /// DNS or the TLS handshake outlasted the connect budget. TCP running out of
+    /// it is a `Connect`, which keeps the addresses it tried.
+    Timeout {
+        dns_ms: Option<u16>,
+        connect_ms: Option<u16>,
+        remote_ip: Option<IpAddr>,
     },
     Tls {
         err: io::Error,
         dns_ms: u16,
         connect_ms: u16,
+        remote_ip: Option<IpAddr>,
     },
 }
 
@@ -105,6 +115,8 @@ impl std::fmt::Display for ConnectError {
             ConnectError::Dns(e) => write!(f, "dns resolution failed: {e}"),
             ConnectError::NoAddrs { .. } => write!(f, "no allowed addresses for host"),
             ConnectError::Connect { err, .. } => write!(f, "tcp connect failed: {err}"),
+            ConnectError::Timeout { dns_ms: None, .. } => f.write_str(DNS_TIMEOUT),
+            ConnectError::Timeout { .. } => write!(f, "connect timed out"),
             ConnectError::Tls { err, .. } => write!(f, "tls handshake failed: {err}"),
         }
     }
@@ -122,6 +134,8 @@ impl ConnectError {
             ConnectError::Dns(e) => dns_reason(e),
             ConnectError::NoAddrs { .. } => "address not allowed",
             ConnectError::Connect { err, .. } => tcp_reason(err),
+            ConnectError::Timeout { dns_ms: None, .. } => DNS_TIMEOUT,
+            ConnectError::Timeout { .. } => "connect timeout",
             ConnectError::Tls { err, .. } => tls_reason(err),
         }
     }
@@ -137,9 +151,30 @@ impl ConnectError {
             ConnectError::Tls {
                 dns_ms, connect_ms, ..
             } => (Some(*dns_ms), Some(*connect_ms)),
+            ConnectError::Timeout {
+                dns_ms, connect_ms, ..
+            } => (*dns_ms, *connect_ms),
+        }
+    }
+
+    pub(crate) fn remote_ip(&self) -> Option<IpAddr> {
+        match self {
+            ConnectError::Tls { remote_ip, .. } | ConnectError::Timeout { remote_ip, .. } => {
+                *remote_ip
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tried(&self) -> &[IpAddr] {
+        match self {
+            ConnectError::Connect { tried, .. } => tried,
+            _ => &[],
         }
     }
 }
+
+const DNS_TIMEOUT: &str = "dns: lookup timed out";
 
 /// Shared with the TCP and TLS-cert kinds through `dial::allowed_addrs`,
 /// which would otherwise hand the resolver's own Display to the customer.
@@ -152,7 +187,7 @@ pub(crate) fn dns_reason(e: &anyhow::Error) -> &'static str {
     } else if n.is_no_records_found() {
         "dns: no address records"
     } else if matches!(n, hickory_resolver::net::NetError::Timeout) {
-        "dns: lookup timed out"
+        DNS_TIMEOUT
     } else {
         "dns: lookup failed"
     }
@@ -240,12 +275,16 @@ pub(crate) async fn timed_connect(
     host: &str,
     port: u16,
     is_https: bool,
+    deadline: tokio::time::Instant,
 ) -> Result<TimedConnection, ConnectError> {
     let dns_start = Instant::now();
-    let addrs: Vec<SocketAddr> = p
-        .resolver
-        .resolve_addrs(host)
+    let addrs: Vec<SocketAddr> = tokio::time::timeout_at(deadline, p.resolver.resolve_addrs(host))
         .await
+        .map_err(|_| ConnectError::Timeout {
+            dns_ms: None,
+            connect_ms: None,
+            remote_ip: None,
+        })?
         .map_err(ConnectError::Dns)?
         .into_iter()
         .filter(|ip| p.ssrf_guard.allow(*ip))
@@ -257,13 +296,16 @@ pub(crate) async fn timed_connect(
     }
 
     // Happy-Eyeballs v2 (RFC 8305): race v6/v4 with a stagger, bounded by
-    // `connect_timeout`, so a broken AAAA doesn't burn the whole budget.
+    // the connect budget, so a broken AAAA doesn't burn all of it.
     let connect_start = Instant::now();
-    let stream = crate::net::happy_eyeballs::connect(addrs, p.connect_timeout)
+    let tried: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
+    let tcp_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let stream = crate::net::happy_eyeballs::connect(addrs, tcp_budget)
         .await
-        .map_err(|err| ConnectError::Connect { err, dns_ms })?;
+        .map_err(|err| ConnectError::Connect { err, dns_ms, tried })?;
     let connect_ms = ms16(connect_start);
     p.connect_ms.record(connect_ms as f64);
+    let remote_ip = stream.peer_addr().ok().map(|addr| addr.ip());
     let _ = stream.set_nodelay(true);
     if let Some(d) = p.tcp_keepalive {
         let sock = socket2::SockRef::from(&stream);
@@ -280,6 +322,7 @@ pub(crate) async fn timed_connect(
                 tls_ms: None,
             },
             alpn_h2: false,
+            remote_ip,
         });
     }
 
@@ -287,16 +330,21 @@ pub(crate) async fn timed_connect(
         err: io::Error::other(format!("invalid server name: {e}")),
         dns_ms,
         connect_ms,
+        remote_ip,
     })?;
     let tls_start = Instant::now();
-    let tls_stream = p
-        .tls
-        .connect(server_name, stream)
+    let tls_stream = tokio::time::timeout_at(deadline, p.tls.connect(server_name, stream))
         .await
+        .map_err(|_| ConnectError::Timeout {
+            dns_ms: Some(dns_ms),
+            connect_ms: Some(connect_ms),
+            remote_ip,
+        })?
         .map_err(|err| ConnectError::Tls {
             err,
             dns_ms,
             connect_ms,
+            remote_ip,
         })?;
     let tls_ms = ms16(tls_start);
     p.tls_ms.record(tls_ms as f64);
@@ -313,6 +361,7 @@ pub(crate) async fn timed_connect(
             tls_ms: Some(tls_ms),
         },
         alpn_h2,
+        remote_ip,
     })
 }
 
@@ -440,6 +489,7 @@ mod tests {
         ConnectError::Connect {
             err: io::Error::new(kind, "x"),
             dns_ms: 0,
+            tried: vec![],
         }
     }
 
@@ -448,6 +498,7 @@ mod tests {
             err: io::Error::other(rustls::Error::InvalidCertificate(cert)),
             dns_ms: 0,
             connect_ms: 0,
+            remote_ip: None,
         }
     }
 
@@ -520,6 +571,7 @@ mod tests {
             err: io::Error::other(err),
             dns_ms: 0,
             connect_ms: 0,
+            remote_ip: None,
         }
     }
 
@@ -528,6 +580,7 @@ mod tests {
             err: io::Error::new(kind, "x"),
             dns_ms: 0,
             connect_ms: 0,
+            remote_ip: None,
         }
     }
 
@@ -646,6 +699,17 @@ mod tests {
     }
 
     #[test]
+    fn a_timeout_names_the_phase_it_stopped_in() {
+        let timeout = |dns_ms, connect_ms| ConnectError::Timeout {
+            dns_ms,
+            connect_ms,
+            remote_ip: None,
+        };
+        assert_eq!(timeout(None, None).reason(), "dns: lookup timed out");
+        assert_eq!(timeout(Some(4), Some(30)).reason(), "connect timeout");
+    }
+
+    #[test]
     fn partial_timings_carry_completed_phases() {
         // DNS failure: nothing completed.
         assert_eq!(
@@ -656,6 +720,7 @@ mod tests {
         let tcp = ConnectError::Connect {
             err: io::Error::other("x"),
             dns_ms: 12,
+            tried: vec![],
         };
         assert_eq!(tcp.partial_timings(), (Some(12), None));
         // TLS failure: DNS + TCP completed.
@@ -665,6 +730,7 @@ mod tests {
             )),
             dns_ms: 12,
             connect_ms: 45,
+            remote_ip: None,
         };
         assert_eq!(tls.partial_timings(), (Some(12), Some(45)));
     }

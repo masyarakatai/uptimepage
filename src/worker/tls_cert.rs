@@ -36,6 +36,7 @@ pub async fn execute_tls_cert_check(
             ttfb_ms: None,
             response_code: None,
             response_size: Some(probe.verdict.details_json.len() as u32),
+            network: None,
             diagnostic: None,
             // `error` doubles as the structured details payload for cert
             // checks. Up results stay None (matching every other check
@@ -58,6 +59,7 @@ pub async fn execute_tls_cert_check(
             ttfb_ms: None,
             response_code: None,
             response_size: None,
+            network: None,
             diagnostic: None,
             error: Some(err.to_string()),
         },

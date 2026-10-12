@@ -46,6 +46,7 @@ async fn verify_tls_true_rejects_self_signed() {
     let result = probe(addr, true).await;
 
     assert_eq!(result.status, CheckStatus::Error);
+    assert_eq!(result.remote_ip(), Some(addr.ip()));
     let err = result.error.expect("error message");
     // webpki calls this an unknown issuer either way; the probe reads the leaf
     // back to say which shape it is.
@@ -73,6 +74,27 @@ async fn verify_tls_true_names_a_truncated_chain() {
         err, "certificate chain incomplete",
         "expected truncated-chain reason, got {err}"
     );
+}
+
+/// Accepts TCP and never answers the TLS hello: an old host that still takes
+/// connections on 443 after the site moved away.
+#[tokio::test]
+async fn a_stalled_handshake_still_names_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        let (_held, _) = listener.accept().await.expect("accept");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    let url = Url::parse(&format!("https://localhost:{}/", addr.port())).unwrap();
+    let mut check = default_http_check(url, ExpectedStatus::Exact(200));
+    check.timeout = Duration::from_millis(300);
+
+    let result = execute_http_check(Uuid::now_v7(), Uuid::nil(), &check, &test_client()).await;
+
+    assert_eq!(result.error.as_deref(), Some("connect timeout"));
+    assert_eq!(result.remote_ip(), Some(addr.ip()));
+    assert!(result.connect_ms.is_some(), "TCP connected, so it is timed");
 }
 
 /// Completes the TLS handshake, waits for the request bytes, then hands the

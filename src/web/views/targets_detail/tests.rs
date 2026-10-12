@@ -622,6 +622,16 @@ fn drawer_check_rows_render_region_column_and_expand() {
         ttfb_ms: None,
         response_code: Some(503),
         response_size: None,
+        network: Some(crate::domain::NetworkPath {
+            remote_ip: Some("2001:db8::53".parse().unwrap()),
+            tried_ips: vec![],
+            hop_url: Some("https://portal.example.net/login".into()),
+            dns: Some(crate::domain::DnsAnswer {
+                resolver: "1.1.1.1".parse().unwrap(),
+                addresses: vec!["2001:db8::53".parse().unwrap()],
+                ttl_secs: 2340,
+            }),
+        }),
         diagnostic: Some(CheckDiagnostic::access_interference(
             DiagnosticConfidence::High,
             Some(EdgeProvider::Akamai),
@@ -629,12 +639,14 @@ fn drawer_check_rows_render_region_column_and_expand() {
         )),
         error: Some("connection refused".into()),
     };
-    let rows: Arc<[ResultRow]> =
-        Arc::from(vec![ResultRow::with_region("apac-sg".into(), r.clone())]);
+    let rows: Arc<[ResultRow]> = Arc::from(vec![ResultRow {
+        server_name: Some("edge.example.net".into()),
+        ..ResultRow::with_region("apac-sg".into(), r.clone())
+    }]);
     let html = DetailCheckRows {
         results: Arc::clone(&rows),
         show_region: true,
-        show_guidance: true,
+        owner_view: true,
     }
     .render()
     .unwrap();
@@ -645,19 +657,31 @@ fn drawer_check_rows_render_region_column_and_expand() {
     assert!(html.contains("access-policy block detected at the Akamai edge"));
     assert!(html.contains("recommended:"));
     assert!(html.contains("use an authenticated health endpoint"));
+    assert!(html.contains("server IP:"));
+    assert!(html.contains("2001:db8::53"));
+    assert!(html.contains("(edge.example.net)"));
+    assert!(html.contains("final URL:"));
+    assert!(html.contains("https://portal.example.net/login"));
+    assert!(html.contains("dns 1.1.1.1:"));
+    assert!(html.contains("cached until"), "{html}");
+    assert!(html.contains(r#"datetime="2026-05-13T12:39:00"#), "{html}");
 
     // The anonymous share surface names the cause but withholds advice aimed
     // at whoever administers the blocked origin.
     let shared = DetailCheckRows {
         results: rows,
         show_region: false,
-        show_guidance: false,
+        owner_view: false,
     }
     .render()
     .unwrap();
     assert!(shared.contains("access-policy block detected at the Akamai edge"));
     assert!(!shared.contains("recommended:"));
     assert!(!shared.contains("use an authenticated health endpoint"));
+    assert!(!shared.contains("2001:db8::53"));
+    assert!(!shared.contains("edge.example.net"));
+    assert!(!shared.contains("portal.example.net"));
+    assert!(!shared.contains("1.1.1.1"));
 
     // Region-agnostic table (recent results) hides the column.
     r.error = None;
@@ -665,7 +689,7 @@ fn drawer_check_rows_render_region_column_and_expand() {
     let plain_html = DetailCheckRows {
         results: plain,
         show_region: false,
-        show_guidance: true,
+        owner_view: true,
     }
     .render()
     .unwrap();
@@ -1892,4 +1916,66 @@ fn a_paused_heartbeat_does_not_claim_to_be_waiting() {
     assert!(!html.contains("waiting for first ping"));
     assert!(!html.contains("the schedule starts at the first ping"));
     assert!(html.contains("no data"));
+}
+
+fn failed_row(network: Option<crate::domain::NetworkPath>) -> ResultRow {
+    ResultRow::from(CheckResult {
+        target_id: Uuid::nil(),
+        org_id: Uuid::nil(),
+        timestamp: "2026-05-13T12:00:00Z".parse().unwrap(),
+        status: CheckStatus::Error,
+        duration_ms: 3,
+        dns_ms: Some(2),
+        connect_ms: None,
+        tls_ms: None,
+        ttfb_ms: None,
+        response_code: None,
+        response_size: None,
+        network,
+        diagnostic: None,
+        error: Some("connection refused".into()),
+    })
+}
+
+fn owner_rows(rows: Vec<ResultRow>) -> String {
+    DetailCheckRows {
+        results: Arc::from(rows),
+        show_region: false,
+        owner_view: true,
+    }
+    .render()
+    .unwrap()
+}
+
+#[test]
+fn a_failed_connect_lists_what_it_tried_and_names_no_server() {
+    let html = owner_rows(vec![failed_row(Some(crate::domain::NetworkPath {
+        tried_ips: vec!["192.0.2.1".parse().unwrap(), "2001:db8::1".parse().unwrap()],
+        ..Default::default()
+    }))]);
+    assert!(html.contains("tried:"), "{html}");
+    assert!(html.contains("192.0.2.1, 2001:db8::1"), "{html}");
+    assert!(!html.contains("server IP:"), "{html}");
+}
+
+#[test]
+fn a_record_already_expired_shows_no_cached_until() {
+    let html = owner_rows(vec![failed_row(Some(crate::domain::NetworkPath {
+        dns: Some(crate::domain::DnsAnswer {
+            resolver: "192.0.2.53".parse().unwrap(),
+            addresses: vec!["192.0.2.1".parse().unwrap()],
+            ttl_secs: 0,
+        }),
+        ..Default::default()
+    }))]);
+    assert!(html.contains("dns 192.0.2.53:"), "{html}");
+    assert!(!html.contains("cached until"), "{html}");
+}
+
+#[test]
+fn a_failure_without_a_path_shows_no_network_lines() {
+    let html = owner_rows(vec![failed_row(None)]);
+    for label in ["server IP:", "tried:", "final URL:", "dns "] {
+        assert!(!html.contains(label), "{label} in {html}");
+    }
 }

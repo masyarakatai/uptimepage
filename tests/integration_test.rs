@@ -42,6 +42,10 @@ async fn http_check_returns_up_on_200() {
     assert!(result.connect_ms.is_some(), "connect phase must be timed");
     assert!(result.tls_ms.is_none(), "plain http has no tls phase");
     assert!(result.ttfb_ms.is_some(), "ttfb must be timed");
+    assert!(
+        result.network.is_none(),
+        "a passing check needs no explaining"
+    );
 }
 
 /// Echoes request headers, joining repeats with `|` so a duplicated name is
@@ -216,6 +220,21 @@ async fn http_check_returns_down_on_unexpected_status() {
     assert_eq!(result.status, CheckStatus::Down);
     assert_eq!(result.response_code, Some(500));
     assert!(result.error.is_some());
+}
+
+#[tokio::test]
+async fn http_check_names_the_server_that_answered() {
+    let app = Router::new().route("/gone", get(|| async { StatusCode::NOT_FOUND }));
+    let addr = spawn_router(app).await;
+
+    let client = test_client();
+    let url = Url::parse(&format!("http://{addr}/gone")).unwrap();
+    let check = default_http_check(url, ExpectedStatus::Exact(200));
+
+    let result = execute_http_check(Uuid::now_v7(), uuid::Uuid::nil(), &check, &client).await;
+
+    assert_eq!(result.response_code, Some(404));
+    assert_eq!(result.remote_ip(), Some(addr.ip()));
 }
 
 #[tokio::test]
@@ -671,6 +690,9 @@ async fn http_check_connection_refused_is_error() {
 
     assert_eq!(result.status, CheckStatus::Error);
     assert!(result.error.is_some());
+    assert_eq!(result.remote_ip(), None, "nothing answered");
+    let tried = result.network.map(|e| e.tried_ips).unwrap_or_default();
+    assert_eq!(tried, vec![std::net::IpAddr::from([127, 0, 0, 1])]);
 }
 
 #[tokio::test]
@@ -841,6 +863,46 @@ use axum::response::IntoResponse;
 
 fn moved(code: StatusCode, to: &'static str) -> impl IntoResponse {
     (code, [(LOCATION, to)])
+}
+
+#[tokio::test]
+async fn a_failure_after_a_redirect_names_the_hop_that_failed() {
+    let app = Router::new().route(
+        "/",
+        get(|| async { moved(StatusCode::MOVED_PERMANENTLY, "/gone?token=s3cret&page=2") }),
+    );
+    let addr = spawn_router(app).await;
+
+    let url = Url::parse(&format!("http://{addr}/")).unwrap();
+    let mut check = default_http_check(url, ExpectedStatus::Exact(200));
+    check.follow_redirects = true;
+    check.max_redirects = 5;
+
+    let result =
+        execute_http_check(Uuid::now_v7(), uuid::Uuid::nil(), &check, &test_client()).await;
+
+    assert_eq!(result.response_code, Some(404));
+    let hop = result.network.and_then(|e| e.hop_url).expect("hop url");
+    assert!(hop.starts_with(&format!("http://{addr}/gone?")), "{hop}");
+    assert!(hop.contains("page=2"), "{hop}");
+    assert!(!hop.contains("s3cret"), "{hop}");
+}
+
+#[tokio::test]
+async fn a_failure_on_the_first_hop_names_no_hop() {
+    let app = Router::new().route("/", get(|| async { StatusCode::NOT_FOUND }));
+    let addr = spawn_router(app).await;
+
+    let url = Url::parse(&format!("http://{addr}/")).unwrap();
+    let result = execute_http_check(
+        Uuid::now_v7(),
+        uuid::Uuid::nil(),
+        &default_http_check(url, ExpectedStatus::Exact(200)),
+        &test_client(),
+    )
+    .await;
+
+    assert_eq!(result.network.and_then(|e| e.hop_url), None);
 }
 
 #[tokio::test]

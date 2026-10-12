@@ -310,7 +310,7 @@ pub const DOCS: &[DocPage] = &[
         section: Section::Reference,
         scope: Scope::Everyone,
         created: "2026-07-22",
-        lastmod: "2026-10-11",
+        lastmod: "2026-10-12",
         source: include_str!("../../docs/api.md"),
         dir: "",
     },

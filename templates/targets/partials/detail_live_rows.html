@@ -9,8 +9,9 @@
 {% let warn = r.status == "degraded" %}
 {% let has_timing = r.dns_ms.is_some() || r.connect_ms.is_some() || r.tls_ms.is_some() || r.ttfb_ms.is_some() %}
 {% let has_error = r.error != "" %}
-{% let has_guidance = show_guidance && r.diagnostic_guidance != "" %}
-{% let expandable = (bad || warn) && (has_timing || has_error || has_guidance) %}
+{% let has_guidance = owner_view && r.diagnostic_guidance != "" %}
+{% let has_network = owner_view && !r.network.is_empty() %}
+{% let expandable = (bad || warn) && (has_timing || has_error || has_network || has_guidance) %}
 <tr class="{% if loop.index0 % 2 == 0 %}result-row--even{% else %}result-row--odd{% endif %}{% if bad %} result-row--bad{% else if warn %} result-row--warn{% endif %}{% if expandable %} cursor-pointer{% endif %}"
     {% if expandable %}data-result-row aria-expanded="false"{% endif %}>
   <td class="px-3 py-2 font-mono text-xs text-muted">{% if expandable %}<span class="result-row__chev" aria-hidden="true">▸</span>{% endif %}<time datetime="{{ r.timestamp|iso_ts }}" data-tz="exact">{{ r.timestamp|human_ts }}</time></td>
@@ -42,8 +43,24 @@
       {% if let Some(step) = r.flow_step %}<span class="mr-2 inline-block rounded-sm border border-[color:var(--theme-line)] px-1.5 py-0.5 font-mono text-[0.7rem] tabular-nums text-muted">{{ step }}</span>{% endif %}<span class="text-muted mr-2">error:</span>{{ r.error }}
     </div>
     {% endif %}
+    {% if has_network %}
+    <div class="{% if has_timing || has_error %}mt-2 {% endif %}space-y-1">
+      {% if let Some(url) = r.network.hop_url %}
+      <div><span class="text-muted mr-2">final URL:</span><span class="font-mono break-all">{{ url }}</span></div>
+      {% endif %}
+      {% if let Some(ip) = r.network.remote_ip %}
+      <div><span class="text-muted mr-2">server IP:</span><span class="font-mono">{{ ip }}</span>{% if let Some(name) = r.server_name %} <span class="font-mono text-muted">({{ name }})</span>{% endif %}</div>
+      {% endif %}
+      {% if !r.network.tried_ips.is_empty() %}
+      <div><span class="text-muted mr-2">tried:</span><span class="font-mono">{% for ip in r.network.tried_ips %}{{ ip }}{% if !loop.last %}, {% endif %}{% endfor %}</span></div>
+      {% endif %}
+      {% if let Some(dns) = r.network.dns %}
+      <div><span class="text-muted mr-2">dns {{ dns.resolver }}:</span><span class="font-mono">{% for ip in dns.addresses %}{{ ip }}{% if !loop.last %}, {% endif %}{% endfor %}</span>{% if let Some(until) = r.dns_until() %} <span class="text-muted">· cached until <time datetime="{{ until|iso_ts }}" data-tz="exact">{{ until|human_ts }}</time></span>{% endif %}</div>
+      {% endif %}
+    </div>
+    {% endif %}
     {% if has_guidance %}
-    <div class="{% if has_timing || has_error %}mt-2 {% endif %}text-pretty text-body">
+    <div class="{% if has_timing || has_error || has_network %}mt-2 {% endif %}text-pretty text-body">
       <span class="text-muted mr-2">recommended:</span>{{ r.diagnostic_guidance }}
     </div>
     {% endif %}

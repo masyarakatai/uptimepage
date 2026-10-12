@@ -2,6 +2,7 @@
 //! and every page it sent.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -16,7 +17,7 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::error::codes;
 use crate::request::{AuthedBrowser, CurrentOrg, CurrentUser};
-use crate::storage::{ClampedRange, TimeRange};
+use crate::storage::{ClampedRange, FailingServer, TimeRange};
 use crate::templates::filters;
 use crate::web::error::WebResult;
 
@@ -32,6 +33,12 @@ const RECOVERY_LOOKBACK: chrono::Duration = chrono::Duration::hours(24);
 /// Rows pulled to find each region's latest check: more than one round across
 /// every region a monitor can be probed from.
 const RECOVERY_SAMPLE: usize = 60;
+const SERVERS_SHOWN: usize = 5;
+
+pub struct ServerRow {
+    pub server: FailingServer,
+    pub name: Option<Arc<str>>,
+}
 
 pub struct TimelineRow {
     pub kind: &'static str,
@@ -128,6 +135,8 @@ pub struct IncidentDetailPage {
     /// The org's pages, marked where this incident is posted. Empty for an
     /// incident with a monitor, whose pages are the ones carrying it.
     pub pages: Vec<PageChoice>,
+    /// Addresses that answered the failing checks.
+    pub servers: Vec<ServerRow>,
 }
 
 /// One paging-delivery row for the incident's notifications section.
@@ -282,7 +291,10 @@ pub async fn detail(
         label: email,
     }));
 
-    let recovered_at = monitor_recovered_at(&state, org, &inc).await;
+    let (recovered_at, servers) = tokio::join!(
+        monitor_recovered_at(&state, org, &inc),
+        failing_servers(&state, org, &inc),
+    );
     let pages = if inc.target_id.is_none() {
         let linked = state.incident_ops_store.status_pages(org, id).await?;
         let mut choices = page_choices(&state, org, &linked).await?;
@@ -309,6 +321,7 @@ pub async fn detail(
     page.notifications = notifications;
     page.monitor_recovered_at = recovered_at;
     page.pages = pages;
+    page.servers = servers;
     Ok(page)
 }
 
@@ -358,7 +371,51 @@ pub(super) fn make_detail_page(
         ack_delay_label,
         check_count,
         pages: Vec::new(),
+        servers: Vec::new(),
     }
+}
+
+/// Only HTTP checks record the address, and the list renders inside the
+/// trigger panel, which needs a cause to show.
+pub(super) fn server_list_target(inc: &OpsIncident) -> Option<Uuid> {
+    let target_id = inc.target_id?;
+    (inc.target_kind.as_deref() == Some("http") && inc.error_sample.is_some()).then_some(target_id)
+}
+
+/// Soft: a results-store outage must not take the incident page down.
+async fn failing_servers(state: &AppState, org: OrgId, inc: &OpsIncident) -> Vec<ServerRow> {
+    let Some(target_id) = server_list_target(inc) else {
+        return Vec::new();
+    };
+    let window = TimeRange {
+        from: inc.started_at,
+        to: inc.ended_at.unwrap_or_else(Utc::now),
+    };
+    let servers = async {
+        let range = state.quotas.clamp_raw(org, window).await?;
+        state
+            .results_store
+            .failing_servers(org, target_id, range, SERVERS_SHOWN)
+            .await
+    };
+    let servers = match servers.await {
+        Ok(servers) => servers,
+        Err(e) => {
+            tracing::warn!(error = %e, incident_id = %inc.id, "incident server list unavailable");
+            return Vec::new();
+        }
+    };
+    let names = state
+        .server_names
+        .lookup(servers.iter().map(|s| s.ip))
+        .await;
+    servers
+        .into_iter()
+        .map(|server| ServerRow {
+            name: names.get(&server.ip).cloned(),
+            server,
+        })
+        .collect()
 }
 
 /// The moment every region that reported had been passing by, if all of them

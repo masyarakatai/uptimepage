@@ -29,6 +29,7 @@ fn result(target_id: Uuid, when: DateTime<Utc>, status: CheckStatus) -> CheckRes
         ttfb_ms: None,
         response_code: None,
         response_size: None,
+        network: None,
         diagnostic: None,
         error: None,
     }

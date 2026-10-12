@@ -127,6 +127,7 @@ impl McpServer {
             http_status: result.response_code,
             timing: check_timing(&result),
             response_size: result.response_size,
+            network: super::view::network_path(&result),
             error: result.error.as_deref().map(present_error),
             diagnostic: check_diagnostic(&result),
         }))

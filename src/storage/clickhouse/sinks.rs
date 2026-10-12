@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv6Addr};
+
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
 use metrics::counter;
@@ -123,6 +125,12 @@ struct CheckResultRow<'a> {
     ttfb_ms: Option<u16>,
     response_code: Option<u16>,
     response_size: Option<u32>,
+    remote_ip: Option<Ipv6Addr>,
+    tried_ips: Vec<Ipv6Addr>,
+    hop_url: Option<&'a str>,
+    dns_resolver: Option<Ipv6Addr>,
+    dns_answer: Vec<Ipv6Addr>,
+    dns_ttl: Option<u32>,
     error: Option<&'a str>,
     diagnostic_kind: Option<&'a str>,
     diagnostic_confidence: Option<&'a str>,
@@ -133,6 +141,8 @@ struct CheckResultRow<'a> {
 
 impl<'a> CheckResultRow<'a> {
     fn from_result(r: &'a CheckResult, region: &'a str, agent_id: &'a str, ttl_days: u16) -> Self {
+        let network = r.network.as_ref();
+        let dns = network.and_then(|n| n.dns.as_ref());
         Self {
             org_id: r.org_id,
             target_id: r.target_id,
@@ -147,6 +157,16 @@ impl<'a> CheckResultRow<'a> {
             ttfb_ms: r.ttfb_ms,
             response_code: r.response_code,
             response_size: r.response_size,
+            remote_ip: network.and_then(|n| n.remote_ip).map(mapped),
+            tried_ips: network
+                .map(|n| n.tried_ips.iter().copied().map(mapped).collect())
+                .unwrap_or_default(),
+            hop_url: network.and_then(|n| n.hop_url.as_deref()),
+            dns_resolver: dns.map(|d| mapped(d.resolver)),
+            dns_answer: dns
+                .map(|d| d.addresses.iter().copied().map(mapped).collect())
+                .unwrap_or_default(),
+            dns_ttl: dns.map(|d| d.ttl_secs),
             error: r.error.as_deref(),
             diagnostic_kind: r.diagnostic.as_ref().map(|d| d.kind.as_str()),
             diagnostic_confidence: r.diagnostic.as_ref().map(|d| d.confidence.as_str()),
@@ -161,6 +181,13 @@ impl<'a> CheckResultRow<'a> {
                 .unwrap_or_default(),
             ttl_days,
         }
+    }
+}
+
+fn mapped(ip: IpAddr) -> Ipv6Addr {
+    match ip {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+        IpAddr::V6(v6) => v6,
     }
 }
 

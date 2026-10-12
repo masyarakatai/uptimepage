@@ -1113,6 +1113,114 @@ pub fn test_client() -> HttpClients {
     build_clients_with(default_dns()).unwrap()
 }
 
+pub fn test_client_with_dns(server: SocketAddr) -> HttpClients {
+    build_clients_with(DnsConfig {
+        servers: vec![server.to_string()],
+        ..default_dns()
+    })
+    .unwrap()
+}
+
+/// A DNS server on loopback UDP. It answers A queries for the names it was
+/// given, answers everything else with no records, and counts every query it
+/// receives. A silent one never answers, like a resolver that hangs.
+pub struct MockDns {
+    pub addr: SocketAddr,
+    pub queries: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl MockDns {
+    pub fn queries(&self) -> usize {
+        self.queries.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+pub async fn spawn_mock_dns(records: &[(&str, std::net::Ipv4Addr, u32)], silent: bool) -> MockDns {
+    spawn_mock_dns_with_aliases(records, &[], silent).await
+}
+
+/// Like [`spawn_mock_dns`], with `(alias, target, ttl)` CNAMEs answered the way
+/// a recursive resolver does: the alias and its target's A records together.
+pub async fn spawn_mock_dns_with_aliases(
+    records: &[(&str, std::net::Ipv4Addr, u32)],
+    aliases: &[(&str, &str, u32)],
+    silent: bool,
+) -> MockDns {
+    use hickory_resolver::proto::op::{Message, OpCode};
+    use hickory_resolver::proto::rr::rdata::{A, CNAME, SOA};
+    use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
+
+    let records: Vec<(Name, std::net::Ipv4Addr, u32)> = records
+        .iter()
+        .map(|(name, ip, ttl)| (Name::from_ascii(format!("{name}.")).unwrap(), *ip, *ttl))
+        .collect();
+    let aliases: Vec<(Name, Name, u32)> = aliases
+        .iter()
+        .map(|(alias, target, ttl)| {
+            (
+                Name::from_ascii(format!("{alias}.")).unwrap(),
+                Name::from_ascii(format!("{target}.")).unwrap(),
+                *ttl,
+            )
+        })
+        .collect();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let queries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&queries);
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1500];
+        while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if silent {
+                continue;
+            }
+            let Ok(request) = Message::from_vec(&buf[..n]) else {
+                continue;
+            };
+            let mut response = Message::response(request.metadata.id, OpCode::Query);
+            response.metadata.recursion_desired = true;
+            response.metadata.recursion_available = true;
+            for query in &request.queries {
+                response.add_query(query.clone());
+                let mut name = query.name.clone();
+                let address_query = matches!(query.query_type, RecordType::A | RecordType::AAAA);
+                if address_query
+                    && let Some((alias, target, ttl)) = aliases.iter().find(|(a, ..)| *a == name)
+                {
+                    response.add_answer(Record::from_rdata(
+                        alias.clone(),
+                        *ttl,
+                        RData::CNAME(CNAME(target.clone())),
+                    ));
+                    name = target.clone();
+                }
+                for (owner, ip, ttl) in &records {
+                    if query.query_type == RecordType::A && *owner == name {
+                        response.add_answer(Record::from_rdata(
+                            owner.clone(),
+                            *ttl,
+                            RData::A(A(*ip)),
+                        ));
+                    }
+                }
+            }
+            // A resolver holds "no records" only as long as the SOA allows.
+            if response.answers.is_empty() {
+                let zone = Name::from_ascii("example.test.").unwrap();
+                let soa = SOA::new(zone.clone(), zone.clone(), 1, 3600, 600, 86400, 600);
+                response
+                    .authorities
+                    .push(Record::from_rdata(zone, 600, RData::SOA(soa)));
+            }
+            if let Ok(bytes) = response.to_vec() {
+                let _ = socket.send_to(&bytes, peer).await;
+            }
+        }
+    });
+    MockDns { addr, queries }
+}
+
 pub fn test_client_with_failing_dns() -> HttpClients {
     build_clients_with(DnsConfig {
         servers: vec!["127.0.0.1:9".into()],

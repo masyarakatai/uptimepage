@@ -37,6 +37,7 @@ pub async fn execute_dns_check(
             ttfb_ms: None,
             response_code: None,
             response_size: Some(verdict.details_json.len() as u32),
+            network: None,
             diagnostic: None,
             error: match verdict.status {
                 CheckStatus::Up => None,
@@ -55,6 +56,7 @@ pub async fn execute_dns_check(
             ttfb_ms: None,
             response_code: None,
             response_size: None,
+            network: None,
             diagnostic: None,
             error: Some(err.to_string()),
         },

@@ -481,16 +481,26 @@ pub async fn check_rows(
     if has_more {
         rows.truncate(CHECK_ROWS_PAGE);
     }
+    let names = state
+        .server_names
+        .lookup(rows.iter().filter_map(|(_, r)| r.remote_ip()))
+        .await;
     let results: Arc<[ResultRow]> = rows
         .into_iter()
-        .map(|(region, r)| ResultRow::with_region(region, r))
+        .map(|(region, r)| {
+            let server_name = r.remote_ip().and_then(|ip| names.get(&ip).cloned());
+            ResultRow {
+                server_name,
+                ..ResultRow::with_region(region, r)
+            }
+        })
         .collect::<Vec<_>>()
         .into();
 
     let rendered = DetailCheckRows {
         results,
         show_region: true,
-        show_guidance: true,
+        owner_view: true,
     }
     .render()
     .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;

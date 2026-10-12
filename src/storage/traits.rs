@@ -430,6 +430,15 @@ pub struct RegionFlaps {
     pub transitions: u64,
 }
 
+/// A server address that answered failing checks, with the regions that
+/// reached it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailingServer {
+    pub ip: std::net::IpAddr,
+    pub regions: Vec<String>,
+    pub checks: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegionLatestStatus {
     pub target_id: Uuid,
@@ -673,6 +682,16 @@ pub trait ResultsStore: Send + Sync {
         target_id: Uuid,
         range: ClampedRange,
     ) -> Result<Vec<RegionFlaps>>;
+    /// Server addresses behind one target's down and error results over
+    /// `range`, most failures first, at most `limit` of them. Degraded results
+    /// passed their assertions, so they are left out.
+    async fn failing_servers(
+        &self,
+        org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        limit: usize,
+    ) -> Result<Vec<FailingServer>>;
     /// Per-region latency buckets for one target — the overlay view, each
     /// region a separate line. Same rollup source + bucketing as
     /// [`latency_buckets`](Self::latency_buckets), split by region.

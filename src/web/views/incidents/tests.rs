@@ -646,6 +646,58 @@ fn detail_offers_to_close_an_incident_whose_monitor_recovered() {
     );
 }
 
+#[test]
+fn the_server_list_is_read_only_for_an_http_incident_with_a_cause() {
+    let mut inc = ops(IncidentState::Resolved);
+    inc.target_kind = Some("http".into());
+    inc.error_sample = Some("unexpected status 404".into());
+    assert_eq!(server_list_target(&inc), inc.target_id);
+
+    let mut tcp = inc.clone();
+    tcp.target_kind = Some("tcp".into());
+    assert_eq!(server_list_target(&tcp), None, "only HTTP checks record it");
+
+    let mut no_cause = inc.clone();
+    no_cause.error_sample = None;
+    assert_eq!(server_list_target(&no_cause), None, "nowhere to show it");
+
+    let mut declared = inc.clone();
+    declared.target_id = None;
+    assert_eq!(server_list_target(&declared), None);
+}
+
+#[test]
+fn detail_trigger_names_the_servers_that_answered() {
+    let mut inc = ops(IncidentState::Resolved);
+    inc.error_sample = Some("unexpected status 404".into());
+    let mut page = make_detail_page(
+        inc,
+        Some("api".into()),
+        AckList::default(),
+        "api".to_string(),
+        vec![],
+        vec![],
+        None,
+    );
+    assert!(!page.render().unwrap().contains("server IP"));
+    page.servers = vec![ServerRow {
+        server: crate::storage::FailingServer {
+            ip: "2001:db8::53".parse().unwrap(),
+            regions: vec!["eu-frankfurt".into(), "us-east".into()],
+            checks: 41,
+        },
+        name: Some("edge.example.net".into()),
+    }];
+    let html = page.render().unwrap();
+    assert!(html.contains("server IP"), "{html}");
+    assert!(html.contains("2001:db8::53"), "{html}");
+    assert!(html.contains("(edge.example.net)"), "{html}");
+    assert!(
+        html.contains("eu-frankfurt, us-east · 41 failed checks"),
+        "{html}"
+    );
+}
+
 /// The first row answers what a review asks: how long, how fast anyone
 /// took it, how loud it was, how much broke.
 #[test]

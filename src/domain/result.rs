@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
@@ -25,6 +27,10 @@ pub struct CheckResult {
     pub ttfb_ms: Option<u16>,
     pub response_code: Option<u16>,
     pub response_size: Option<u32>,
+    /// What an HTTP probe saw on the way to a result that was not up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true)]
+    pub network: Option<NetworkPath>,
     /// Explains a failed result. Never moves the verdict: assertions alone
     /// decide Up/Down.
     #[serde(
@@ -61,9 +67,14 @@ impl CheckResult {
             ttfb_ms: None,
             response_code: None,
             response_size: None,
+            network: None,
             diagnostic: None,
             error: Some(reason.into()),
         }
+    }
+
+    pub fn remote_ip(&self) -> Option<IpAddr> {
+        self.network.as_ref().and_then(|n| n.remote_ip)
     }
 
     pub fn is_served_stale(&self) -> bool {
@@ -71,6 +82,46 @@ impl CheckResult {
             .as_deref()
             .is_some_and(|e| e.starts_with(SERVED_STALE_PREFIX))
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct NetworkPath {
+    /// Server address of the connection that decided the result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub remote_ip: Option<IpAddr>,
+    /// On a failed connect, the addresses the probe had for the host. No
+    /// server answered, so there is no `remote_ip`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<String>)]
+    pub tried_ips: Vec<IpAddr>,
+    /// The redirect hop that decided the result, when it was not the first.
+    /// Credential-like query values are redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_url: Option<String>,
+    /// The decisive hop's host as the probe's resolver answered it right after
+    /// a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns: Option<DnsAnswer>,
+}
+
+impl NetworkPath {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// One server's view, asked past the probe's cache. `ttl_secs` is how long,
+/// from the check's timestamp, that server keeps the host's own record: the
+/// alias when the host is one, which is what a move changes. While it holds an
+/// alias, the addresses behind it can refresh sooner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DnsAnswer {
+    #[schema(value_type = String)]
+    pub resolver: IpAddr,
+    #[schema(value_type = Vec<String>)]
+    pub addresses: Vec<IpAddr>,
+    pub ttl_secs: u32,
 }
 
 /// A kind from a newer agent would fail the whole ingest batch. A diagnostic
@@ -480,6 +531,66 @@ impl CheckStatus {
 mod tests {
     use super::*;
 
+    fn sample_json() -> serde_json::Value {
+        serde_json::json!({
+            "target_id": Uuid::nil(),
+            "org_id": Uuid::nil(),
+            "timestamp": "2026-05-13T12:00:00Z",
+            "status": "down",
+            "duration_ms": 12,
+            "dns_ms": null,
+            "connect_ms": null,
+            "tls_ms": null,
+            "ttfb_ms": null,
+            "response_code": 404,
+            "response_size": null,
+            "error": "unexpected status 404"
+        })
+    }
+
+    #[test]
+    fn a_result_from_an_agent_without_the_network_path_still_reads() {
+        let result: CheckResult = serde_json::from_value(sample_json()).unwrap();
+        assert!(result.network.is_none());
+        assert_eq!(result.remote_ip(), None);
+    }
+
+    #[test]
+    fn the_network_path_survives_the_agent_wire() {
+        let mut json = sample_json();
+        json["network"] = serde_json::json!({
+            "remote_ip": "2001:db8::53",
+            "tried_ips": ["192.0.2.1"],
+            "hop_url": "https://example.com/next",
+            "dns": {"resolver": "192.0.2.53", "addresses": ["2001:db8::53"], "ttl_secs": 2340}
+        });
+        let result: CheckResult = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(result.remote_ip(), Some("2001:db8::53".parse().unwrap()));
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["network"],
+            json["network"]
+        );
+    }
+
+    #[test]
+    fn a_result_without_a_path_puts_nothing_on_the_wire() {
+        let result: CheckResult = serde_json::from_value(sample_json()).unwrap();
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("network").is_none(), "{json}");
+
+        let only_ip = NetworkPath {
+            remote_ip: Some("192.0.2.1".parse().unwrap()),
+            ..NetworkPath::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&only_ip).unwrap(),
+            serde_json::json!({"remote_ip": "192.0.2.1"}),
+            "empty fields stay off the wire"
+        );
+        assert!(NetworkPath::default().is_empty());
+        assert!(!only_ip.is_empty());
+    }
+
     #[test]
     fn days_remaining_ladder_breaks_at_warn_and_critical() {
         let status = |days| CheckStatus::from_days_remaining(days, 30, 7);
@@ -504,6 +615,7 @@ mod tests {
             ttfb_ms: None,
             response_code: None,
             response_size: None,
+            network: None,
             diagnostic: None,
             error: error.map(str::to_owned),
         }

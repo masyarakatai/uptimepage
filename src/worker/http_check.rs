@@ -14,11 +14,12 @@ use hyper::header::{
 };
 use hyper::{Method, Request, Uri};
 use metrics::counter;
+use url::{Host, Url};
 use uuid::Uuid;
 
 use crate::domain::{
     CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
-    DiagnosticEvidence, EdgeProvider, ExpectedStatus, HttpCheck, HttpMethod,
+    DiagnosticEvidence, EdgeProvider, ExpectedStatus, HttpCheck, HttpMethod, NetworkPath,
 };
 use crate::http_client::HttpClients;
 use crate::http_client::connector::{
@@ -26,6 +27,7 @@ use crate::http_client::connector::{
 };
 use crate::http_outbound::error_chain;
 use crate::metric_names;
+use crate::security::redaction::scrub_url;
 
 /// Redirect-hop ceiling, and the fallback when following is on but `max_redirects` is 0.
 const MAX_REDIRECT_HOPS: u8 = HttpCheck::MAX_REDIRECTS;
@@ -97,12 +99,59 @@ pub(crate) async fn execute_http_check_probe(
     (r, p.unwrap_or_default())
 }
 
+/// Where the probe got to. Every exit of the hop loop leaves it describing the
+/// hop that decided the result, so the network path is attached in one place.
+#[derive(Default)]
+struct Trail {
+    url: Option<Url>,
+    hop: u8,
+    network: NetworkPath,
+}
+
 async fn do_http_check(
     target_id: Uuid,
     org_id: Uuid,
     check: &HttpCheck,
     clients: &HttpClients,
     capture: bool,
+) -> (CheckResult, Option<HttpProbe>) {
+    let start = Instant::now();
+    let mut trail = Trail::default();
+    let (mut result, probe) =
+        probe_hops(target_id, org_id, check, clients, capture, &mut trail).await;
+    // A passing check needs no explaining, and its rows are the bulk of the table.
+    if result.status == CheckStatus::Up {
+        return (result, probe);
+    }
+    let mut network = trail.network;
+    if trail.hop > 0 {
+        network.hop_url = trail.url.as_ref().map(|url| scrub_url(url.as_str()));
+    }
+    if result.status != CheckStatus::Degraded
+        && let Some(Host::Domain(host)) = trail.url.as_ref().and_then(Url::host)
+    {
+        let budget = check.timeout.saturating_sub(start.elapsed());
+        network.dns = clients
+            .resolver()
+            .fresh_answer(host, budget)
+            .await
+            .map(|mut answer| {
+                let since_start = u32::try_from(start.elapsed().as_secs()).unwrap_or(u32::MAX);
+                answer.ttl_secs = answer.ttl_secs.saturating_add(since_start);
+                answer
+            });
+    }
+    result.network = Some(network).filter(|n| !n.is_empty());
+    (result, probe)
+}
+
+async fn probe_hops(
+    target_id: Uuid,
+    org_id: Uuid,
+    check: &HttpCheck,
+    clients: &HttpClients,
+    capture: bool,
+    trail: &mut Trail,
 ) -> (CheckResult, Option<HttpProbe>) {
     let started_at = Utc::now();
     let start = Instant::now();
@@ -129,6 +178,9 @@ async fn do_http_check(
     let mut send_body = check.body.clone();
 
     for hop in 0..=max_hops {
+        trail.network = NetworkPath::default();
+        trail.hop = hop;
+        trail.url = Some(current.clone());
         let uri: Uri = match current.as_str().parse() {
             Ok(u) => u,
             Err(_) => return early("invalid url", None),
@@ -147,25 +199,26 @@ async fn do_http_check(
         if remaining.is_zero() {
             return early("connect timeout", None);
         }
-        let connect_budget = params.connect_timeout.min(remaining);
+        let deadline = tokio::time::Instant::now() + params.connect_timeout.min(remaining);
         let TimedConnection {
             stream,
             timings,
             alpn_h2,
-        } = match tokio::time::timeout(connect_budget, timed_connect(&params, host, port, is_https))
-            .await
-        {
-            Err(_) => return early("connect timeout", None),
-            Ok(Err(err)) => {
+            remote_ip,
+        } = match timed_connect(&params, host, port, is_https, deadline).await {
+            Err(err) => {
                 tracing::debug!(target_id = %target_id, hop, error = %err, "http connect failed");
                 let (dns_ms, connect_ms) = err.partial_timings();
                 let (mut r, _) = early(err.reason(), None);
                 r.dns_ms = dns_ms;
                 r.connect_ms = connect_ms;
+                trail.network.remote_ip = err.remote_ip();
+                trail.network.tried_ips = err.tried().to_vec();
                 return (r, None);
             }
-            Ok(Ok(c)) => c,
+            Ok(c) => c,
         };
+        trail.network.remote_ip = remote_ip;
 
         // Request-target form depends on the negotiated protocol; `same_origin`
         // gates credential-bearing headers on cross-origin redirects.
@@ -490,6 +543,7 @@ async fn finalize(
             ttfb_ms: Some(ttfb_ms),
             response_code: Some(status_code),
             response_size: size,
+            network: None,
             diagnostic,
             error,
         },

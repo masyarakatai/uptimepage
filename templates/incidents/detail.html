@@ -127,6 +127,17 @@
   <section class="sticker-card p-5">
     <h2 class="panel-label">trigger</h2>
     <pre class="mt-3 max-h-40 overflow-auto rounded-sm bg-[color:var(--theme-surface-sunk)] px-2 py-1.5 font-mono text-xs break-words whitespace-pre-wrap">{{ e }}</pre>
+    {% if !servers.is_empty() %}
+    <dl class="mt-3 space-y-1 font-mono text-xs">
+      {% for s in servers %}
+      <div class="flex flex-wrap gap-x-3">
+        <dt class="text-muted">server IP</dt>
+        <dd class="text-body">{{ s.server.ip }}{% if let Some(name) = s.name %} <span class="text-muted">({{ name }})</span>{% endif %}</dd>
+        <dd class="text-muted">{% if !s.server.regions.is_empty() %}{{ s.server.regions|join(", ") }} · {% endif %}{{ s.server.checks }} failed check{% if s.server.checks != 1 %}s{% endif %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% endif %}
   </section>
   {% when None %}{% endmatch %}
 

@@ -70,6 +70,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "005_check_diagnostics.sql",
         include_str!("../../../migrations/clickhouse/005_check_diagnostics.sql"),
     ),
+    // Raw rows only, like the diagnosis: the path explains one response.
+    (
+        "006_check_network_path.sql",
+        include_str!("../../../migrations/clickhouse/006_check_network_path.sql"),
+    ),
 ];
 
 pub async fn migrate(client: &Client) -> Result<()> {

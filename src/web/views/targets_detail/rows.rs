@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::agent_wire::StepOutcome;
-use crate::domain::{CheckResult, Incident, IncidentImpact};
+use crate::domain::{CheckResult, Incident, IncidentImpact, NetworkPath};
 use crate::storage::UptimeStats;
 use crate::templates::filters;
 use crate::templates::format::{fmt_human, fmt_ts};
@@ -28,6 +28,8 @@ pub struct ResultRow {
     pub connect_ms: Option<u16>,
     pub tls_ms: Option<u16>,
     pub ttfb_ms: Option<u16>,
+    pub network: NetworkPath,
+    pub server_name: Option<Arc<str>>,
     /// Probe region; `Some` only where the row is region-tagged (the drill
     /// drawer). `None` on the region-agnostic recent-results table.
     pub region: Option<String>,
@@ -52,6 +54,13 @@ fn parse_flow_step(raw: &str) -> Option<(String, String)> {
 }
 
 impl ResultRow {
+    /// When the resolver's copy runs out: a moment, not a countdown, so an
+    /// old row still says something true.
+    pub fn dns_until(&self) -> Option<DateTime<Utc>> {
+        let dns = self.network.dns.as_ref().filter(|dns| dns.ttl_secs > 0)?;
+        Some(self.timestamp + chrono::Duration::seconds(i64::from(dns.ttl_secs)))
+    }
+
     /// Row tagged with the region it ran in; an empty region label reads as `None`.
     pub(super) fn with_region(region: String, r: CheckResult) -> Self {
         Self {
@@ -180,9 +189,9 @@ pub struct DetailLive {
 pub struct DetailCheckRows {
     pub results: Arc<[ResultRow]>,
     pub show_region: bool,
-    /// Remediation is advice for whoever owns the monitor, so the anonymous
-    /// share surface renders the cause without it.
-    pub show_guidance: bool,
+    /// Remediation advice and the server address are for whoever owns the
+    /// monitor, so the anonymous share surface renders the cause without them.
+    pub owner_view: bool,
 }
 
 /// Enough to see a pattern across a day at the interval floor, without paging.
@@ -470,6 +479,8 @@ impl From<CheckResult> for ResultRow {
             connect_ms: r.connect_ms,
             tls_ms: r.tls_ms,
             ttfb_ms: r.ttfb_ms,
+            network: r.network.unwrap_or_default(),
+            server_name: None,
             region: None,
             flow_step,
         }

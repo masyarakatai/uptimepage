@@ -113,6 +113,7 @@ pub struct AppState {
     /// no run log.
     pub heartbeat_ping_sink: Option<Arc<dyn crate::storage::traits::HeartbeatPingSink>>,
     pub http_clients: Arc<HttpClients>,
+    pub server_names: Arc<crate::net::server_names::ServerNames>,
     pub worker_pool: Arc<WorkerPool>,
     pub incident_metrics_cache: IncidentMetricsCache,
     pub region_catalog_cache: RegionCatalogCache,
@@ -476,6 +477,9 @@ impl AppState {
             result_sink,
             flow_run_sink: None,
             heartbeat_ping_sink: None,
+            server_names: Arc::new(crate::net::server_names::ServerNames::new(Arc::new(
+                http_clients.resolver().inner().clone(),
+            ))),
             http_clients,
             worker_pool,
             incident_metrics_cache: build_incident_metrics_cache(),

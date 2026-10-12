@@ -1022,6 +1022,7 @@ async fn a_pending_heartbeat_with_results_shows_them_on_every_surface() {
         ttfb_ms: None,
         response_code: None,
         response_size: None,
+        network: None,
         diagnostic: None,
         error: None,
     }])
@@ -1085,6 +1086,7 @@ async fn monitors_list_shows_the_last_check_to_the_second() {
         ttfb_ms: None,
         response_code: Some(200),
         response_size: None,
+        network: None,
         diagnostic: None,
         error: None,
     }])
@@ -1099,4 +1101,85 @@ async fn monitors_list_shows_the_last_check_to_the_second() {
     let html = body_text(resp).await;
     let expected = format!("datetime=\"{}\"", checked_at.format("%Y-%m-%dT%H:%M:%SZ"));
     assert!(html.contains(&expected), "last check renders {expected}");
+}
+
+/// The ribbon drill drawer is where an operator reads a failure's network path.
+#[tokio::test]
+async fn the_check_drawer_shows_the_network_path_of_a_failed_check() {
+    use uptimepage::net::server_names::{Dns, LookupFailed, ServerNames};
+
+    struct NamedEdge;
+
+    #[async_trait::async_trait]
+    impl Dns for NamedEdge {
+        async fn reverse(
+            &self,
+            _: std::net::IpAddr,
+        ) -> Result<Vec<hickory_resolver::proto::rr::Name>, LookupFailed> {
+            Ok(vec!["edge.example.net.".parse().unwrap()])
+        }
+        async fn forward(
+            &self,
+            _: &hickory_resolver::proto::rr::Name,
+        ) -> Result<Vec<std::net::IpAddr>, LookupFailed> {
+            Ok(vec!["2001:db8::53".parse().unwrap()])
+        }
+    }
+
+    let mut state = common::build_test_app_state(|_| {});
+    state.server_names = std::sync::Arc::new(ServerNames::new(std::sync::Arc::new(NamedEdge)));
+    let sink = state.result_sink.clone();
+    let router = common::with_session(
+        uptimepage::build_app_router(state, tokio_util::sync::CancellationToken::new()),
+        common::test_user_id(),
+        Some(common::test_org_id()),
+        Some("test-owner-session"),
+    );
+
+    let id = create_http_target(&router, "moved-host").await;
+    let at = chrono::Utc::now() - chrono::Duration::minutes(5);
+    sink.write_batch(&[uptimepage::domain::CheckResult {
+        target_id: id.parse().expect("target id"),
+        org_id: common::test_org_id().0,
+        timestamp: at,
+        status: uptimepage::domain::CheckStatus::Down,
+        duration_ms: 6,
+        dns_ms: Some(1),
+        connect_ms: Some(1),
+        tls_ms: None,
+        ttfb_ms: Some(2),
+        response_code: Some(404),
+        response_size: Some(6305),
+        network: Some(uptimepage::domain::NetworkPath {
+            remote_ip: Some("2001:db8::53".parse().unwrap()),
+            tried_ips: vec![],
+            hop_url: Some("https://example.com/next".into()),
+            dns: Some(uptimepage::domain::DnsAnswer {
+                resolver: "192.0.2.53".parse().unwrap(),
+                addresses: vec!["2001:db8::53".parse().unwrap()],
+                ttl_secs: 2340,
+            }),
+        }),
+        diagnostic: None,
+        error: Some("unexpected status 404".into()),
+    }])
+    .await
+    .expect("seed a failed result");
+
+    let from =
+        (at - chrono::Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let to = (at + chrono::Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let uri = format!("/web/partials/targets/{id}/checks?from={from}&to={to}");
+    let resp = router
+        .oneshot(Request::get(uri.clone()).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+    let html = body_text(resp).await;
+    assert!(html.contains("server IP:"), "{html}");
+    assert!(html.contains("2001:db8::53"), "{html}");
+    assert!(html.contains("(edge.example.net)"), "{html}");
+    assert!(html.contains("final URL:"), "{html}");
+    assert!(html.contains("dns 192.0.2.53:"), "{html}");
+    assert!(html.contains("cached until"), "{html}");
 }

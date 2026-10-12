@@ -16,12 +16,27 @@ use crate::security::redaction::strip_url_credentials;
 use crate::storage::incidents::IncidentBrief;
 
 use crate::mcp::schema::{
-    CheckConfig, CheckDiagnosticView, CheckTiming, DnsCheckConfig, DomainExpiryCheckConfig,
-    FlowCheckConfig, FlowRunEvidence, FlowRunItem, FlowStepConfig, FlowStepRun, FlowStepTrendItem,
-    HeartbeatCheckConfig, HttpCheckConfig, IncidentDetail, IncidentSummary, IncidentUpdateItem,
-    IncidentVisibilityResult, ManualCheckConfig, PingCheckConfig, RegionHealth, RegionItem,
-    RegionPolicyArg, RegionPolicyMode, TcpCheckConfig, TlsCertCheckConfig,
+    CheckConfig, CheckDiagnosticView, CheckTiming, DnsAnswerView, DnsCheckConfig,
+    DomainExpiryCheckConfig, FlowCheckConfig, FlowRunEvidence, FlowRunItem, FlowStepConfig,
+    FlowStepRun, FlowStepTrendItem, HeartbeatCheckConfig, HttpCheckConfig, IncidentDetail,
+    IncidentSummary, IncidentUpdateItem, IncidentVisibilityResult, ManualCheckConfig,
+    NetworkPathView, PingCheckConfig, RegionHealth, RegionItem, RegionPolicyArg, RegionPolicyMode,
+    TcpCheckConfig, TlsCertCheckConfig,
 };
+
+pub(super) fn network_path(result: &CheckResult) -> Option<NetworkPathView> {
+    let ips = |ips: &[std::net::IpAddr]| ips.iter().map(ToString::to_string).collect();
+    result.network.as_ref().map(|network| NetworkPathView {
+        remote_ip: network.remote_ip.map(|ip| ip.to_string()),
+        tried_ips: ips(&network.tried_ips),
+        hop_url: network.hop_url.as_deref().map(sanitize_data),
+        dns: network.dns.as_ref().map(|dns| DnsAnswerView {
+            resolver: dns.resolver.to_string(),
+            addresses: ips(&dns.addresses),
+            ttl_secs: dns.ttl_secs,
+        }),
+    })
+}
 
 pub(super) fn check_diagnostic(result: &CheckResult) -> Option<CheckDiagnosticView> {
     result

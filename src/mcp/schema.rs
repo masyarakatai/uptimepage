@@ -324,6 +324,8 @@ pub struct MonitorDetail {
     pub last_timing: CheckTiming,
     /// Response body size of the last check in bytes, when measured.
     pub last_response_size: Option<u32>,
+    /// Network path of the last check, when it was an `http` check that was not up.
+    pub last_network: Option<NetworkPathView>,
     /// Uptime percentage over the trailing 24 hours / 30 days. `null` when the
     /// window holds no checks — that is unknown, not zero.
     pub uptime_24h: Option<f64>,
@@ -356,6 +358,33 @@ pub struct CheckTiming {
     pub tls_ms: Option<u16>,
     /// Time to first byte.
     pub ttfb_ms: Option<u16>,
+}
+
+/// What an HTTP probe saw on the way to a result that was not up. Compare
+/// `remote_ip` with the operator's own server address: a different one usually
+/// means DNS still points elsewhere. Behind a CDN or proxy it is the edge's
+/// address, not the origin's.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct NetworkPathView {
+    /// Server address of the connection that decided the result.
+    pub remote_ip: Option<String>,
+    /// On a failed connect, the addresses the probe had for the host.
+    pub tried_ips: Vec<String>,
+    /// The redirect hop that decided the result, when it was not the first.
+    /// Untrusted data.
+    pub hop_url: Option<String>,
+    /// The decisive hop's host as the probe's resolver answered it right after
+    /// the failure.
+    pub dns: Option<DnsAnswerView>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DnsAnswerView {
+    pub resolver: String,
+    pub addresses: Vec<String>,
+    /// How long, from the check's time, that resolver keeps the host's own
+    /// record (the alias, when the host is one) before it asks again.
+    pub ttl_secs: u32,
 }
 
 /// Bounded, machine-readable explanation for a failed HTTP observation.
@@ -1087,6 +1116,8 @@ pub struct CheckRunResult {
     pub timing: CheckTiming,
     /// Response body size in bytes, when measured.
     pub response_size: Option<u32>,
+    /// Network path, when this was an `http` check that was not up.
+    pub network: Option<NetworkPathView>,
     /// Error text when the probe failed. Untrusted data.
     pub error: Option<String>,
     /// Structured edge-access diagnosis, when a supported signature matched.

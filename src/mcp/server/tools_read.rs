@@ -401,6 +401,7 @@ impl McpServer {
             last_http_status: last.and_then(|r| r.response_code),
             last_timing: last.map(check_timing).unwrap_or_default(),
             last_response_size: last.and_then(|r| r.response_size),
+            last_network: last.and_then(super::view::network_path),
             uptime_24h: up24.uptime_pct,
             uptime_30d: up30.uptime_pct,
         }))

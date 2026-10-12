@@ -75,6 +75,7 @@ pub fn manual_result(
         ttfb_ms: None,
         response_code: None,
         response_size: None,
+        network: None,
         diagnostic: None,
         error: state.error(),
     }

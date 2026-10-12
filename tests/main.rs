@@ -81,6 +81,7 @@ mod me_time_format_test;
 mod mode_parameterization_test;
 mod monitor_share_audit_test;
 mod monitor_shares_pg_test;
+mod network_path_test;
 mod new_endpoints_test;
 mod notification_channel_audit_test;
 mod notification_channels_pg_test;

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::net::Ipv6Addr;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -15,12 +16,13 @@ use crate::domain::metrics::{
 };
 use crate::domain::{
     CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
-    DiagnosticEvidence, EdgeProvider, Incident, ObservedCadence, OrgId, coalesce_incidents,
+    DiagnosticEvidence, DnsAnswer, EdgeProvider, Incident, NetworkPath, ObservedCadence, OrgId,
+    coalesce_incidents,
 };
 use crate::error::Result;
 use crate::storage::traits::{
-    ClampedRange, FlowRunView, RegionFlaps, RegionLatestStatus, ResultsStore, TimeRange,
-    UptimeStats, rollup_bucket_secs,
+    ClampedRange, FailingServer, FlowRunView, RegionFlaps, RegionLatestStatus, ResultsStore,
+    TimeRange, UptimeStats, rollup_bucket_secs,
 };
 
 use super::{
@@ -143,6 +145,12 @@ fn coalesce_from_incident_rows(target_id: Uuid, rows: Vec<IncidentRow>) -> Vec<I
     )
 }
 
+/// Shared tail of every raw-result read, in [`OwnedResultRow`] field order.
+const RESULT_COLUMNS: &str = "timestamp, status, duration_ms, dns_ms, connect_ms, tls_ms, \
+     ttfb_ms, response_code, response_size, remote_ip, tried_ips, hop_url, dns_resolver, \
+     dns_answer, dns_ttl, error, diagnostic_kind, diagnostic_confidence, diagnostic_provider, \
+     diagnostic_evidence";
+
 #[derive(Debug, Row, Deserialize)]
 struct OwnedResultRow {
     #[serde(with = "clickhouse::serde::uuid")]
@@ -156,6 +164,12 @@ struct OwnedResultRow {
     ttfb_ms: Option<u16>,
     response_code: Option<u16>,
     response_size: Option<u32>,
+    remote_ip: Option<Ipv6Addr>,
+    tried_ips: Vec<Ipv6Addr>,
+    hop_url: Option<String>,
+    dns_resolver: Option<Ipv6Addr>,
+    dns_answer: Vec<Ipv6Addr>,
+    dns_ttl: Option<u32>,
     error: Option<String>,
     diagnostic_kind: Option<String>,
     diagnostic_confidence: Option<String>,
@@ -177,6 +191,12 @@ struct RegionResultRow {
     ttfb_ms: Option<u16>,
     response_code: Option<u16>,
     response_size: Option<u32>,
+    remote_ip: Option<Ipv6Addr>,
+    tried_ips: Vec<Ipv6Addr>,
+    hop_url: Option<String>,
+    dns_resolver: Option<Ipv6Addr>,
+    dns_answer: Vec<Ipv6Addr>,
+    dns_ttl: Option<u32>,
     error: Option<String>,
     diagnostic_kind: Option<String>,
     diagnostic_confidence: Option<String>,
@@ -197,6 +217,12 @@ impl RegionResultRow {
             ttfb_ms: self.ttfb_ms,
             response_code: self.response_code,
             response_size: self.response_size,
+            remote_ip: self.remote_ip,
+            tried_ips: self.tried_ips,
+            hop_url: self.hop_url,
+            dns_resolver: self.dns_resolver,
+            dns_answer: self.dns_answer,
+            dns_ttl: self.dns_ttl,
             error: self.error,
             diagnostic_kind: self.diagnostic_kind,
             diagnostic_confidence: self.diagnostic_confidence,
@@ -223,6 +249,12 @@ struct MultiResultRow {
     ttfb_ms: Option<u16>,
     response_code: Option<u16>,
     response_size: Option<u32>,
+    remote_ip: Option<Ipv6Addr>,
+    tried_ips: Vec<Ipv6Addr>,
+    hop_url: Option<String>,
+    dns_resolver: Option<Ipv6Addr>,
+    dns_answer: Vec<Ipv6Addr>,
+    dns_ttl: Option<u32>,
     error: Option<String>,
     diagnostic_kind: Option<String>,
     diagnostic_confidence: Option<String>,
@@ -244,6 +276,12 @@ impl MultiResultRow {
             ttfb_ms: self.ttfb_ms,
             response_code: self.response_code,
             response_size: self.response_size,
+            remote_ip: self.remote_ip,
+            tried_ips: self.tried_ips,
+            hop_url: self.hop_url,
+            dns_resolver: self.dns_resolver,
+            dns_answer: self.dns_answer,
+            dns_ttl: self.dns_ttl,
             error: self.error,
             diagnostic_kind: self.diagnostic_kind,
             diagnostic_confidence: self.diagnostic_confidence,
@@ -252,6 +290,24 @@ impl MultiResultRow {
         };
         (self.region, row_to_result(inner, org_id))
     }
+}
+
+fn network_from(row: &OwnedResultRow) -> Option<NetworkPath> {
+    let ips = |v: &[Ipv6Addr]| v.iter().map(|ip| ip.to_canonical()).collect();
+    let path = NetworkPath {
+        remote_ip: row.remote_ip.map(|ip| ip.to_canonical()),
+        tried_ips: ips(&row.tried_ips),
+        hop_url: row.hop_url.clone(),
+        dns: row
+            .dns_resolver
+            .zip(row.dns_ttl)
+            .map(|(resolver, ttl_secs)| DnsAnswer {
+                resolver: resolver.to_canonical(),
+                addresses: ips(&row.dns_answer),
+                ttl_secs,
+            }),
+    };
+    Some(path).filter(|p| !p.is_empty())
 }
 
 fn row_to_result(row: OwnedResultRow, org_id: Uuid) -> CheckResult {
@@ -290,6 +346,7 @@ fn row_to_result(row: OwnedResultRow, org_id: Uuid) -> CheckResult {
         ttfb_ms: row.ttfb_ms,
         response_code: row.response_code,
         response_size: row.response_size,
+        network: network_from(&row),
         diagnostic,
         error: row.error,
     }
@@ -555,10 +612,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let mut q = self
             .client
             .query(&format!(
-                "SELECT target_id, timestamp, status, duration_ms, dns_ms, connect_ms, tls_ms, \
-                 ttfb_ms, response_code, response_size, error, diagnostic_kind, \
-                 diagnostic_confidence, diagnostic_provider, diagnostic_evidence \
-                 FROM {TABLE} \
+                "SELECT target_id, {RESULT_COLUMNS} FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? {region_pred} \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -593,10 +647,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let rows: Vec<RegionResultRow> = self
             .client
             .query(&format!(
-                "SELECT region, target_id, timestamp, status, duration_ms, dns_ms, connect_ms, \
-                 tls_ms, ttfb_ms, response_code, response_size, error, diagnostic_kind, \
-                 diagnostic_confidence, diagnostic_provider, diagnostic_evidence \
-                 FROM {TABLE} \
+                "SELECT region, target_id, {RESULT_COLUMNS} FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -629,10 +680,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let mut q = self
             .client
             .query(&format!(
-                "SELECT region, target_id, timestamp, status, duration_ms, dns_ms, connect_ms, \
-                 tls_ms, ttfb_ms, response_code, response_size, error, diagnostic_kind, \
-                 diagnostic_confidence, diagnostic_provider, diagnostic_evidence \
-                 FROM {TABLE} \
+                "SELECT region, target_id, {RESULT_COLUMNS} FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? AND status != {up} {region_pred} \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -676,10 +724,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let rows: Vec<MultiResultRow> = self
             .client
             .query(&format!(
-                "SELECT org_id, region, target_id, timestamp, status, duration_ms, dns_ms, \
-                 connect_ms, tls_ms, ttfb_ms, response_code, response_size, error, \
-                 diagnostic_kind, diagnostic_confidence, diagnostic_provider, \
-                 diagnostic_evidence FROM {TABLE} \
+                "SELECT org_id, region, target_id, {RESULT_COLUMNS} FROM {TABLE} \
                  WHERE (org_id, target_id) IN ({pair_list}) \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -1268,6 +1313,51 @@ impl ResultsStore for ClickhouseResultsStore {
                 region: r.region,
                 failures: r.failures,
                 transitions: r.transitions,
+            })
+            .collect())
+    }
+
+    async fn failing_servers(
+        &self,
+        org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        limit: usize,
+    ) -> Result<Vec<FailingServer>> {
+        #[derive(Row, Deserialize)]
+        struct S {
+            ip: Ipv6Addr,
+            regions: Vec<String>,
+            checks: u64,
+        }
+        let rows: Vec<S> = self
+            .client
+            .query(&format!(
+                "SELECT assumeNotNull(remote_ip) AS ip, \
+                   arraySort(groupUniqArray(region)) AS regions, count() AS checks \
+                 FROM {TABLE} \
+                 WHERE org_id = ? AND target_id = ? AND status IN ({down}, {error}) \
+                   AND remote_ip IS NOT NULL \
+                   AND timestamp >= fromUnixTimestamp(?) \
+                   AND timestamp < fromUnixTimestamp(?) \
+                 GROUP BY ip ORDER BY checks DESC, ip LIMIT ?",
+                down = CheckStatus::Down.as_enum8(),
+                error = CheckStatus::Error.as_enum8(),
+            ))
+            .bind(org.0)
+            .bind(target_id)
+            .bind(range.from.timestamp())
+            .bind(range.to.timestamp())
+            .bind(limit as u64)
+            .fetch_all::<S>()
+            .await
+            .context("clickhouse failing_servers")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FailingServer {
+                ip: r.ip.to_canonical(),
+                regions: r.regions.into_iter().filter(|r| !r.is_empty()).collect(),
+                checks: r.checks,
             })
             .collect())
     }

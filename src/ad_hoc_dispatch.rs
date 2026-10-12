@@ -537,6 +537,7 @@ mod tests {
                 ttfb_ms: None,
                 response_code: Some(200),
                 response_size: None,
+                network: None,
                 diagnostic: None,
                 error: None,
             },

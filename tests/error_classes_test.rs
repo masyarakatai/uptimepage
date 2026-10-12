@@ -30,6 +30,7 @@ fn failure(target_id: Uuid, org_id: Uuid, error: &str) -> CheckResult {
         ttfb_ms: None,
         response_code: None,
         response_size: None,
+        network: None,
         diagnostic: None,
         error: Some(error.to_string()),
     }

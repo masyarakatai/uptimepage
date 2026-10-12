@@ -246,8 +246,9 @@ pub struct ShareDetailPage {
     pub selected_region: Option<String>,
     /// The public results table hides the region column (matches the owner view).
     pub show_region: bool,
-    /// Always `false`: remediation advice is for the monitor's owner.
-    pub show_guidance: bool,
+    /// Always `false`: remediation advice and the server address are for the
+    /// monitor's owner.
+    pub owner_view: bool,
     /// Monitor runs from more than one region; the charts merge them.
     pub all_regions: bool,
     /// The status page this view is drawn for; `None` = the app's own chrome.
@@ -268,8 +269,9 @@ pub struct ShareLive {
     pub results_has_more: bool,
     pub last_at_iso: Arc<str>,
     pub show_region: bool,
-    /// Always `false`: remediation advice is for the monitor's owner.
-    pub show_guidance: bool,
+    /// Always `false`: remediation advice and the server address are for the
+    /// monitor's owner.
+    pub owner_view: bool,
 }
 
 #[derive(Template, WebTemplate)]
@@ -390,7 +392,7 @@ pub async fn detail(
             to_human: labels.to_human,
             selected_region: None,
             show_region: false,
-            show_guidance: false,
+            owner_view: false,
             all_regions,
             brand,
         }
@@ -448,7 +450,7 @@ pub async fn live_partial(
         results_has_more: live.results_has_more,
         last_at_iso: Arc::clone(&live.last_at_iso),
         show_region: false,
-        show_guidance: false,
+        owner_view: false,
     };
     let rendered = page
         .render()
@@ -680,7 +682,7 @@ mod tests {
             to_human: "2026-07-13 12:00 UTC".into(),
             selected_region: None,
             show_region: false,
-            show_guidance: false,
+            owner_view: false,
             all_regions,
             brand: None,
         }
@@ -763,7 +765,7 @@ mod tests {
             results_has_more: false,
             last_at_iso: Arc::from("2026-07-13T12:00:00Z"),
             show_region: false,
-            show_guidance: false,
+            owner_view: false,
         }
         .render()
         .unwrap();

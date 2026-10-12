@@ -13,11 +13,11 @@ use crate::common;
 use chrono::{Duration, Utc};
 use uptimepage::domain::{
     CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
-    DiagnosticEvidence, DiagnosticRemediation, EdgeProvider, OrgId,
+    DiagnosticEvidence, DiagnosticRemediation, DnsAnswer, EdgeProvider, NetworkPath, OrgId,
 };
 use uptimepage::storage::{
-    ClampedRange, ClickhouseResultSink, ClickhouseResultsStore, OrgTtlDays, ResultSink,
-    ResultsStore, TimeRange,
+    ClampedRange, ClickhouseResultSink, ClickhouseResultsStore, FailingServer, OrgTtlDays,
+    ResultSink, ResultsStore, TimeRange,
 };
 use uuid::Uuid;
 
@@ -34,6 +34,7 @@ fn result(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>) -> CheckResult {
         ttfb_ms: None,
         response_code: Some(200),
         response_size: None,
+        network: None,
         diagnostic: None,
         error: None,
     }
@@ -380,5 +381,159 @@ async fn last_check_times_take_the_newest_result_across_regions() {
     assert!(
         !last.contains_key(&foreign),
         "another org's monitor is absent"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires ClickHouse (CLICKHOUSE_URL)"]
+async fn network_path_round_trips_through_every_raw_read() {
+    let Some(ch) = common::ch_client_from_env().await else {
+        eprintln!("skipped: CLICKHOUSE_URL not set");
+        return;
+    };
+    let sink = ClickhouseResultSink::new(
+        ch.clone(),
+        "eu".into(),
+        "agent-eu".into(),
+        OrgTtlDays::new(),
+    );
+    let store = ClickhouseResultsStore::from_client(ch);
+
+    let org = Uuid::now_v7();
+    let target = Uuid::now_v7();
+    let now = Utc::now();
+    let v4: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+    let v6: std::net::IpAddr = "2001:db8::53".parse().unwrap();
+    let full = NetworkPath {
+        remote_ip: Some(v4),
+        tried_ips: vec![v6, v4],
+        hop_url: Some("https://example.com/login?token=***".into()),
+        dns: Some(DnsAnswer {
+            resolver: "1.1.1.1".parse().unwrap(),
+            addresses: vec![v6, v4],
+            ttl_secs: 2340,
+        }),
+    };
+    let only_ip = NetworkPath {
+        remote_ip: Some(v6),
+        ..NetworkPath::default()
+    };
+    let with = |secs_ago: i64, network: Option<NetworkPath>| {
+        let mut r = result(target, org, now - Duration::seconds(secs_ago));
+        r.network = network;
+        r
+    };
+    sink.write_batch(&[
+        with(30, Some(full.clone())),
+        with(20, Some(only_ip.clone())),
+        with(10, None),
+    ])
+    .await
+    .expect("seed");
+
+    let range = ClampedRange::unclamped(TimeRange {
+        from: now - Duration::seconds(3600),
+        to: now + Duration::seconds(60),
+    });
+    let expected = vec![None, Some(only_ip), Some(full)];
+
+    let listed = store
+        .list_results(OrgId(org), target, range, 10, 0, None)
+        .await
+        .expect("list_results");
+    let network: Vec<_> = listed.iter().map(|r| r.network.clone()).collect();
+    assert_eq!(
+        network, expected,
+        "IPv4 comes back as IPv4, not IPv4-mapped"
+    );
+
+    let by_region = store
+        .list_results_by_region(OrgId(org), target, range, 10, 0)
+        .await
+        .expect("list_results_by_region");
+    let network: Vec<_> = by_region.iter().map(|(_, r)| r.network.clone()).collect();
+    assert_eq!(network, expected);
+
+    let batched = store
+        .recent_results_for_targets(&[(OrgId(org), target)], range, 10)
+        .await
+        .expect("recent_results_for_targets");
+    let network: Vec<_> = batched.iter().map(|(_, r)| r.network.clone()).collect();
+    assert_eq!(network, expected);
+}
+
+#[tokio::test]
+#[ignore = "requires ClickHouse (CLICKHOUSE_URL)"]
+async fn failing_servers_group_failures_by_address() {
+    let Some(ch) = common::ch_client_from_env().await else {
+        eprintln!("skipped: CLICKHOUSE_URL not set");
+        return;
+    };
+    let sink = |region: &str| {
+        ClickhouseResultSink::new(
+            ch.clone(),
+            region.into(),
+            format!("agent-{region}"),
+            OrgTtlDays::new(),
+        )
+    };
+    let store = ClickhouseResultsStore::from_client(ch.clone());
+
+    let org = Uuid::now_v7();
+    let target = Uuid::now_v7();
+    let now = Utc::now();
+    let stale: std::net::IpAddr = "2001:db8::53".parse().unwrap();
+    let origin: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+    let at = |secs_ago: i64, status: CheckStatus, ip: Option<std::net::IpAddr>| {
+        let mut r = result(target, org, now - Duration::seconds(secs_ago));
+        r.status = status;
+        r.network = ip.map(|ip| NetworkPath {
+            remote_ip: Some(ip),
+            ..NetworkPath::default()
+        });
+        r
+    };
+    sink("eu")
+        .write_batch(&[
+            at(50, CheckStatus::Down, Some(stale)),
+            at(40, CheckStatus::Down, Some(stale)),
+            at(30, CheckStatus::Error, None),
+            at(25, CheckStatus::Degraded, Some(origin)),
+            at(20, CheckStatus::Up, Some(origin)),
+        ])
+        .await
+        .expect("seed eu");
+    sink("us")
+        .write_batch(&[
+            at(45, CheckStatus::Down, Some(stale)),
+            at(35, CheckStatus::Down, Some(origin)),
+        ])
+        .await
+        .expect("seed us");
+
+    let range = ClampedRange::unclamped(TimeRange {
+        from: now - Duration::seconds(3600),
+        to: now + Duration::seconds(60),
+    });
+    let servers = store
+        .failing_servers(OrgId(org), target, range, 5)
+        .await
+        .expect("failing_servers");
+
+    assert_eq!(
+        servers,
+        vec![
+            FailingServer {
+                ip: stale,
+                regions: vec!["eu".into(), "us".into()],
+                checks: 3,
+            },
+            FailingServer {
+                ip: origin,
+                regions: vec!["us".into()],
+                checks: 1,
+            },
+        ],
+        "passing, degraded, and unconnected checks stay out"
     );
 }

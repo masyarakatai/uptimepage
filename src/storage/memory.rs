@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
@@ -14,9 +17,9 @@ use crate::domain::{
 };
 use crate::error::Result;
 use crate::storage::traits::{
-    ChannelEdit, ClampedRange, IntervalOutcome, RegionFlaps, RegionLatestStatus, RegionOption,
-    ResultSink, ResultsStore, TagAddOutcome, TargetFilter, TargetStore, TimeRange, UptimeStats,
-    rollup_bucket_secs,
+    ChannelEdit, ClampedRange, FailingServer, IntervalOutcome, RegionFlaps, RegionLatestStatus,
+    RegionOption, ResultSink, ResultsStore, TagAddOutcome, TargetFilter, TargetStore, TimeRange,
+    UptimeStats, rollup_bucket_secs,
 };
 
 #[derive(Default)]
@@ -493,6 +496,38 @@ impl ResultsStore for InMemorySink {
             failures,
             transitions,
         }])
+    }
+
+    async fn failing_servers(
+        &self,
+        _org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        limit: usize,
+    ) -> Result<Vec<FailingServer>> {
+        let guard = self.results.lock();
+        let mut counts: HashMap<IpAddr, u64> = HashMap::new();
+        for r in guard.iter().filter(|r| {
+            r.target_id == target_id
+                && matches!(r.status, CheckStatus::Down | CheckStatus::Error)
+                && r.timestamp >= range.from
+                && r.timestamp < range.to
+        }) {
+            if let Some(ip) = r.remote_ip() {
+                *counts.entry(ip).or_default() += 1;
+            }
+        }
+        let mut out: Vec<FailingServer> = counts
+            .into_iter()
+            .map(|(ip, checks)| FailingServer {
+                ip,
+                regions: vec!["default".to_string()],
+                checks,
+            })
+            .collect();
+        out.sort_by(|a, b| b.checks.cmp(&a.checks).then(a.ip.cmp(&b.ip)));
+        out.truncate(limit);
+        Ok(out)
     }
 
     async fn latency_buckets_by_region(
@@ -1453,6 +1488,7 @@ mod tests {
             ttfb_ms: Some(20),
             response_code: Some(200),
             response_size: None,
+            network: None,
             diagnostic: None,
             error: None,
         }
@@ -1601,6 +1637,52 @@ mod tests {
         assert_eq!(buckets.len(), 1);
         assert_eq!(buckets[0].total, 1);
         assert_eq!(buckets[0].up, 1);
+    }
+
+    #[tokio::test]
+    async fn failing_servers_count_down_and_error_results_by_address() {
+        let store = InMemorySink::new();
+        let t = Uuid::from_u128(1);
+        let base = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        let stale: IpAddr = "2001:db8::53".parse().unwrap();
+        let origin: IpAddr = "192.0.2.20".parse().unwrap();
+        let at = |offset_s: i64, status: CheckStatus, ip: IpAddr| {
+            let mut r = status_result(t, base, offset_s, status);
+            r.network = Some(crate::domain::NetworkPath {
+                remote_ip: Some(ip),
+                ..Default::default()
+            });
+            r
+        };
+        store
+            .write_batch(&[
+                at(10, CheckStatus::Down, stale),
+                at(20, CheckStatus::Error, stale),
+                at(30, CheckStatus::Down, origin),
+                at(40, CheckStatus::Degraded, origin),
+                at(50, CheckStatus::Up, origin),
+                status_result(t, base, 60, CheckStatus::Down),
+            ])
+            .await
+            .unwrap();
+        let range = ClampedRange::unclamped(TimeRange {
+            from: base,
+            to: base + chrono::Duration::seconds(120),
+        });
+
+        let servers = store
+            .failing_servers(OrgId(Uuid::nil()), t, range, 5)
+            .await
+            .unwrap();
+        let counts: Vec<_> = servers.iter().map(|s| (s.ip, s.checks)).collect();
+        assert_eq!(counts, vec![(stale, 2), (origin, 1)]);
+
+        let top = store
+            .failing_servers(OrgId(Uuid::nil()), t, range, 1)
+            .await
+            .unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].ip, stale);
     }
 
     #[tokio::test]

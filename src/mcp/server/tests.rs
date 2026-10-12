@@ -16,8 +16,8 @@ use super::text::{
 use super::tools_read::IncidentPage;
 use super::view::{
     channel_names, check_config, check_timing, current_state, expected_status_str, flow_run_item,
-    incident_detail, incident_summary, ms_to_rfc3339, region_cap, region_health, region_items,
-    region_policy_view, step_trend_item, ts_to_rfc3339, undeliverable_reason,
+    incident_detail, incident_summary, ms_to_rfc3339, network_path, region_cap, region_health,
+    region_items, region_policy_view, step_trend_item, ts_to_rfc3339, undeliverable_reason,
 };
 use super::*;
 
@@ -63,9 +63,35 @@ fn check_result(dns: Option<u16>, ttfb: Option<u16>, size: Option<u32>) -> Check
         ttfb_ms: ttfb,
         response_code: Some(200),
         response_size: size,
+        network: None,
         diagnostic: None,
         error: None,
     }
+}
+
+#[test]
+fn the_network_path_reaches_mcp_as_plain_strings_with_the_hop_scrubbed() {
+    let mut r = check_result(None, None, None);
+    assert!(network_path(&r).is_none(), "a passing check has no path");
+
+    r.network = Some(crate::domain::NetworkPath {
+        remote_ip: None,
+        tried_ips: vec!["192.0.2.1".parse().unwrap(), "2001:db8::1".parse().unwrap()],
+        hop_url: Some("https://example.com/next\u{202e}\u{0007}".into()),
+        dns: Some(crate::domain::DnsAnswer {
+            resolver: "192.0.2.53".parse().unwrap(),
+            addresses: vec!["2001:db8::53".parse().unwrap()],
+            ttl_secs: 2340,
+        }),
+    });
+    let view = network_path(&r).expect("path");
+    assert_eq!(view.remote_ip, None);
+    assert_eq!(view.tried_ips, vec!["192.0.2.1", "2001:db8::1"]);
+    assert_eq!(view.hop_url.as_deref(), Some("https://example.com/next"));
+    let dns = view.dns.expect("dns");
+    assert_eq!(dns.resolver, "192.0.2.53");
+    assert_eq!(dns.addresses, vec!["2001:db8::53"]);
+    assert_eq!(dns.ttl_secs, 2340);
 }
 
 fn active_incident(latest: Option<PublicIncidentUpdate>) -> IncidentBrief {
