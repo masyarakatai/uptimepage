@@ -320,7 +320,7 @@ pub async fn check_channel_abuse(
         serde_json::json!({ "detail": hit.detail }),
         None,
     );
-    Err(hit.into_app_error())
+    Err(hit.into_app_error("config"))
 }
 
 /// The owner's address as the org's first alert channel, pre-verified: the

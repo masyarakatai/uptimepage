@@ -53,7 +53,7 @@ impl AbuseHit {
     /// 400 error carrying the stable code. URL-pattern and reputation
     /// matches surface as the generic `ABUSE_BLOCKED`; static deny-list
     /// matches as `DOMAIN_DENYLISTED`.
-    pub fn into_app_error(self) -> AppError {
+    pub fn into_app_error(self, field: &str) -> AppError {
         let (code, msg) = match self.kind {
             AbuseKind::UrlPattern => (
                 codes::ABUSE_BLOCKED,
@@ -68,7 +68,7 @@ impl AbuseHit {
                 format!("target domain '{}' has a poor reputation", self.detail),
             ),
         };
-        AppError::bad_request_field(code, msg, "check.url")
+        AppError::bad_request_field(code, msg, field)
     }
 }
 
@@ -412,7 +412,7 @@ fn parse_reputation(raw: &str) -> HashSet<String> {
 #[cfg(test)]
 impl AbuseHit {
     fn into_app_error_code(self) -> &'static str {
-        match self.into_app_error() {
+        match self.into_app_error("check.url") {
             AppError::BadRequest { code, .. } => code,
             _ => "UNEXPECTED",
         }

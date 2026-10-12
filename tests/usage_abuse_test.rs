@@ -127,6 +127,7 @@ async fn git_dir_url_returns_400_abuse_blocked() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let b = body_json(resp).await;
     assert_eq!(b["error"]["code"], "ABUSE_BLOCKED");
+    assert_eq!(b["error"]["field"], "check.url");
 
     assert!(
         wait_for_abuse_rows(&pool, before).await,
@@ -148,6 +149,7 @@ async fn denylisted_domain_returns_400_domain_denylisted() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let b = body_json(resp).await;
     assert_eq!(b["error"]["code"], "DOMAIN_DENYLISTED");
+    assert_eq!(b["error"]["field"], "check.url");
 
     assert!(
         wait_for_abuse_rows(&pool, before).await,

@@ -1068,10 +1068,6 @@ import { parseDuration } from "./_duration.js";
 
     function renderApiError(json, status) {
         window.smRenderApiError(document.getElementById("form-errors"), json, status, {
-            messageFor: (err) => err.code === "SSRF_BLOCKED"
-                ? "This URL points to a private/internal range and is blocked. " +
-                  "If you need to monitor internal services, deploy a monitor instance inside that network."
-                : null,
             onField: (field) => markFieldInvalid(field, true),
         });
     }
@@ -1086,6 +1082,7 @@ import { parseDuration } from "./_duration.js";
         "check.expected_contains": "dns_expected_contains",
         "check.expected_records": "dns_expected_records",
         "check.server_name": "tls_server_name",
+        "check.start_url": "flow_start_url",
         "interval": "interval_s",
         "renotify_interval_secs": "renotify_secs",
         "recovery_period_secs": "recovery_period_secs",

@@ -281,13 +281,47 @@ fn validate_check_accepts_valid_login_flow() {
 #[test]
 fn validate_check_flow_blocks_internal_goto() {
     use crate::security::ssrf::SsrfGuard;
-    let spec: crate::domain::CheckSpec = serde_json::from_str(
-            r##"{"type":"flow","start_url":"https://app.example.com/login","steps":[{"op":"goto","url":"http://169.254.169.254/latest/meta-data/"},{"op":"assert_text","selector":null,"contains":"x"}],"timeout":30000,"step_timeout":5000,"verify_tls":true}"##,
-        )
+    for (start, goto, field) in [
+        (
+            "https://app.example.com/login",
+            "http://169.254.169.254/latest/meta-data/",
+            "check.steps",
+        ),
+        (
+            "http://10.0.0.1/login",
+            "https://app.example.com/",
+            "check.start_url",
+        ),
+    ] {
+        let spec: crate::domain::CheckSpec = serde_json::from_value(serde_json::json!({
+            "type": "flow",
+            "start_url": start,
+            "steps": [
+                {"op": "goto", "url": goto},
+                {"op": "assert_text", "selector": null, "contains": "x"}
+            ],
+            "timeout": 30000,
+            "step_timeout": 5000,
+            "verify_tls": true
+        }))
         .expect("flow must deserialize");
-    let err = validate_check(&spec, &SsrfGuard::strict())
-        .expect_err("a goto to a metadata IP must be SSRF-blocked");
-    assert_bad_request_with_field(err, "check.url");
+        let err = validate_check(&spec, &SsrfGuard::strict())
+            .expect_err("an internal address must be SSRF-blocked");
+        let AppError::BadRequest {
+            message,
+            field: got,
+            ..
+        } = err
+        else {
+            panic!("expected a bad request, got {err:?}");
+        };
+        assert_eq!(got.as_deref(), Some(field));
+        assert_eq!(
+            message.starts_with("step 1: "),
+            field == "check.steps",
+            "{message}"
+        );
+    }
 }
 
 #[test]

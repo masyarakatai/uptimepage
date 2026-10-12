@@ -648,14 +648,8 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
     use crate::domain::CheckSpec;
     match check {
         CheckSpec::Http(http) => {
+            validate_target_url(&http.url, guard, "check.url")?;
             let scheme = http.url.scheme();
-            if !ALLOWED_SCHEMES.contains(&scheme) {
-                return Err(AppError::bad_request_field(
-                    codes::INVALID_URL_SCHEME,
-                    format!("url scheme '{scheme}' not allowed"),
-                    "check.url",
-                ));
-            }
             validate_timeout(http.timeout)?;
             if http.max_redirects > crate::domain::HttpCheck::MAX_REDIRECTS {
                 return Err(AppError::bad_request_field(
@@ -705,34 +699,6 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                     "check.verify_tls",
                 ));
             }
-            // Port 0 is unroutable, and rejecting it everywhere keeps the
-            // ping throttle's pseudo-port 0 collision-free across kinds.
-            if http.url.port() == Some(0) {
-                return Err(AppError::bad_request_field(
-                    codes::INVALID_URL_FORMAT,
-                    "url port must be > 0",
-                    "check.url",
-                ));
-            }
-            match http.url.host() {
-                Some(Host::Ipv4(v4)) => check_ip(IpAddr::V4(v4), guard)?,
-                Some(Host::Ipv6(v6)) => check_ip(IpAddr::V6(v6), guard)?,
-                Some(Host::Domain("")) => {
-                    return Err(AppError::bad_request_field(
-                        codes::INVALID_URL_FORMAT,
-                        "url missing host",
-                        "check.url",
-                    ));
-                }
-                Some(Host::Domain(_)) => {}
-                None => {
-                    return Err(AppError::bad_request_field(
-                        codes::INVALID_URL_FORMAT,
-                        "url missing host",
-                        "check.url",
-                    ));
-                }
-            }
         }
         CheckSpec::Tcp(tcp) => {
             if tcp.host.is_empty() {
@@ -752,7 +718,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
             validate_timeout(tcp.timeout)?;
             let host = crate::domain::check::unbracket(&tcp.host);
             if let Ok(ip) = host.parse::<IpAddr>() {
-                check_ip(ip, guard)?;
+                check_ip(ip, guard, "check.host")?;
             }
         }
         CheckSpec::Ping(p) => {
@@ -766,7 +732,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
             validate_timeout(p.timeout)?;
             let host = crate::domain::check::unbracket(&p.host);
             if let Ok(ip) = host.parse::<IpAddr>() {
-                check_ip(ip, guard)?;
+                check_ip(ip, guard, "check.host")?;
             }
         }
         CheckSpec::Heartbeat(h) => {
@@ -823,7 +789,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
             )?;
             let host = crate::domain::check::unbracket(&cert.host);
             if let Ok(ip) = host.parse::<IpAddr>() {
-                check_ip(ip, guard)?;
+                check_ip(ip, guard, "check.host")?;
             }
         }
         CheckSpec::DomainExpiry(d) => {
@@ -900,7 +866,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                 // A custom resolver address is just another outbound
                 // target; reuse the SSRF guard so users can't aim the
                 // probe at an internal DNS server.
-                check_ip(sock.ip(), guard)?;
+                check_ip(sock.ip(), guard, "check.resolver")?;
             }
         }
         CheckSpec::Flow(flow) => {
@@ -948,12 +914,13 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                     "check.steps",
                 ));
             }
-            validate_flow_url(&flow.start_url, guard)?;
+            validate_target_url(&flow.start_url, guard, "check.start_url")?;
             for (i, step) in flow.steps.iter().enumerate() {
                 // 1-based: the form numbers the rows the reader is looking at.
                 let n = i + 1;
                 match step {
-                    FlowStep::Goto { url } => validate_flow_url(url, guard)?,
+                    FlowStep::Goto { url } => validate_target_url(url, guard, "check.steps")
+                        .map_err(|err| on_step(n, err))?,
                     FlowStep::Click { selector } | FlowStep::WaitFor { selector } => {
                         require_nonempty_step(selector, n, "selector")?
                     }
@@ -985,33 +952,56 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
     Ok(())
 }
 
-/// Save-time scheme + host + SSRF gate for a flow's nav URLs, mirroring the HTTP
-/// gate. Runtime egress is separately sandboxed in the engine.
-pub(crate) fn validate_flow_url(url: &url::Url, guard: &SsrfGuard) -> Result<()> {
+/// Save-time scheme + host + SSRF gate for a URL the probe will fetch, an HTTP
+/// check's or a flow's; `field` names where the URL sits. Runtime egress of a
+/// flow is separately sandboxed in the engine.
+pub(crate) fn validate_target_url(
+    url: &url::Url,
+    guard: &SsrfGuard,
+    field: &'static str,
+) -> Result<()> {
     let scheme = url.scheme();
     if !ALLOWED_SCHEMES.contains(&scheme) {
         return Err(AppError::bad_request_field(
             codes::INVALID_URL_SCHEME,
             format!("url scheme '{scheme}' not allowed"),
-            "check.url",
+            field,
         ));
     }
+    // Port 0 is unroutable, and rejecting it everywhere keeps the ping
+    // throttle's pseudo-port 0 collision-free across kinds.
     if url.port() == Some(0) {
         return Err(AppError::bad_request_field(
             codes::INVALID_URL_FORMAT,
             "url port must be > 0",
-            "check.url",
+            field,
         ));
     }
     match url.host() {
-        Some(Host::Ipv4(v4)) => check_ip(IpAddr::V4(v4), guard),
-        Some(Host::Ipv6(v6)) => check_ip(IpAddr::V6(v6), guard),
+        Some(Host::Ipv4(v4)) => check_ip(IpAddr::V4(v4), guard, field),
+        Some(Host::Ipv6(v6)) => check_ip(IpAddr::V6(v6), guard, field),
         Some(Host::Domain(d)) if !d.is_empty() => Ok(()),
         _ => Err(AppError::bad_request_field(
             codes::INVALID_URL_FORMAT,
             "url missing host",
-            "check.url",
+            field,
         )),
+    }
+}
+
+// The step list is one field, so the message names the row.
+fn on_step(n: usize, err: AppError) -> AppError {
+    match err {
+        AppError::BadRequest {
+            code,
+            message,
+            field,
+        } => AppError::BadRequest {
+            code,
+            message: format!("step {n}: {message}"),
+            field,
+        },
+        other => other,
     }
 }
 
@@ -1027,10 +1017,10 @@ pub(crate) fn require_nonempty_step(value: &str, n: usize, what: &str) -> Result
     Ok(())
 }
 
-pub(crate) fn check_ip(ip: IpAddr, guard: &SsrfGuard) -> Result<()> {
-    guard.check(ip).map_err(|err| {
-        AppError::bad_request_field(codes::SSRF_BLOCKED, err.to_string(), "check.url")
-    })
+pub(crate) fn check_ip(ip: IpAddr, guard: &SsrfGuard, field: &'static str) -> Result<()> {
+    guard
+        .check(ip)
+        .map_err(|err| AppError::bad_request_field(codes::SSRF_BLOCKED, err.to_string(), field))
 }
 
 #[cfg(test)]

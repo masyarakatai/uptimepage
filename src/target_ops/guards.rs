@@ -100,7 +100,7 @@ impl TargetOps<'_> {
             serde_json::json!({ "detail": hit.detail }),
             None,
         );
-        Err(hit.into_app_error())
+        Err(hit.into_app_error(check.address_field().unwrap_or("check")))
     }
 
     /// `targets_owner_is_member_fk` refuses a non-member owner too; this turns that

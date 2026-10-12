@@ -168,16 +168,14 @@ window.smRenderCheckError = function (el, msg) {
     el.classList.remove("hidden");
 };
 
-// `opts.messageFor(err)` → optional replacement message (e.g. SSRF copy);
 // `opts.onField(field)` → optional per-field affordance (focus/aria-invalid).
 window.smRenderApiError = function (banner, json, status, opts) {
     opts = opts || {};
     const err = (json && json.error) || {};
     const code = err.code || `HTTP ${status}`;
     let message = err.message || "Request rejected.";
-    if (opts.messageFor) {
-        const override = opts.messageFor(err);
-        if (override) message = override;
+    if (err.code === "SSRF_BLOCKED") {
+        message += ". To monitor internal services, run a monitor agent inside that network.";
     }
     banner.innerHTML = `<strong>${window.smEscapeHtml(code)}</strong>: ${window.smEscapeHtml(message)}`;
     if (err.field) {

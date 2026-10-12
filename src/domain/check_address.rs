@@ -44,6 +44,18 @@ impl CheckSpec {
         }
     }
 
+    /// The request field [`Self::address`] is read from, for an error that
+    /// refuses it.
+    pub fn address_field(&self) -> Option<&'static str> {
+        match self {
+            CheckSpec::Http(_) => Some("check.url"),
+            CheckSpec::Flow(_) => Some("check.start_url"),
+            CheckSpec::Tcp(_) | CheckSpec::TlsCert(_) | CheckSpec::Ping(_) => Some("check.host"),
+            CheckSpec::Dns(_) | CheckSpec::DomainExpiry(_) => Some("check.domain"),
+            CheckSpec::Heartbeat(_) | CheckSpec::Manual(_) => None,
+        }
+    }
+
     /// A URL for http and flow, a host or `host:port` for tcp and tls, a host
     /// for ping, a domain for dns and domain expiry. Only the shape is parsed
     /// here; the result goes through the same validation as any new check.

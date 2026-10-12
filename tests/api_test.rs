@@ -960,3 +960,62 @@ async fn a_refused_value_reaches_neither_the_response_nor_the_log() {
         assert!(!logged.contains(secret), "{logged}");
     }
 }
+
+#[tokio::test]
+async fn an_ssrf_block_names_the_field_at_fault() {
+    let app = app();
+    let mut tcp = tcp_target("db");
+    tcp["check"]["host"] = json!("127.0.0.1");
+    let mut dns = dns_target("A", "example.com", Value::Null);
+    dns["check"]["resolver"] = json!("10.0.0.53");
+    let ping = json!({
+        "name": "ping",
+        "check": {"type": "ping", "host": "10.0.0.1", "timeout": 3000},
+        "interval": 60
+    });
+    let tls = json!({
+        "name": "tls",
+        "check": {
+            "type": "tls_cert", "host": "[::1]", "port": 443, "timeout": 10000,
+            "warn_days": 25, "critical_days": 7
+        },
+        "interval": 21600
+    });
+    for (payload, field) in [
+        (ssrf_payload("http://127.0.0.1/"), "check.url"),
+        (tcp, "check.host"),
+        (ping, "check.host"),
+        (tls, "check.host"),
+        (dns, "check.resolver"),
+    ] {
+        let (status, body) =
+            common::send_json(app.clone(), "POST", "/api/v1/targets", payload).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "SSRF_BLOCKED", "{body}");
+        assert_eq!(body["error"]["field"], field, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn an_abuse_block_names_the_field_at_fault() {
+    let app = app();
+    let mut tcp = tcp_target("db");
+    tcp["check"]["host"] = json!("eu.status.betterstack.com");
+    for (payload, field) in [
+        (
+            ssrf_payload("https://eu.status.betterstack.com/"),
+            "check.url",
+        ),
+        (tcp, "check.host"),
+        (
+            dns_target("A", "eu.status.betterstack.com", Value::Null),
+            "check.domain",
+        ),
+    ] {
+        let (status, body) =
+            common::send_json(app.clone(), "POST", "/api/v1/targets", payload).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "DOMAIN_DENYLISTED", "{body}");
+        assert_eq!(body["error"]["field"], field, "{body}");
+    }
+}

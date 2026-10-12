@@ -190,10 +190,6 @@
         try { body = await res.json(); }
         catch { window.smRenderClientError(banner, `Request failed (${res.status})`); return; }
         window.smRenderApiError(banner, body, res.status, {
-            messageFor: (err) => err.code === "SSRF_BLOCKED"
-                ? "This address points to a private/internal range and is blocked. " +
-                  "To monitor internal services, run a monitor agent inside that network."
-                : null,
             onField: (field) => markInvalid(sent, field),
         });
     });
