@@ -1,0 +1,13 @@
+ALTER TABLE status_page_subscribers DROP CONSTRAINT IF EXISTS status_page_subscribers_viewer_fkey;
+DROP INDEX IF EXISTS idx_status_page_subscribers_viewer;
+ALTER TABLE status_page_subscribers DROP COLUMN IF EXISTS viewer_id;
+DROP TABLE IF EXISTS status_page_access_events;
+DROP TABLE IF EXISTS status_page_viewer_days;
+DROP TABLE IF EXISTS status_page_sessions;
+DROP TABLE IF EXISTS status_page_access_codes;
+DROP TABLE IF EXISTS status_page_webauthn_states;
+DROP TABLE IF EXISTS status_page_viewer_passkeys;
+DROP TABLE IF EXISTS status_page_access_rules;
+DROP TABLE IF EXISTS status_page_access;
+DROP TABLE IF EXISTS status_page_viewers;
+ALTER TABLE plans DROP COLUMN IF EXISTS private_pages_enabled;

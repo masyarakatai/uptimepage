@@ -12,6 +12,10 @@
 use crate::common;
 
 use uptimepage::domain::{
+    AccessEventKind, AccessEventMethod, AccessRuleKind, PageSessionMethod, RECHECK_DAY_CHOICES,
+    SESSION_DAY_CHOICES,
+};
+use uptimepage::domain::{
     ActorType, AppTheme, ChannelKind, IncidentEventKind, IncidentOrigin, IncidentSeverity,
     IncidentState, IncidentStatusPhase, IncidentUrgency, IncidentVisibility, Locale,
     NotificationReason, NotificationStatus, PublicStyle, SubscriberChannel,
@@ -478,4 +482,84 @@ async fn status_page_subscribers_channel_check_matches_rust_enum() {
         db_strs(SubscriberChannel::ALL, SubscriberChannel::as_db_str),
     )
     .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn status_page_access_rules_kind_check_matches_rust_enum() {
+    assert_check_matches(
+        "status_page_access_rules_kind_check",
+        db_strs(AccessRuleKind::ALL, AccessRuleKind::as_db_str),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn status_page_sessions_method_check_matches_rust_enum() {
+    assert_check_matches(
+        "status_page_sessions_method_check",
+        db_strs(PageSessionMethod::ALL, PageSessionMethod::as_db_str),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn status_page_access_events_kind_check_matches_rust_enum() {
+    assert_check_matches(
+        "status_page_access_events_kind_check",
+        db_strs(AccessEventKind::ALL, AccessEventKind::as_db_str),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn status_page_access_events_method_check_matches_rust_enum() {
+    assert_check_matches(
+        "status_page_access_events_method_check",
+        db_strs(AccessEventMethod::ALL, AccessEventMethod::as_db_str),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn status_page_access_codes_redeemed_via_check_matches_rust_enum() {
+    use uptimepage::security::sign_in_code::RedeemedVia;
+    assert_check_matches(
+        "status_page_access_codes_redeemed_via_check",
+        db_strs(&[RedeemedVia::Link, RedeemedVia::Code], RedeemedVia::as_str),
+    )
+    .await;
+}
+
+/// The editor offers fixed periods, and a value the column refuses would 500
+/// the save that picked it.
+#[tokio::test]
+#[ignore]
+async fn status_page_access_period_checks_match_the_offered_choices() {
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    for (conname, choices) in [
+        ("status_page_access_recheck_days_check", RECHECK_DAY_CHOICES),
+        ("status_page_access_session_days_check", SESSION_DAY_CHOICES),
+    ] {
+        let def = constraint_def(&pool, conname)
+            .await
+            .unwrap_or_else(|| panic!("{conname} missing"));
+        let mut db: Vec<i32> = def
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        db.sort_unstable();
+        let mut rust = choices.to_vec();
+        rust.sort_unstable();
+        assert_eq!(
+            db, rust,
+            "{conname} ({def}) drifted from the editor's choices"
+        );
+    }
 }

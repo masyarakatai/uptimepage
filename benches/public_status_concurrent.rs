@@ -186,6 +186,7 @@ async fn build_fixture() -> Option<Fixture> {
             .create(
                 org.id,
                 NewStatusPage {
+                    access: None,
                     slug: unique_slug(&format!("page{i}")),
                     name: "status".into(),
                     enabled: true,

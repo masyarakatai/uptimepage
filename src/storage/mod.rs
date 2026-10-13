@@ -29,6 +29,7 @@ pub mod on_call_feeds;
 pub mod operator;
 pub mod org_ttl;
 pub mod orgs;
+pub mod page_access;
 pub mod page_assets;
 pub mod partitions;
 pub mod passkeys;

@@ -39,7 +39,6 @@ pub struct StatusView {
     pub has_active_incident: bool,
     pub has_maintenance: bool,
     pub has_components: bool,
-    pub rss_url: &'static str,
     /// Inlined at `#day-strip-data`; consumed by day_popover.js.
     pub day_strip_json: String,
 }
@@ -213,7 +212,6 @@ pub(super) fn build_view(
         active_maintenance: active_m,
         upcoming_maintenance: upcoming_m,
         has_components,
-        rss_url: RSS_URL,
         day_strip_json,
     }
 }

@@ -204,9 +204,37 @@ The language covers what the page writes itself: status labels, headings and but
 
 A German page sends `Content-Language: de` and formats dates the German way in every browser. An English page formats dates the way the visitor's browser does. The RSS feed declares the page's language, and the public JSON API keeps its state keys (`operational`, `investigating`) in English. One page has one language, so for two audiences run two pages.
 
+## Who can open a page
+
+A page is in one of three states, set in the editor's rail under **who can open it**:
+
+| State | Who reads it |
+|---|---|
+| public | anyone with the URL |
+| private | only the addresses and domains on the page's access list |
+| off | nobody: the URL 404s and subscribers get no mail |
+
+Private pages come with the Team plan; a self-hosted install has them whatever its plan says. The list lives in the editor's **access** tab, or in the `access` field of the page in the [REST API](api.md#operator-endpoints-status-pages), the MCP tools and Terraform. A domain such as `example.com` lets in every address at it; an address lets in one person. A page lists up to 500 entries. Org members get no shortcut: someone who wants to read the page adds their own address like anyone else.
+
+**Signing in.** A visitor to a private page sees a sign-in screen in the page's branding and language and enters their email. Every address gets the same answer, and only one the list covers, and that is not blocked, gets a mail: a 6-character code for the tab they started in, and a link for another device. Both work once and for 15 minutes; the link shows a confirm button first, so a mail scanner that opens it spends nothing. An address gets at most one mail a minute and ten a day from one page. Addresses that have never signed in to the page also share a budget of 500 mails a day per page and 20 per requesting IP; people who signed in before never wait on it, so made-up addresses at a listed domain cannot lock them out. Signing in sets a cookie for that page's own host only.
+
+**Passkeys.** After the first code, a viewer can save a passkey in their password manager or on the device and sign in with it next time, from the button or the browser's autofill. The owner can switch passkeys off, which refuses both ceremonies and keeps what was saved. **Ask passkey users for an email code again** (30 days, 90 days, a year, or never) makes a passkey sign-in fall back to the email code once the viewer last proved their address longer ago than that; it applies at the next sign-in, never to an open session. A passkey belongs to the host it was saved on, so a new custom domain means one more email sign-in and a new passkey. A page served from the app's own host (a path-based deploy) offers the email code only, so its passkeys never mix with the app's.
+
+**Sessions.** A sign-in lasts until sign-out by default, or 7, 30 or 90 days; shortening the length applies to sessions already open. It also ends the moment the viewer is blocked or the list stops covering them, and after a year unused.
+
+**What is gated.** Every surface of the page answers only a signed-in viewer: the page and its refresh, the incident history and detail pages, the JSON API, the badge and the feed. Anyone else gets the sign-in screen or `401 PAGE_SIGN_IN_REQUIRED`. Each of these answers carries `Cache-Control: private, no-store` and `noindex`, so no shared cache keeps it and no search engine lists it, whatever **hide from search engines** says. The feed also answers a viewer's personal link, which the page's RSS link carries for a signed-in viewer, for readers that carry no cookie; it stops working when they are blocked or leave the list. The logo stays open, since the sign-in screen shows it. A component's [detail link](#linking-a-component-to-its-detail-view) is protected by its own token as before; turn detail links off on a private page's components if nothing should be reachable without signing in.
+
+**Subscribers.** Making a page private removes every webhook subscriber and every email subscriber the list does not cover. A signed-in viewer subscribes as themselves, with no confirmation mail, and the subscription ends when they are blocked or a list change stops covering them.
+
+**Viewers.** The access tab lists who signed in, when they last visited, whether they saved a passkey, and their history: the days they opened the page and each sign-in, kept for a year. **Block** signs someone out at once, removes their passkeys and subscription, and keeps them out whatever the list says; **unblock** lifts only the block.
+
+**Plan changes.** If the plan stops covering private pages, a private page is held (it 404s) rather than opened to everyone, and comes back private when the plan covers it again or public once its owner makes it so. Its access stays editable while it is held. Making it public keeps the list and the viewers for next time, and ends every session.
+
 ## Subscriptions
 
 Visitors can subscribe to a status page and get told about incidents and maintenance without polling the page. Two delivery channels ship today: email and webhook.
+
+On a [private page](#who-can-open-a-page) only a signed-in viewer subscribes, by email, as themselves; there is no form and no confirmation mail.
 
 **Email** is double opt-in. Subscribing sends a confirmation link that expires after 24 hours; nothing is delivered until it is clicked. Confirmation mail is rate-capped per subscriber, per page, and per address per day, so the form cannot be used to bombard an inbox. Every email carries a one-click unsubscribe link (RFC 8058), no login needed.
 

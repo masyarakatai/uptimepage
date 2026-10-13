@@ -473,6 +473,7 @@ const PUBLIC_TENANT_EXACT: &[&str] = &["/", "/status", "/subscribe", "/.well-kno
 /// ACME challenges run on the apex/`app.{base}` host. `/m/` answers only
 /// for the host's own page's detail links (`web::views::share`).
 const PUBLIC_TENANT_PREFIXES: &[&str] = &[
+    "/access/",
     "/status/",
     "/subscribe/",
     "/api/public/v1/",

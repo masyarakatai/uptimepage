@@ -3,6 +3,7 @@
 //! Pure status-mapping rules + a single-flight cache + a live aggregator that
 //! builds the page payload from PostgreSQL and ClickHouse.
 
+pub mod access;
 pub mod aggregator;
 pub mod badge;
 pub mod cache;

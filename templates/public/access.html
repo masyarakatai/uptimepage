@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="{{ tr.lang() }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ branding.status_title() }}</title>
+    <meta name="robots" content="noindex,nofollow">
+    <link rel="icon" type="image/svg+xml" href="{{ "img/favicon.svg"|asset }}">
+    <link rel="icon" type="image/png" sizes="32x32" href="{{ "img/favicon.png"|asset }}">
+    <link rel="apple-touch-icon" href="{{ "img/apple-touch-icon.png"|asset }}">
+    <link rel="stylesheet" href="{{ "css/app.css"|asset }}">
+    {% include "public/_brand_style.html" %}
+    {% if passkeys %}
+    <script defer src="{{ "js/ui/passkey_shared.js"|asset }}"></script>
+    <script defer src="{{ "js/public/page_access.js"|asset }}"></script>
+    {% endif %}
+</head>
+{% include "public/_body_open.html" %}
+    <header style="background-color: var(--brand-color)">
+        <div class="mx-auto flex max-w-3xl items-center justify-between px-4 py-5">
+            <span class="flex items-center gap-3 text-lg font-semibold tracking-tight text-brand">
+                {% if let Some(logo) = branding.logo_url %}
+                    <img src="{{ logo }}" alt="{{ branding.display_name }}" class="h-8 w-auto">
+                {% else %}
+                    {{ branding.display_name }}
+                {% endif %}
+            </span>
+        </div>
+    </header>
+
+    <main id="main-content" tabindex="-1" class="mx-auto flex w-full max-w-3xl justify-center px-4 py-12">
+        <div class="w-full max-w-sm space-y-4" data-access-step="{{ step }}" data-next="{{ next }}">
+        {% if step == "email" %}
+            <svg class="text-muted" viewBox="0 0 12 12" width="28" height="28" fill="currentColor" aria-hidden="true"><path d="M3.5 5V3.75a2.5 2.5 0 0 1 5 0V5h.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h.5Zm1.25 0h2.5V3.75a1.25 1.25 0 0 0-2.5 0V5Z"/></svg>
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ tr.t("access-title") }}</h1>
+            <p class="text-pretty text-sm text-muted">{{ lead }}</p>
+            {% if error != "" %}<p class="alert-card alert-card--warn text-sm" role="alert">{{ tr.t(error) }}</p>{% endif %}
+            <form method="post" action="/access/request" class="space-y-3">
+                <input type="hidden" name="next" value="{{ next }}">
+                <label class="sr-only" for="access-email">{{ tr.t("access-email-label") }}</label>
+                <input id="access-email" type="email" name="email" value="{{ email }}" required
+                       class="field w-full" placeholder="you@company.com"
+                       autocomplete="{% if passkeys %}username webauthn{% else %}email{% endif %}">
+                <button type="submit" class="sticker-btn sticker-btn--primary inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-medium">{{ tr.t("access-send") }}</button>
+            </form>
+            {% if passkeys %}
+            <div class="flex items-center gap-3 text-xs text-quiet" data-passkey-only hidden>
+                <span class="h-px flex-1 bg-[color:var(--theme-line)]"></span><span>{{ tr.t("access-or") }}</span><span class="h-px flex-1 bg-[color:var(--theme-line)]"></span>
+            </div>
+            <button type="button" id="page-passkey-signin" data-passkey-only hidden
+                    data-refused="{{ tr.t("access-passkey-refused") }}"
+                    data-recheck="{{ tr.t("access-passkey-recheck") }}"
+                    class="sticker-btn sticker-btn--accent inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium">
+                <svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M9 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm7.5 6a3.5 3.5 0 0 0-1.5 6.66V21l1.5-1.2 1.5 1.2v-1.5l-.9-.9.9-.9v-1.04A3.5 3.5 0 0 0 16.5 9Zm0 2a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3ZM9 13c-3.31 0-6 1.79-6 4v2h10.2A5.48 5.48 0 0 1 13 15.5c0-.87.2-1.7.55-2.43A12.6 12.6 0 0 0 9 13Z"/></svg>
+                <span>{{ tr.t("access-passkey") }}</span>
+            </button>
+            <p id="page-passkey-error" class="alert-card alert-card--warn text-sm" role="alert" hidden></p>
+            {% endif %}
+            <p class="text-[0.7rem] text-quiet">{{ tr.t("access-fine") }}</p>
+        {% else if step == "code" %}
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ tr.t("access-check-title") }}</h1>
+            {% if error != "" %}
+            <p class="alert-card alert-card--warn text-sm" role="alert">{{ tr.t(error) }}</p>
+            {% else %}
+            <p class="alert-card alert-card--muted text-sm">{{ lead }}</p>
+            {% endif %}
+            <form method="post" action="/access/code" class="space-y-2">
+                <input type="hidden" name="next" value="{{ next }}">
+                <input type="hidden" name="email" value="{{ email }}">
+                <label class="block text-xs text-muted" for="access-code">{{ tr.t("access-code-label") }}</label>
+                <div class="flex gap-2">
+                    <input id="access-code" name="code" required autocomplete="one-time-code" maxlength="12"
+                           inputmode="text" autocapitalize="characters" spellcheck="false"
+                           class="field w-full font-mono uppercase tracking-[0.35em]">
+                    <button type="submit" class="sticker-btn inline-flex shrink-0 items-center justify-center px-4 py-2.5 text-sm font-medium">{{ tr.t("access-sign-in") }}</button>
+                </div>
+                <p class="text-xs text-muted">{{ tr.t("access-one-try") }}</p>
+            </form>
+            <div class="flex flex-wrap gap-2">
+                {% if email != "" %}
+                <form method="post" action="/access/request">
+                    <input type="hidden" name="email" value="{{ email }}">
+                    <input type="hidden" name="next" value="{{ next }}">
+                    <button type="submit" class="btn-ghost px-3 py-1.5 text-xs font-medium text-muted">{{ tr.t("access-again") }}</button>
+                </form>
+                {% endif %}
+                <a href="{{ next }}" class="btn-ghost px-3 py-1.5 text-xs font-medium text-muted">{{ tr.t("access-other") }}</a>
+            </div>
+            <p class="text-pretty text-xs text-quiet">{{ tr.t("access-no-mail") }}</p>
+        {% else if step == "refused" %}
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ tr.t("access-ref-title") }}</h1>
+            <p class="alert-card alert-card--warn text-sm">{{ tr.t("access-ref-lead") }}</p>
+            <a href="{{ next }}" class="sticker-btn sticker-btn--primary inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-medium">{{ tr.t("access-ref-again") }}</a>
+        {% else if step == "confirm" %}
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ title }}</h1>
+            <p class="text-pretty text-sm text-muted">{{ lead }}</p>
+            <form method="post" action="/access/verify">
+                <input type="hidden" name="token" value="{{ token }}">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <button type="submit" class="sticker-btn sticker-btn--primary inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-medium">{{ tr.t("access-confirm-button") }}</button>
+            </form>
+        {% else if step == "invalid" %}
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ tr.t("access-invalid-title") }}</h1>
+            <p class="alert-card alert-card--warn text-sm">{{ tr.t("access-invalid-lead") }}</p>
+            <a href="{{ next }}" class="sticker-btn sticker-btn--primary inline-flex w-full items-center justify-center px-4 py-2.5 text-sm font-medium">{{ tr.t("access-ref-again") }}</a>
+        {% else if step == "passkey" %}
+            <h1 class="text-balance text-2xl font-semibold tracking-tight">{{ tr.t("access-pk-title") }}</h1>
+            <p class="text-pretty text-sm text-muted">{{ tr.t("access-pk-lead") }}</p>
+            <button type="button" id="page-passkey-save" data-passkey-only hidden
+                    data-failed="{{ tr.t("access-pk-failed") }}"
+                    class="sticker-btn sticker-btn--primary inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium">{{ tr.t("access-pk-save") }}</button>
+            <p id="page-passkey-error" class="alert-card alert-card--warn text-sm" role="alert" hidden></p>
+            <a href="{{ next }}" class="btn-ghost inline-flex w-full items-center justify-center px-4 py-2 text-sm">{{ tr.t("access-pk-skip") }}</a>
+        {% endif %}
+        </div>
+    </main>
+
+    {% if branding.show_powered_by %}
+    <footer class="mx-auto max-w-3xl px-4 py-8 text-xs text-quiet">
+        {{ tr.t("powered-by") }} <a href="https://uptimepage.dev" class="hover:text-body">uptimepage</a>
+    </footer>
+    {% endif %}
+</body>
+</html>

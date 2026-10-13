@@ -53,6 +53,7 @@ async fn seed_page_with_target(pool: &PgPool, org: OrgId, target_id: Uuid) -> St
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug,
                 name: "Agg".into(),
                 enabled: true,
@@ -1300,6 +1301,7 @@ async fn a_page_incident_shows_only_on_the_pages_it_names() {
             .create(
                 org_id,
                 NewStatusPage {
+                    access: None,
                     slug: format!("aggbare{}", &Uuid::now_v7().simple().to_string()[..20]),
                     name: "Bare".into(),
                     enabled: true,

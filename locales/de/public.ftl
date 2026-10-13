@@ -260,3 +260,54 @@ email-view-page-button = Statusseite ansehen
 email-unsubscribe = Abbestellen
 email-unsubscribe-text = Abbestellen:
 email-footnote = Sie erhalten diese E-Mail, weil Sie { $page } abonniert haben. { $unsubscribe }.
+
+## Private page sign-in
+
+access-title = Diese Seite ist privat
+access-lead = Melden Sie sich mit Ihrer geschäftlichen E-Mail-Adresse an, um den Status von { $page } zu sehen.
+access-email-label = E-Mail-Adresse
+access-send = Code per E-Mail senden
+access-or = oder
+access-passkey = Mit Passkey anmelden
+access-fine = Falls diese Adresse die Seite öffnen darf, ist ein Code unterwegs. Sonst wird nichts gesendet.
+access-check-title = Prüfen Sie Ihr Postfach
+access-sent = Falls { $email } diese Seite öffnen darf, haben wir einen Code gesendet. Er gilt einmal und läuft nach { $minutes } Minuten ab.
+access-code-label = Code
+access-sign-in = Anmelden
+access-one-try = Ein Versuch. Der Link in derselben E-Mail funktioniert auch dann noch.
+access-again = Neuen Code senden
+access-other = Andere E-Mail-Adresse
+access-no-mail = Keine E-Mail nach ein paar Minuten? Fragen Sie die Person, die diese Seite mit Ihnen geteilt hat, ob Ihre Adresse auf der Liste steht.
+access-pk-title = Beim nächsten Mal ohne Code?
+access-pk-lead = Speichern Sie einen Passkey in Ihrem Passwort-Manager oder auf diesem Gerät. Beim nächsten Mal melden Sie sich damit an, ohne E-Mail.
+access-pk-save = Passkey speichern
+access-pk-skip = Jetzt nicht
+access-pk-failed = Der Passkey konnte nicht gespeichert werden. Sie bleiben angemeldet.
+access-ref-title = Dieser Code hat nicht funktioniert
+access-ref-lead = Jeder Code gilt nur einmal. Fordern Sie einen neuen an oder nutzen Sie den Link in derselben E-Mail.
+access-ref-again = Neuen Code senden
+access-confirm-title = { $page } öffnen
+access-confirm-lead = Als { $email } fortfahren?
+access-confirm-button = Fortfahren
+access-invalid-title = Dieser Link hat nicht funktioniert
+access-invalid-lead = Er wurde schon benutzt, ist abgelaufen oder ein neuerer wurde gesendet. Fordern Sie einen neuen Code an.
+access-passkey-refused = Dieser Passkey funktioniert hier nicht. Melden Sie sich mit Ihrer E-Mail-Adresse an.
+access-passkey-recheck = Es ist eine Weile her. Bestätigen Sie Ihre E-Mail-Adresse noch einmal, um Ihren Passkey weiter zu nutzen.
+access-bad-email = Geben Sie Ihre E-Mail-Adresse ein.
+access-bad-code = Das ist kein Code. Codes haben 6 Buchstaben und Ziffern; nichts wurde verbraucht, versuchen Sie es noch einmal.
+access-signed-as = angemeldet als
+access-sign-out = abmelden
+subscribe-as-lead = Erhalten Sie eine E-Mail, wenn eine Störung beginnt, sich ändert oder endet.
+subscribe-as-note = Endet automatisch, wenn Sie den Zugriff auf diese Seite verlieren.
+notice-subscribed-as-body = Updates dieser Seite gehen jetzt an { $email }.
+
+## Private page sign-in email
+
+email-access-subject = Ihr Code für { $page }
+email-access-heading = Anmelden
+email-access-preheader = Einmaliger Code, { $minutes } Minuten gültig.
+email-access-lead = Hier ist Ihr Code, um { $page } zu öffnen. Geben Sie ihn in dem Tab ein, in dem Sie begonnen haben:
+email-access-link = Oder öffnen Sie die Seite direkt aus dieser E-Mail:
+email-access-button = { $page } öffnen
+email-access-expiry = Code und Link laufen nach { $minutes } Minuten ab und gelten einmal.
+email-access-not-you = Falls Sie diese Seite nicht öffnen wollten, können Sie diese Nachricht ignorieren.

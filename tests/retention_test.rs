@@ -2,8 +2,8 @@
 //! job, plus a pure test that the configured windows equal what the Privacy
 //! Policy and the ClickHouse migration promise.
 //! DB tests skipped by default; run under `--run-ignored` with `DATABASE_URL`
-//! and `CLICKHOUSE_URL` set. Each test seeds rows tagged with a unique marker
-//! and asserts only on its own rows against the shared dev DB.
+//! and `CLICKHOUSE_URL` set. Each runs on its own database: the purge is
+//! global, so on a shared one it deletes rows other tests seeded.
 
 use crate::common;
 
@@ -26,12 +26,13 @@ async fn scalar_i64(pool: &sqlx::PgPool, sql: &str, marker: &str) -> i64 {
 #[tokio::test]
 #[ignore]
 async fn purges_past_window_and_keeps_fresh_rows() {
-    let Some(pool) = common::pg_pool_from_env().await else {
-        return;
-    };
     let Some(ch) = common::ch_client_from_env().await else {
         return;
     };
+    let Some((db_url, db_name)) = common::fresh_test_db("retention").await else {
+        return;
+    };
+    let pool = common::open_test_pool(&db_url).await;
 
     let marker = format!("ret-{}", Uuid::new_v4().simple());
     let user = make_user(&pool, "retention").await;
@@ -218,11 +219,10 @@ async fn purges_past_window_and_keeps_fresh_rows() {
         1,
         "only the fresh MCP audit row should remain under a 500-day window"
     );
-    assert!(
-        report.mcp_audit >= 2,
+    assert_eq!(
+        report.mcp_audit, 2,
         "the report feeds the only metric this table has, so it must count the \
-         rows the delete actually removed (got {})",
-        report.mcp_audit
+         rows the delete actually removed"
     );
     assert_eq!(
         scalar_i64(
@@ -253,29 +253,10 @@ async fn purges_past_window_and_keeps_fresh_rows() {
             "tg-live"
         ]
     );
-    assert!(report.app_link_codes >= 2);
+    assert_eq!(report.app_link_codes, 3);
 
-    // Cleanup our own rows.
-    let _ = sqlx::query("DELETE FROM app_link_challenges WHERE code_hash LIKE $1 || '%'")
-        .bind(&marker)
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM login_attempts WHERE ip_hash = $1")
-        .bind(&marker)
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM sessions WHERE id_hash LIKE $1 || '%'")
-        .bind(&marker)
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
-        .bind(org.0)
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.0)
-        .execute(&pool)
-        .await;
+    pool.close().await;
+    common::drop_test_db(&db_name).await;
 }
 
 /// Pure: the code windows, the Privacy Policy table and the ClickHouse TTL
@@ -410,4 +391,122 @@ fn windows_match_privacy_policy_and_clickhouse_ttl() {
         )),
         "the plan column the CH stamp reads must default to the disclosed window"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn private_page_history_is_kept_for_its_own_window() {
+    let Some(ch) = common::ch_client_from_env().await else {
+        return;
+    };
+    let Some((db_url, db_name)) = common::fresh_test_db("retention_page").await else {
+        return;
+    };
+    let pool = common::open_test_pool(&db_url).await;
+    let user = make_user(&pool, "retention-page").await;
+    let slug = "retention-page";
+    let org = create_org_with_owner(&pool, user, slug, "Retention Page")
+        .await
+        .expect("create org")
+        .expect("org created")
+        .id;
+    let (page,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO status_pages (org_id, slug, name, enabled) VALUES ($1, $2, 'p', true) \
+         RETURNING id",
+    )
+    .bind(org.0)
+    .bind(slug)
+    .fetch_one(&pool)
+    .await
+    .expect("page");
+    let (viewer,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO status_page_viewers (status_page_id, org_id, email, email_verified_at) \
+         VALUES ($1, $2, 'anna@dealer.example', now()) RETURNING id",
+    )
+    .bind(page)
+    .bind(org.0)
+    .fetch_one(&pool)
+    .await
+    .expect("viewer");
+    for days_ago in [400_i32, 200, 1] {
+        sqlx::query(
+            "INSERT INTO status_page_access_events \
+                 (status_page_id, org_id, viewer_id, kind, occurred_at) \
+             VALUES ($1, $2, $3, 'signed_in', now() - make_interval(days => $4))",
+        )
+        .bind(page)
+        .bind(org.0)
+        .bind(viewer)
+        .bind(days_ago)
+        .execute(&pool)
+        .await
+        .expect("event");
+        sqlx::query(
+            "INSERT INTO status_page_viewer_days (viewer_id, day, status_page_id, org_id) \
+             VALUES ($1, (now() - make_interval(days => $4))::date, $2, $3)",
+        )
+        .bind(viewer)
+        .bind(page)
+        .bind(org.0)
+        .bind(days_ago)
+        .execute(&pool)
+        .await
+        .expect("visit day");
+    }
+    for (id, last_used_days, expired) in
+        [("idle", 400, false), ("live", 1, false), ("ended", 1, true)]
+    {
+        sqlx::query(
+            "INSERT INTO status_page_sessions \
+                 (id_hash, status_page_id, org_id, method, viewer_id, last_used_at, expires_at) \
+             VALUES ($1, $2, $3, 'email', $4, now() - make_interval(days => $5), \
+                     CASE WHEN $6 THEN now() - interval '1 hour' END)",
+        )
+        .bind(format!("{page}-{id}"))
+        .bind(page)
+        .bind(org.0)
+        .bind(viewer)
+        .bind(last_used_days)
+        .bind(expired)
+        .execute(&pool)
+        .await
+        .expect("session");
+    }
+
+    let retention = RetentionConfig {
+        page_access_events_days: 300,
+        ..RetentionConfig::default()
+    };
+    purge_old_data(
+        &pool,
+        &ch,
+        &retention,
+        &SessionConfig::default(),
+        TenancyConfig::default().deletion_grace_period_days,
+    )
+    .await
+    .expect("retention run");
+
+    let page_text = page.to_string();
+    let count = |sql: &'static str| scalar_i64(&pool, sql, &page_text);
+    assert_eq!(
+        count("SELECT count(*) FROM status_page_access_events WHERE status_page_id = $1::uuid")
+            .await,
+        2
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM status_page_viewer_days WHERE status_page_id = $1::uuid").await,
+        2
+    );
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT id_hash FROM status_page_sessions WHERE status_page_id = $1 ORDER BY id_hash",
+    )
+    .bind(page)
+    .fetch_all(&pool)
+    .await
+    .expect("sessions");
+    assert_eq!(left, vec![format!("{page}-live")]);
+
+    pool.close().await;
+    common::drop_test_db(&db_name).await;
 }

@@ -109,6 +109,9 @@ pub struct RetentionConfig {
     /// rotation-pattern leak from a compromised user reading their own
     /// `token_prefix` / `name` history.
     pub api_tokens_post_expiry_days: u32,
+    /// Private status page sign-in history: `status_page_access_events`, the
+    /// per-day visit rows, and viewer sessions left unused this long.
+    pub page_access_events_days: u32,
 }
 
 impl Default for RetentionConfig {
@@ -119,6 +122,7 @@ impl Default for RetentionConfig {
             audit_log_days: 730,
             mcp_audit_days: 730,
             api_tokens_post_expiry_days: 30,
+            page_access_events_days: 365,
         }
     }
 }

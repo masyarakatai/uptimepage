@@ -35,6 +35,7 @@ async fn create_and_delete_page_write_audit_rows() {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: common::unique_slug("aud"),
                 name: "Aud".into(),
                 enabled: true,
@@ -97,6 +98,7 @@ async fn add_and_remove_component_write_audit_rows() {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: common::unique_slug("aud"),
                 name: "Aud".into(),
                 enabled: true,

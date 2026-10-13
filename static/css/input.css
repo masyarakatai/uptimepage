@@ -2864,8 +2864,13 @@
         border-color: var(--theme-state-warn-line);
         color: var(--theme-state-warn-fg);
     }
+    .card-badge--quiet {
+        border-color: var(--theme-line);
+        color: var(--theme-text-quiet);
+    }
     /* A checked card inverts to ink, where the state ramp stops reading. */
-    .check-type-card:has(input:checked) .card-badge {
+    .check-type-card:has(input:checked) .card-badge,
+    .check-type-card--on .card-badge {
         border-color: currentColor;
         color: inherit;
     }
@@ -2887,7 +2892,7 @@
     @media (prefers-reduced-motion: reduce) {
         .check-type-card:not(:has(input:disabled)):not(.check-type-card--static):active { scale: 1; }
     }
-    .check-type-card:not(:has(input:disabled)):not(:has(input:checked)):not(.check-type-card--static):hover {
+    .check-type-card:not(:has(input:disabled)):not(:has(input:checked)):not(.check-type-card--on):not(.check-type-card--static):hover {
         background: var(--theme-surface-sunk);
         border-color: var(--theme-ink);
     }
@@ -3622,6 +3627,10 @@
     .page-card .status-badge--disabled {
         color: var(--theme-surface);
         opacity: 0.65;
+    }
+    .page-card .status-badge--private {
+        @apply gap-1;
+        color: var(--theme-surface);
     }
     .page-card__name {
         @apply min-w-0 font-mono text-sm font-semibold;
@@ -4745,3 +4754,40 @@
     .day-cell:active { transform: none; }
 }
 
+@layer components {
+    /* Private status page access list and viewer history, in the page editor. */
+    .access-ways { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+    .access-single { grid-template-columns: 1fr; }
+    .access-rule-add {
+        @apply flex max-w-[34rem] gap-2;
+    }
+    .access-rule-add > button { @apply shrink-0 whitespace-nowrap; }
+    .access-rule-row {
+        @apply flex items-center gap-3 px-4 py-2 font-mono text-[0.8125rem];
+        border-top: 1px solid var(--theme-line);
+    }
+    .access-rule-row:first-child { border-top: 0; }
+    .access-kind {
+        @apply rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wider;
+        background: var(--theme-surface-sunk);
+        color: var(--theme-text-muted);
+    }
+    .access-drawer {
+        @apply pt-4;
+        border-top: 1px solid var(--theme-line);
+    }
+    .visit-days {
+        @apply grid gap-[3px];
+        grid-template-columns: repeat(14, 14px);
+    }
+    .visit-day {
+        @apply size-[14px] rounded-sm;
+        background: var(--theme-surface-sunk);
+    }
+    .visit-day--on { background: var(--theme-ink); }
+    .access-event {
+        @apply grid gap-2 py-1.5 font-mono text-xs;
+        grid-template-columns: 8.5rem 1fr;
+        border-top: 1px solid var(--theme-line);
+    }
+}

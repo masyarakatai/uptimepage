@@ -846,6 +846,7 @@ fn plan_fixture() -> uptimepage::domain::quota::Plan {
         sms_alerts_enabled: false,
         incident_narration_enabled: true,
         on_call_enabled: true,
+        private_pages_enabled: true,
         max_flow_checks: 0,
         max_flow_steps: 30,
         is_listed: false,

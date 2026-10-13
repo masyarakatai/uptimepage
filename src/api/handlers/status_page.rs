@@ -18,9 +18,9 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::domain::{
-    AssetSlot, Locale, NewStatusPage, NewStatusPageComponent, OrgId, PublicOrgBranding,
-    PublicStyle, StatusPage, StatusPageComponent, StatusPageComponentUpdate, StatusPageId,
-    StatusPageUpdate, validate_slug,
+    AccessError, AccessSpec, AccessWrite, AssetSlot, Locale, NewStatusPage, NewStatusPageComponent,
+    OrgId, PageAccess, PageRef, PublicOrgBranding, PublicStyle, StatusPage, StatusPageComponent,
+    StatusPageComponentUpdate, StatusPageId, StatusPageUpdate, UserId, validate_slug,
 };
 use crate::error::ApiError;
 use crate::error::codes;
@@ -72,6 +72,9 @@ pub struct StatusPageView {
     /// mounted (drives the "view / preview" link).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_url: Option<String>,
+    /// Who may open the page, or `null` for a page never made private.
+    #[schema(nullable = true)]
+    pub access: Option<AccessSpec>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -82,6 +85,9 @@ pub struct CreatePageRequest {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Who may open the page. Absent leaves it public.
+    #[serde(default)]
+    pub access: Option<AccessSpec>,
 }
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -95,6 +101,9 @@ pub struct UpdatePageRequest {
     /// When present, replaces the page's display branding wholesale (the logo
     /// has its own endpoints, so it is untouched here).
     pub branding: Option<BrandingInput>,
+    /// When present, replaces who may open the page, in the same transaction
+    /// as the rest of the edit.
+    pub access: Option<AccessSpec>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -142,7 +151,19 @@ pub async fn list_pages(
     Authorized(org, _): Authorized<StatusPageRead>,
 ) -> Result<Json<Vec<StatusPageView>>> {
     let pages = state.status_page_store.list(org).await?;
-    Ok(Json(pages.into_iter().map(|p| view(&state, p)).collect()))
+    let access = match state.db.as_ref() {
+        Some(pool) => crate::storage::page_access::settings::load_for_org(pool, org).await?,
+        None => Default::default(),
+    };
+    Ok(Json(
+        pages
+            .into_iter()
+            .map(|p| {
+                let a = access.get(&p.id);
+                view(&state, p, a)
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -152,6 +173,7 @@ pub async fn list_pages(
     responses(
         (status = 201, body = StatusPageView),
         (status = 400, body = ApiError, description = "SLUG_INVALID / name invalid"),
+        (status = 403, body = ApiError, description = "PRIVATE_PAGES_DISABLED: the plan does not include private pages"),
         (status = 422, body = ApiError, description = "SLUG_TAKEN or the per-org page cap reached"),
     ),
 )]
@@ -170,6 +192,7 @@ pub async fn create_page(
     // race backstop, mapped to the same quota error with the real plan id.
     state.quotas.check_can_create_status_page(org, None).await?;
     let plan = state.quotas.limit_for_org(org).await?;
+    let access = access_write(req.access, plan.private_pages_enabled, user)?;
     let max = i64::from(plan.max_status_pages);
     let page = state
         .status_page_store
@@ -179,6 +202,7 @@ pub async fn create_page(
                 slug,
                 name,
                 enabled: req.enabled,
+                access,
             },
             source,
             max,
@@ -186,7 +210,11 @@ pub async fn create_page(
         )
         .await?
         .ok_or_else(|| AppError::quota_exceeded("max_status_pages", max, max, plan.id.clone()))?;
-    Ok((StatusCode::CREATED, Json(view(&state, page))))
+    let access = page_access(&state, org, page.id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(view(&state, page, access.as_ref())),
+    ))
 }
 
 #[utoipa::path(
@@ -201,7 +229,8 @@ pub async fn get_page(
     Path(id): Path<Uuid>,
 ) -> Result<Json<StatusPageView>> {
     let page = load(&state, org, id).await?;
-    Ok(Json(view(&state, page)))
+    let access = page_access(&state, org, page.id).await?;
+    Ok(Json(view(&state, page, access.as_ref())))
 }
 
 #[utoipa::path(
@@ -211,7 +240,8 @@ pub async fn get_page(
     request_body = UpdatePageRequest,
     responses(
         (status = 200, body = StatusPageView),
-        (status = 400, body = ApiError, description = "SLUG_INVALID / BRANDING_INVALID"),
+        (status = 400, body = ApiError, description = "SLUG_INVALID / BRANDING_INVALID / ACCESS_INVALID"),
+        (status = 403, body = ApiError, description = "PRIVATE_PAGES_DISABLED: the plan does not include private pages, and the page is not private already"),
         (status = 404, body = ApiError),
         (status = 422, body = ApiError, description = "SLUG_TAKEN"),
     ),
@@ -219,10 +249,23 @@ pub async fn get_page(
 pub async fn update_page(
     State(state): State<AppState>,
     OwnerAuthorized(org, _): OwnerAuthorized<StatusPageWrite>,
+    CurrentUser(user): CurrentUser,
     RequestSource(source): RequestSource,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePageRequest>,
 ) -> Result<Json<StatusPageView>> {
+    let access = match req.access {
+        Some(spec) => {
+            let plan = state.quotas.limit_for_org(org).await?;
+            let may_be_private = plan.private_pages_enabled
+                || page_access(&state, org, StatusPageId(id))
+                    .await?
+                    .is_some_and(|a| a.is_private());
+            access_write(Some(spec), may_be_private, user)?
+        }
+        None => None,
+    };
+    let opened = access.as_ref().is_some_and(|w| !w.access.is_private());
     let slug = match req.slug {
         Some(s) => {
             let s = s.trim().to_ascii_lowercase();
@@ -264,13 +307,58 @@ pub async fn update_page(
                 enabled: req.enabled,
                 branding,
                 public_locale: req.public_locale,
+                access,
             },
             source,
         )
         .await?
         .ok_or_else(page_not_found)?;
     state.public_source.invalidate(StatusPageId(id)).await;
-    Ok(Json(view(&state, page)))
+    state.page_gate.invalidate(StatusPageId(id)).await;
+    // A page held because its plan lost private pages comes back once public.
+    if opened && let Ok(pool) = state.require_db() {
+        crate::quotas::holds::release_after_delete(pool, &state.quotas, org).await;
+    }
+    let access = page_access(&state, org, page.id).await?;
+    Ok(Json(view(&state, page, access.as_ref())))
+}
+
+/// The access write a request asks for, validated against the plan.
+fn access_write(
+    spec: Option<AccessSpec>,
+    may_be_private: bool,
+    actor: UserId,
+) -> Result<Option<AccessWrite>> {
+    let Some(spec) = spec else { return Ok(None) };
+    let access = spec.validate(may_be_private).map_err(access_error)?;
+    Ok(Some(AccessWrite {
+        access,
+        actor: Some(actor),
+    }))
+}
+
+pub(crate) fn access_error(e: AccessError) -> AppError {
+    match e {
+        AccessError::NotOnPlan => {
+            AppError::forbidden_code(codes::PRIVATE_PAGES_DISABLED, e.to_string())
+        }
+        other => {
+            AppError::bad_request_field(codes::ACCESS_INVALID, other.to_string(), other.field())
+        }
+    }
+}
+
+async fn page_access(
+    state: &AppState,
+    org: OrgId,
+    page: StatusPageId,
+) -> Result<Option<PageAccess>> {
+    match state.db.as_ref() {
+        Some(pool) => {
+            crate::storage::page_access::settings::load(pool, PageRef { page, org }).await
+        }
+        None => Ok(None),
+    }
 }
 
 #[utoipa::path(
@@ -476,6 +564,184 @@ pub async fn remove_subscriber(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── Private page viewers ─────────────────────────────────────────────────────
+
+/// Someone who signed in to a private page.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ViewerView {
+    pub id: Uuid,
+    pub email: String,
+    /// First sign-in.
+    pub first_seen: chrono::DateTime<chrono::Utc>,
+    #[schema(nullable = true)]
+    pub last_visit: Option<chrono::DateTime<chrono::Utc>>,
+    /// Set while blocked: signed out, passkeys and subscription removed, and
+    /// no way back in until unblocked.
+    #[schema(nullable = true)]
+    pub blocked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub passkeys: i64,
+    /// Receives the page's updates by email.
+    pub subscribed: bool,
+}
+
+/// One entry of a viewer's sign-in trail.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ViewerEventView {
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    /// `code_sent`, `code_failed`, `signed_in`, `signed_out`, `passkey_added`,
+    /// `passkey_removed`, `blocked` or `unblocked`.
+    pub kind: String,
+    /// `email` or `passkey`, where it applies.
+    #[schema(nullable = true)]
+    pub method: Option<String>,
+    #[schema(nullable = true)]
+    pub failure_reason: Option<String>,
+    /// Who blocked or unblocked.
+    #[schema(nullable = true)]
+    pub actor_email: Option<String>,
+}
+
+/// The days a viewer opened the page and their sign-in trail, newest first.
+/// Kept for a year.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ViewerHistory {
+    pub visit_days: Vec<chrono::NaiveDate>,
+    pub events: Vec<ViewerEventView>,
+}
+
+const HISTORY_EVENTS: i64 = 200;
+const HISTORY_DAYS: i64 = 365;
+
+#[utoipa::path(
+    get, path = "/api/v1/status-pages/{id}/access/viewers", tag = "status-pages",
+    summary = "List who signed in to a private page",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Vec<ViewerView>), (status = 404, body = ApiError)),
+)]
+pub async fn list_viewers(
+    State(state): State<AppState>,
+    Authorized(org, _): Authorized<StatusPageRead>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ViewerView>>> {
+    let page = load(&state, org, id).await?;
+    let pool = state.require_db()?;
+    let rows = crate::storage::page_access::viewers::list_for_page(pool, org, page.id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|v| ViewerView {
+                id: v.id,
+                email: v.email,
+                first_seen: v.created_at,
+                last_visit: v.last_seen_at,
+                blocked_at: v.blocked_at,
+                passkeys: v.passkeys,
+                subscribed: v.subscribed,
+            })
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/status-pages/{id}/access/viewers/{viewer_id}/block", tag = "status-pages",
+    summary = "Block a viewer of a private page",
+    description = "Signs them out at once and removes their passkeys and subscription. \
+                   They cannot sign in again, whatever the list says, until unblocked.",
+    params(("id" = Uuid, Path), ("viewer_id" = Uuid, Path)),
+    responses((status = 204, description = "Blocked"), (status = 404, body = ApiError)),
+)]
+pub async fn block_viewer(
+    State(state): State<AppState>,
+    OwnerAuthorized(org, _): OwnerAuthorized<StatusPageWrite>,
+    CurrentUser(user): CurrentUser,
+    Path((id, viewer)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode> {
+    set_blocked(&state, org, id, viewer, user, true).await
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/status-pages/{id}/access/viewers/{viewer_id}/unblock", tag = "status-pages",
+    summary = "Unblock a viewer of a private page",
+    description = "Lifts the block only. They sign in again by email if the list still covers them.",
+    params(("id" = Uuid, Path), ("viewer_id" = Uuid, Path)),
+    responses((status = 204, description = "Unblocked"), (status = 404, body = ApiError)),
+)]
+pub async fn unblock_viewer(
+    State(state): State<AppState>,
+    OwnerAuthorized(org, _): OwnerAuthorized<StatusPageWrite>,
+    CurrentUser(user): CurrentUser,
+    Path((id, viewer)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode> {
+    set_blocked(&state, org, id, viewer, user, false).await
+}
+
+async fn set_blocked(
+    state: &AppState,
+    org: OrgId,
+    page: Uuid,
+    viewer: Uuid,
+    actor: UserId,
+    block: bool,
+) -> Result<StatusCode> {
+    use crate::storage::page_access::viewers::{self, BlockOutcome};
+    let page = load(state, org, page).await?;
+    let pool = state.require_db()?;
+    let outcome = if block {
+        viewers::block(pool, org, page.id, viewer, actor).await?
+    } else {
+        viewers::unblock(pool, org, page.id, viewer, actor).await?
+    };
+    if outcome == BlockOutcome::NotFound {
+        return Err(AppError::not_found(
+            codes::VIEWER_NOT_FOUND,
+            "no such viewer on this page",
+        ));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/status-pages/{id}/access/viewers/{viewer_id}/history", tag = "status-pages",
+    summary = "A viewer's visit days and sign-in trail",
+    params(("id" = Uuid, Path), ("viewer_id" = Uuid, Path)),
+    responses((status = 200, body = ViewerHistory), (status = 404, body = ApiError)),
+)]
+pub async fn viewer_history(
+    State(state): State<AppState>,
+    Authorized(org, _): Authorized<StatusPageRead>,
+    Path((id, viewer)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ViewerHistory>> {
+    let page = load(&state, org, id).await?;
+    let pool = state.require_db()?;
+    let page_ref = PageRef { page: page.id, org };
+    if crate::storage::page_access::viewers::get(pool, page_ref, viewer)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::not_found(
+            codes::VIEWER_NOT_FOUND,
+            "no such viewer on this page",
+        ));
+    }
+    let since = (chrono::Utc::now() - chrono::Duration::days(HISTORY_DAYS)).date_naive();
+    let (days, events) = tokio::try_join!(
+        crate::storage::page_access::events::visit_days(pool, org, page.id, viewer, since),
+        crate::storage::page_access::events::history(pool, org, page.id, viewer, HISTORY_EVENTS),
+    )?;
+    Ok(Json(ViewerHistory {
+        visit_days: days,
+        events: events
+            .into_iter()
+            .map(|e| ViewerEventView {
+                occurred_at: e.occurred_at,
+                kind: e.kind,
+                method: e.method,
+                failure_reason: e.failure_reason,
+                actor_email: e.actor_email,
+            })
+            .collect(),
+    }))
+}
+
 #[utoipa::path(
     post, path = "/api/v1/status-pages/{id}/components/reorder", tag = "status-pages",
     summary = "Reorder a page's components",
@@ -601,7 +867,7 @@ fn component_not_found() -> AppError {
     AppError::not_found(codes::STATUS_PAGE_NOT_FOUND, "component not on this page")
 }
 
-fn view(state: &AppState, p: StatusPage) -> StatusPageView {
+fn view(state: &AppState, p: StatusPage, access: Option<&PageAccess>) -> StatusPageView {
     let cfg = &state.cfg.public_status;
     let base = public_base(&state.cfg, &p.slug);
     let b = &p.branding;
@@ -626,6 +892,7 @@ fn view(state: &AppState, p: StatusPage) -> StatusPageView {
         status_url: base
             .as_ref()
             .map(|origin| public_status_url(&state.cfg, origin)),
+        access: access.map(AccessSpec::from),
     }
 }
 

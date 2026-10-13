@@ -16,9 +16,10 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::domain::AssetSlot;
 use crate::domain::PublicIncident;
-use crate::domain::StatusPageId;
+use crate::domain::{PageRef, StatusPageId};
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
+use crate::public_status::access::{Access, feed_token, mark_private};
 use crate::request::host::{
     is_subdomain_public_request, published_page_origin, resolve_status_page,
 };
@@ -65,6 +66,47 @@ pub struct StatusFullPage {
     pub view: StatusView,
     pub branding: BrandingView,
     pub og: OgMeta,
+    pub reader: Reader,
+}
+
+/// Who reads the page, for the parts that differ on a private one: the
+/// signed-in strip, subscribing as oneself, and the feed link.
+#[derive(Debug, Clone)]
+pub struct Reader {
+    /// The signed-in viewer's address on a private page.
+    pub viewer: Option<String>,
+    /// The page's feed, or the viewer's personal link to it.
+    pub rss_url: String,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self {
+            viewer: None,
+            rss_url: RSS_URL.to_owned(),
+        }
+    }
+}
+
+impl Reader {
+    fn of(state: &AppState, page: PageRef, access: &Access) -> Self {
+        let Some(viewer) = access.viewer() else {
+            return Self::default();
+        };
+        let rss_url = if state.page_feed_secret.is_empty() {
+            RSS_URL.to_owned()
+        } else {
+            format!(
+                "{RSS_URL}?viewer={}&t={}",
+                viewer.id,
+                feed_token(&state.page_feed_secret, page.page, viewer.id)
+            )
+        };
+        Self {
+            viewer: Some(viewer.email.clone()),
+            rss_url,
+        }
+    }
 }
 
 #[derive(Template, WebTemplate)]
@@ -81,8 +123,8 @@ pub struct IncidentDetailPage {
     pub branding: BrandingView,
     pub incident: IncidentDetailView,
     pub generated_at: DateTime<Utc>,
-    pub rss_url: &'static str,
     pub og: OgMeta,
+    pub reader: Reader,
 }
 
 #[derive(Template, WebTemplate)]
@@ -99,10 +141,10 @@ pub struct IncidentArchivePage {
     /// when this is the last page. The "Older incidents →" link only
     /// renders when set.
     pub next_cursor: Option<String>,
-    pub rss_url: &'static str,
     /// Per-page robots directive; see [`archive_robots`].
     pub robots: &'static str,
     pub og: OgMeta,
+    pub reader: Reader,
 }
 
 pub struct MonthBucket {
@@ -122,9 +164,11 @@ pub async fn index(
     headers: HeaderMap,
     Query(params): Query<StatusParams>,
 ) -> Response {
-    let page_ref = match resolve_status_page(&state.request_state(), &headers).await {
+    let fragment = params.fragment.unwrap_or(0) != 0;
+    let home = status_home_for(&state, &headers);
+    let (page_ref, access) = match readable(&state, &headers, home, fragment).await {
         Ok(p) => p,
-        Err(err) => return render_public_error(err),
+        Err(resp) => return resp,
     };
     let (page, markers) = match state.public_source.page_with_markers(page_ref).await {
         Ok(pair) => pair,
@@ -139,7 +183,7 @@ pub async fn index(
         .collect();
     let tr = Tr::new(state.public_source.locale(page_ref).await);
     let view = build_view(&page, &markers, &silenced, tr);
-    if params.fragment.unwrap_or(0) != 0 {
+    let resp = if fragment {
         // Chrome-free auto-refresh fragment: no header/footer/style, so the
         // branding lookup is skipped on the 30s poll.
         let mut resp = with_language(StatusRegion { tr, view }, tr);
@@ -153,14 +197,7 @@ pub async fn index(
         }
         resp
     } else {
-        let branding = resolve_branding(
-            &state,
-            &headers,
-            page_ref.org,
-            page_ref.page,
-            &page.site_name,
-        )
-        .await;
+        let branding = page_branding(&state, &headers, page_ref, &access, &page.site_name).await;
         let og = build_og_meta(
             &state,
             &headers,
@@ -180,10 +217,73 @@ pub async fn index(
                 view,
                 branding,
                 og,
+                reader: Reader::of(&state, page_ref, &access),
             },
             tr,
         )
+    };
+    privately(resp, &access)
+}
+
+/// The page this host serves, past the access gate. `Err` is the answer to
+/// send instead: a 404, or for a private page nobody here may read yet, the
+/// sign-in screen (a bare 401 for the refresh poll, which has nowhere to put
+/// one). `next` is where sign-in returns to.
+async fn readable(
+    state: &AppState,
+    headers: &HeaderMap,
+    next: &str,
+    fragment: bool,
+) -> Result<(PageRef, Access), Response> {
+    let page = resolve_status_page(&state.request_state(), headers)
+        .await
+        .map_err(render_public_error)?;
+    match state
+        .page_gate
+        .check(state.db.as_ref(), page, headers)
+        .await
+    {
+        Ok(Access::SignInRequired(_)) if fragment => {
+            let mut resp = StatusCode::UNAUTHORIZED.into_response();
+            mark_private(&mut resp);
+            Err(resp)
+        }
+        Ok(Access::SignInRequired(access)) => {
+            Err(super::page_access::sign_in_screen(state, headers, page, &access, next).await)
+        }
+        Ok(access) => Ok((page, access)),
+        Err(err) => Err(render_public_error(err)),
     }
+}
+
+/// Branding as the page renders it. A private page is never offered to a
+/// search engine, whatever the owner chose for it as a public one.
+async fn page_branding(
+    state: &AppState,
+    headers: &HeaderMap,
+    page: PageRef,
+    access: &Access,
+    fallback_name: &str,
+) -> BrandingView {
+    let mut branding = resolve_branding(state, headers, page.org, page.page, fallback_name).await;
+    if access.is_private() {
+        branding.hide_from_search = true;
+        branding.follow_website_link = false;
+    }
+    branding
+}
+
+fn privately(mut resp: Response, access: &Access) -> Response {
+    if access.is_private() {
+        mark_private(&mut resp);
+    }
+    resp
+}
+
+/// Where this host serves the page: `/` on a page's own host, `/status` on a
+/// path-based deploy.
+pub fn status_home_for(state: &AppState, headers: &HeaderMap) -> &'static str {
+    branding::status_home(state, headers)
 }
 
 fn with_language(page: impl IntoResponse, tr: Tr) -> Response {
@@ -292,9 +392,10 @@ pub async fn incident(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let page_ref = match resolve_status_page(&state.request_state(), &headers).await {
+    let next = format!("/status/incidents/{id}");
+    let (page_ref, access) = match readable(&state, &headers, &next, false).await {
         Ok(p) => p,
-        Err(err) => return render_public_error(err),
+        Err(resp) => return resp,
     };
     let (inc_res, page_res, locale) = tokio::join!(
         state.public_source.incident_by_id(page_ref, id),
@@ -310,14 +411,7 @@ pub async fn incident(
         Ok(p) => p.site_name.clone(),
         Err(err) => return render_public_error(err),
     };
-    let branding = resolve_branding(
-        &state,
-        &headers,
-        page_ref.org,
-        page_ref.page,
-        &fallback_name,
-    )
-    .await;
+    let branding = page_branding(&state, &headers, page_ref, &access, &fallback_name).await;
     let now = Utc::now();
     let og = build_og_meta(
         &state,
@@ -329,17 +423,18 @@ pub async fn incident(
         "article",
         &branding,
     );
-    with_language(
+    let resp = with_language(
         IncidentDetailPage {
             tr,
             branding,
             incident: IncidentDetailView::from_incident(&inc, now, tr),
             generated_at: now,
-            rss_url: RSS_URL,
             og,
+            reader: Reader::of(&state, page_ref, &access),
         },
         tr,
-    )
+    );
+    privately(resp, &access)
 }
 
 /// Cursor-paginated archive view of every public incident for the org.
@@ -355,9 +450,9 @@ pub async fn archive(
     use crate::pagination::cursor::IncidentCursor;
     use crate::public_status::IncidentListQuery;
 
-    let page_ref = match resolve_status_page(&state.request_state(), &headers).await {
+    let (page_ref, access) = match readable(&state, &headers, "/status/incidents", false).await {
         Ok(p) => p,
-        Err(err) => return render_public_error(err),
+        Err(resp) => return resp,
     };
     let cursor = match params.cursor.as_deref().map(IncidentCursor::decode) {
         Some(Ok(c)) => Some(c),
@@ -383,14 +478,7 @@ pub async fn archive(
         Ok(l) => l,
         Err(err) => return render_public_error(err),
     };
-    let branding = resolve_branding(
-        &state,
-        &headers,
-        page_ref.org,
-        page_ref.page,
-        &fallback_name,
-    )
-    .await;
+    let branding = page_branding(&state, &headers, page_ref, &access, &fallback_name).await;
     let now = Utc::now();
     let months = bucket_by_month(&listing.items, now, tr);
     // Self-canonical, cursor included. Pointing a cursor page at the entry
@@ -414,18 +502,19 @@ pub async fn archive(
         &branding,
     );
     let robots = archive_robots(params.cursor.as_deref(), &branding);
-    with_language(
+    let resp = with_language(
         IncidentArchivePage {
             tr,
             branding,
             months,
             next_cursor: listing.next_cursor,
-            rss_url: RSS_URL,
             robots,
             og,
+            reader: Reader::of(&state, page_ref, &access),
         },
         tr,
-    )
+    );
+    privately(resp, &access)
 }
 
 /// Group sorted-DESC incidents into per-month buckets, each folded into rows
@@ -452,8 +541,14 @@ fn bucket_by_month(items: &[PublicIncident], now: DateTime<Utc>, tr: Tr) -> Vec<
 
 /// Maps a `PublicAppError` to an HTML response for the rendered routes —
 /// avoids leaking the JSON envelope into the browser.
-fn render_public_error(err: PublicAppError) -> Response {
+pub(crate) fn render_public_error(err: PublicAppError) -> Response {
     match err {
+        PublicAppError::SignInRequired => {
+            let mut resp =
+                (StatusCode::UNAUTHORIZED, NotFoundPage { active_tab: "" }).into_response();
+            mark_private(&mut resp);
+            resp
+        }
         PublicAppError::NotFound => {
             (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
         }

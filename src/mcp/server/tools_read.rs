@@ -32,10 +32,10 @@ use crate::mcp::schema::{
     IncidentDetail, IncidentIdArg, IncidentList, IncidentMetricsResult, IncidentWindow,
     LatencyPoint, ListIncidentsArgs, ListMaintenanceArgs, ListMonitorsArgs, ListStatusPagesArgs,
     MaintenanceIdArg, MaintenanceList, MaintenanceWindowView, MetricCount, MonitorDetail,
-    MonitorHistory, MonitorList, MonitorListItem, NoisyMonitor, OrgHealth, OrgUsage, Quota,
-    RecoveredStretch, RegionList, StatusPageComponent as McpComponent, StatusPageDetail,
-    StatusPageList, StatusPageSummary, TagItem, TagList, VariableList, VariableSummary,
-    WorstMonitor,
+    MonitorHistory, MonitorList, MonitorListItem, NoisyMonitor, OrgHealth, OrgUsage,
+    PageViewerItem, PageViewerList, Quota, RecoveredStretch, RegionList,
+    StatusPageComponent as McpComponent, StatusPageDetail, StatusPageList, StatusPageSummary,
+    TagItem, TagList, VariableList, VariableSummary, WorstMonitor,
 };
 
 use super::McpServer;
@@ -826,6 +826,55 @@ impl McpServer {
             public_url: self.page_public_url(&page.slug),
             enabled: page.enabled,
             components,
+            access: self.page_access(org, page.id).await?,
+        }))
+    }
+
+    /// The people who signed in to a private page, for "who can see our
+    /// status page?".
+    #[tool(
+        description = "List who signed in to a private status page: each viewer's address, first and last visit, saved passkeys, whether they subscribe by email, and whether they are blocked. Addresses are customer data. Read-only.",
+        title = "List status page viewers",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_status_page_viewers(
+        &self,
+        Parameters(args): Parameters<GetStatusPageArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<PageViewerList>, McpToolError> {
+        let auth = McpAuth::from_ctx(&ctx)?;
+        auth.require(Scope::StatusPageRead)?;
+        let org = auth.org;
+        let page = self
+            .state
+            .status_page_store
+            .list(org)
+            .await
+            .map_err(|e| McpToolError::internal(format!("status page lookup: {e}")))?
+            .into_iter()
+            .find(|p| p.slug == args.slug)
+            .ok_or_else(|| McpToolError::not_found("status page not found"))?;
+        let rows =
+            crate::storage::page_access::viewers::list_for_page(self.require_pool()?, org, page.id)
+                .await
+                .map_err(|e| McpToolError::internal(format!("page viewers: {e}")))?;
+        Ok(Json(PageViewerList {
+            viewers: rows
+                .into_iter()
+                .map(|v| PageViewerItem {
+                    email: sanitize_data(&v.email),
+                    first_seen: v.created_at.to_rfc3339(),
+                    last_visit: v.last_seen_at.map(|t| t.to_rfc3339()),
+                    passkeys: v.passkeys,
+                    subscribed: v.subscribed,
+                    status: if v.blocked_at.is_some() {
+                        "blocked"
+                    } else {
+                        "active"
+                    }
+                    .into(),
+                })
+                .collect(),
         }))
     }
 

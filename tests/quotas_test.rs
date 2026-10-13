@@ -73,6 +73,7 @@ fn test_plan(per_min: i32) -> Plan {
         sms_alerts_enabled: false,
         incident_narration_enabled: true,
         on_call_enabled: true,
+        private_pages_enabled: true,
         max_flow_checks: 0,
         max_flow_steps: 30,
         is_listed: false,
@@ -1026,6 +1027,7 @@ async fn status_page_cap_blocks_create_live_pg() {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("qpage"),
                 name: "q".into(),
                 enabled: true,

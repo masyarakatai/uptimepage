@@ -3,4 +3,14 @@
         {% include "public/_brand_bar.html" %}
     </div>
 </header>
+{% if let Some(email) = reader.viewer %}
+<div class="border-b border-[color:var(--theme-line)] bg-[color:var(--theme-surface-elev)] text-xs text-muted">
+    <div class="mx-auto flex max-w-3xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+        <span>{{ tr.t("access-signed-as") }} <span class="font-mono break-all text-body">{{ email }}</span></span>
+        <form method="post" action="/access/sign-out" class="ml-auto">
+            <button type="submit" class="cursor-pointer hover:text-[color:var(--theme-text)]">{{ tr.t("access-sign-out") }}</button>
+        </form>
+    </div>
+</div>
+{% endif %}
 {% include "public/_subscribe_dialog.html" %}

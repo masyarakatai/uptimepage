@@ -7,10 +7,14 @@
 //!  * returns the narrow `PublicApiError` envelope on failure (never
 //!    `ApiError`, which carries internal context),
 //!  * relies on the routing layer to stamp the `Cache-Control:
-//!    public, max-age=10, stale-while-revalidate=30` header.
+//!    public, max-age=10, stale-while-revalidate=30` header, except on a
+//!    private page, whose responses say `private, no-store` themselves,
+//!  * reads the page through [`ReadablePage`], which answers 401 for a private
+//!    page the request may not read.
 
 use crate::request::json::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -19,6 +23,7 @@ use uuid::Uuid;
 
 use crate::api::json_arc::JsonArc;
 use crate::app::AppState;
+use crate::domain::PageRef;
 use crate::domain::{
     ComponentHistoryResponse, PublicIncident, PublicMaintenanceList, PublicStatusPage,
 };
@@ -27,21 +32,65 @@ use crate::i18n::Tr;
 use crate::pagination::cursor::IncidentCursor;
 use crate::pagination::page::{CursorPage, CursorPageOfPublicIncident};
 use crate::public_status::IncidentListQuery;
+use crate::public_status::access::{Access, mark_private};
 use crate::public_status::badge::{component_badge, overall_badge, render_badge};
 use crate::public_status::source::FeedLinks;
-use crate::request::host::ResolvedStatusPage;
+use crate::request::host::{ResolvedStatusPage, resolve_status_page};
 
 const NOINDEX: HeaderValue = HeaderValue::from_static("noindex");
 const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
 
-/// Only an HTML page can answer a crawler with a robots meta tag; a feed, badge
-/// or JSON body says it in this header.
-pub struct Robots<T>(bool, T);
+/// A status page the request may read: resolved from the host, then past the
+/// access gate. A private page with no session that may read it is a 401.
+pub struct ReadablePage {
+    pub page: PageRef,
+    pub access: Access,
+}
 
-impl<T: IntoResponse> IntoResponse for Robots<T> {
+impl FromRequestParts<AppState> for ReadablePage {
+    type Rejection = PublicAppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let page = resolve_status_page(&state.request_state(), &parts.headers).await?;
+        match state
+            .page_gate
+            .check(state.db.as_ref(), page, &parts.headers)
+            .await?
+        {
+            Access::SignInRequired(_) => Err(PublicAppError::SignInRequired),
+            access => Ok(Self { page, access }),
+        }
+    }
+}
+
+/// What a response says beyond its body. Only an HTML page can answer a
+/// crawler with a robots meta tag; a feed, badge or JSON body says it in a
+/// header, and a private page's answer belongs to one visitor.
+pub struct Served<T> {
+    hidden: bool,
+    private: bool,
+    body: T,
+}
+
+impl<T> Served<T> {
+    async fn new(state: &AppState, read: &ReadablePage, body: T) -> Self {
+        Self {
+            hidden: state.public_source.hide_from_search(read.page).await,
+            private: read.access.is_private(),
+            body,
+        }
+    }
+}
+
+impl<T: IntoResponse> IntoResponse for Served<T> {
     fn into_response(self) -> Response {
-        let mut resp = self.1.into_response();
-        if self.0 {
+        let mut resp = self.body.into_response();
+        if self.private {
+            mark_private(&mut resp);
+        } else if self.hidden {
             resp.headers_mut().insert(X_ROBOTS_TAG, NOINDEX);
         }
         resp
@@ -68,6 +117,15 @@ pub struct BadgeQuery {
     /// Reserved for future visual styles. Only `flat` is accepted in v1;
     /// any other value returns 400.
     pub style: Option<String>,
+}
+
+/// A viewer's personal link to a private page's feed, for a reader that
+/// carries no cookie.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct FeedQuery {
+    pub viewer: Option<Uuid>,
+    pub t: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -100,11 +158,10 @@ pub struct IncidentsQuery {
 )]
 pub async fn public_status(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
-) -> Result<Robots<JsonArc<PublicStatusPage>>, PublicAppError> {
-    let hidden = state.public_source.hide_from_search(page).await;
-    let page = state.public_source.page(page).await?;
-    Ok(Robots(hidden, JsonArc(page)))
+    read: ReadablePage,
+) -> Result<Served<JsonArc<PublicStatusPage>>, PublicAppError> {
+    let page = state.public_source.page(read.page).await?;
+    Ok(Served::new(&state, &read, JsonArc(page)).await)
 }
 
 #[utoipa::path(
@@ -128,17 +185,16 @@ pub async fn public_status(
 )]
 pub async fn component_history(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
+    read: ReadablePage,
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Robots<Json<ComponentHistoryResponse>>, PublicAppError> {
+) -> Result<Served<Json<ComponentHistoryResponse>>, PublicAppError> {
     let days = q.days.unwrap_or(90);
     let res = state
         .public_source
-        .component_history(page, id, days)
+        .component_history(read.page, id, days)
         .await?;
-    let hidden = state.public_source.hide_from_search(page).await;
-    Ok(Robots(hidden, Json(res)))
+    Ok(Served::new(&state, &read, Json(res)).await)
 }
 
 #[utoipa::path(
@@ -157,9 +213,9 @@ pub async fn component_history(
 )]
 pub async fn public_incidents(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
+    read: ReadablePage,
     Query(q): Query<IncidentsQuery>,
-) -> Result<Robots<Json<CursorPage<PublicIncident>>>, PublicAppError> {
+) -> Result<Served<Json<CursorPage<PublicIncident>>>, PublicAppError> {
     // Cursor decode failure surfaces as `INVALID_CURSOR`. Map the internal
     // `AppError` shape into `PublicAppError::BadRequest` so the public
     // surface keeps its narrow error envelope (no internal context leaks
@@ -175,9 +231,8 @@ pub async fn public_incidents(
         cursor,
         ongoing_only: q.ongoing_only.unwrap_or(false),
     };
-    let hidden = state.public_source.hide_from_search(page).await;
-    let listed = state.public_source.list_incidents(page, query).await?;
-    Ok(Robots(hidden, Json(listed)))
+    let listed = state.public_source.list_incidents(read.page, query).await?;
+    Ok(Served::new(&state, &read, Json(listed)).await)
 }
 
 #[utoipa::path(
@@ -198,12 +253,11 @@ pub async fn public_incidents(
 )]
 pub async fn public_incident(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
+    read: ReadablePage,
     Path(id): Path<Uuid>,
-) -> Result<Robots<Json<PublicIncident>>, PublicAppError> {
-    let hidden = state.public_source.hide_from_search(page).await;
-    let inc = state.public_source.incident_by_id(page, id).await?;
-    Ok(Robots(hidden, Json(inc)))
+) -> Result<Served<Json<PublicIncident>>, PublicAppError> {
+    let inc = state.public_source.incident_by_id(read.page, id).await?;
+    Ok(Served::new(&state, &read, Json(inc)).await)
 }
 
 #[utoipa::path(
@@ -215,16 +269,46 @@ pub async fn public_incident(
                    title is the incident title; item description is the \
                    concatenated update messages.",
     security(),
+    params(FeedQuery),
     responses(
         (status = 200, description = "RSS 2.0 XML document",
             content_type = "application/rss+xml"),
+        (status = 401, body = PublicApiError, description = "Private page: sign in, or use your personal feed link"),
     ),
 )]
 pub async fn public_incidents_rss(
     State(state): State<AppState>,
     ResolvedStatusPage(page): ResolvedStatusPage,
+    Query(feed): Query<FeedQuery>,
     headers: HeaderMap,
-) -> Result<Robots<Response>, PublicAppError> {
+) -> Result<Served<Response>, PublicAppError> {
+    let read = match state
+        .page_gate
+        .check(state.db.as_ref(), page, &headers)
+        .await?
+    {
+        Access::SignInRequired(_) => {
+            let (Some(viewer), Some(token)) = (feed.viewer, feed.t.as_deref()) else {
+                return Err(PublicAppError::SignInRequired);
+            };
+            let viewer = state
+                .page_gate
+                .check_feed(
+                    state.db.as_ref(),
+                    page,
+                    &state.page_feed_secret,
+                    viewer,
+                    token,
+                )
+                .await?
+                .ok_or(PublicAppError::SignInRequired)?;
+            ReadablePage {
+                page,
+                access: Access::Viewer(viewer),
+            }
+        }
+        access => ReadablePage { page, access },
+    };
     // A reader keeps these links and follows them days later, so they have to
     // be the address it fetched the feed from, not whatever the process bound.
     let configured = || {
@@ -249,12 +333,11 @@ pub async fn public_incidents_rss(
         page: &page_url,
         origin: &origin,
     };
-    let hidden = state.public_source.hide_from_search(page).await;
     let body = state.public_source.incidents_rss(page, links).await?;
     let mut resp = (StatusCode::OK, body).into_response();
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, RSS_CONTENT_TYPE);
-    Ok(Robots(hidden, resp))
+    Ok(Served::new(&state, &read, resp).await)
 }
 
 #[utoipa::path(
@@ -273,11 +356,10 @@ pub async fn public_incidents_rss(
 )]
 pub async fn public_maintenance(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
-) -> Result<Robots<Json<PublicMaintenanceList>>, PublicAppError> {
-    let hidden = state.public_source.hide_from_search(page).await;
-    let m = state.public_source.maintenance(page).await?;
-    Ok(Robots(hidden, Json(m)))
+    read: ReadablePage,
+) -> Result<Served<Json<PublicMaintenanceList>>, PublicAppError> {
+    let m = state.public_source.maintenance(read.page).await?;
+    Ok(Served::new(&state, &read, Json(m)).await)
 }
 
 #[utoipa::path(
@@ -302,9 +384,9 @@ pub async fn public_maintenance(
 )]
 pub async fn public_badge(
     State(state): State<AppState>,
-    ResolvedStatusPage(page): ResolvedStatusPage,
+    read: ReadablePage,
     Query(q): Query<BadgeQuery>,
-) -> Result<Robots<Response>, PublicAppError> {
+) -> Result<Served<Response>, PublicAppError> {
     if let Some(style) = q.style.as_deref()
         && style != "flat"
     {
@@ -313,9 +395,8 @@ pub async fn public_badge(
         ));
     }
 
-    let hidden = state.public_source.hide_from_search(page).await;
-    let tr = Tr::new(state.public_source.locale(page).await);
-    let page = state.public_source.page(page).await?;
+    let tr = Tr::new(state.public_source.locale(read.page).await);
+    let page = state.public_source.page(read.page).await?;
     let page = &*page;
     let (label, status_text, color) = match q.component {
         Some(id) => {
@@ -338,5 +419,5 @@ pub async fn public_badge(
     let mut resp = (StatusCode::OK, svg).into_response();
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, SVG_CONTENT_TYPE);
-    Ok(Robots(hidden, resp))
+    Ok(Served::new(&state, &read, resp).await)
 }

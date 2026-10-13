@@ -233,6 +233,7 @@ async fn page_minted_shares_do_not_consume_the_operator_caps_live_pg() {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("pgcap"),
                 name: "P".into(),
                 enabled: true,
@@ -572,6 +573,7 @@ async fn a_page_link_opens_in_its_page_chrome_on_its_page_host_live_pg() {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: slug.clone(),
                 name: "P".into(),
                 enabled: true,

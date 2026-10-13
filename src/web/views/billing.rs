@@ -367,6 +367,9 @@ const COMPARE: &[(&str, Read)] = &[
     ("on-call and escalation", |c| {
         Metric::Flag(c.on_call_enabled)
     }),
+    ("private status pages", |c| {
+        Metric::Flag(c.private_pages_enabled)
+    }),
 ];
 
 fn delta(m: &Metric, current: Option<&PlanCard>, read: Read) -> &'static str {
@@ -453,6 +456,9 @@ fn card_lines(c: &PlanCard) -> Vec<String> {
     }
     if c.on_call_enabled {
         lines.push("on-call and escalation".into());
+    }
+    if c.private_pages_enabled {
+        lines.push("private status pages".into());
     }
     lines
 }
@@ -580,6 +586,7 @@ mod tests {
             white_label_enabled: false,
             custom_domain_enabled: false,
             on_call_enabled: false,
+            private_pages_enabled: false,
         }
     }
 

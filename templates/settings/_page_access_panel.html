@@ -1,0 +1,116 @@
+{% import "_register.html" as reg %}
+<div role="tabpanel" id="panel-access" aria-labelledby="tab-access" data-panel="access" class="space-y-6" hidden
+     data-access="{{ access_json }}" data-locked="{{ lock.is_some() }}">
+
+  {% if let Some(lock) = lock %}
+  <div class="sticker-card overflow-hidden">
+    <h2 class="card-band panel-label">on the Team plan</h2>
+    <div class="space-y-4 p-5">
+      <ul class="list-inside list-disc space-y-1 text-sm">
+        <li>Make a page private: only addresses or domains you list can open it.</li>
+        <li>People sign in with a code sent by email, and can save a passkey to skip the code next time.</li>
+        <li>See who opened the page and when, and block anyone at once.</li>
+      </ul>
+      {% include "settings/_team_cta.html" %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div data-access-public hidden>
+    <p class="alert-card alert-card--muted text-sm">Make the page private to choose who can open it.</p>
+    <p class="mt-2 font-mono text-xs text-quiet" data-access-kept></p>
+  </div>
+
+  <div data-access-body class="space-y-6" hidden>
+    <p class="alert-card alert-card--warn text-sm" data-access-warn hidden></p>
+
+    <fieldset>
+      <legend class="float-left mb-3 w-full"><span class="form-legend">ways in</span></legend>
+      <div class="clear-both space-y-2">
+        <div class="check-type-cards access-ways">
+          <span class="check-type-card check-type-card--static check-type-card--on">
+            <span class="check-type-card__name">email code</span>
+            <span class="check-type-card__desc">people on the list get a one-time code by email</span>
+          </span>
+          {% call reg::chooser_card_locked("password", "one password you share with the people who need it", "soon", "quiet") %}{% endcall %}
+        </div>
+        <p class="font-mono text-xs text-quiet"># the only way in today</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="border-t border-[color:var(--theme-line)] pt-6">
+      <legend class="float-left mb-3 w-full"><span class="form-legend">email code</span></legend>
+      <div class="clear-both space-y-5">
+        <div class="space-y-3">
+          <label for="access-rule-input" class="block text-xs text-muted">Who can get a code</label>
+          <div class="access-rule-add">
+            <input id="access-rule-input" type="text" placeholder="example.com or name@example.com"
+                   spellcheck="false" autocomplete="off" class="field w-full font-mono text-sm">
+            <button id="access-rule-add" type="button" class="btn-ghost inline-flex min-h-10 items-center px-3 py-1.5 text-[0.8rem]">[ add ]</button>
+          </div>
+          <p class="text-xs text-muted">A domain lets in every address at it. An address lets in only that person.</p>
+          <div class="sticker-card overflow-hidden"><div data-access-rules></div></div>
+          <p class="font-mono text-xs text-quiet" data-access-rule-count></p>
+        </div>
+        <div class="check-type-cards access-single">
+          <label class="check-type-card">
+            <input type="checkbox" id="access-passkeys" class="sr-only">
+            <span class="check-type-card__name">passkeys</span>
+            <span class="check-type-card__desc">after the first code, people can save a passkey in their password manager and skip the email next time</span>
+          </label>
+        </div>
+        <div data-access-recheck>
+          <span class="mb-1.5 block text-xs text-muted">Ask passkey users for an email code again every</span>
+          <div class="sm-rail sm-rail--wide" role="radiogroup" aria-label="Email re-check">
+            <label class="sm-rail__seg"><input type="radio" name="access_recheck" value="30" class="sr-only">30 days</label>
+            <label class="sm-rail__seg"><input type="radio" name="access_recheck" value="90" class="sr-only">90 days</label>
+            <label class="sm-rail__seg"><input type="radio" name="access_recheck" value="365" class="sr-only">1 year</label>
+            <label class="sm-rail__seg"><input type="radio" name="access_recheck" value="" class="sr-only">never</label>
+          </div>
+          <p class="mt-1 text-xs text-muted">Checked at their next passkey sign-in, never in the middle of a visit. Someone who left the company and lost their mailbox fails it.</p>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="border-t border-[color:var(--theme-line)] pt-6">
+      <legend class="float-left mb-3 w-full"><span class="form-legend">sessions</span></legend>
+      <div class="clear-both">
+        <span class="mb-1.5 block text-xs text-muted">Stay signed in on a device for</span>
+        <div class="sm-rail sm-rail--wide" role="radiogroup" aria-label="Session length">
+          <label class="sm-rail__seg"><input type="radio" name="access_session" value="7" class="sr-only">7 days</label>
+          <label class="sm-rail__seg"><input type="radio" name="access_session" value="30" class="sr-only">30 days</label>
+          <label class="sm-rail__seg"><input type="radio" name="access_session" value="90" class="sr-only">90 days</label>
+          <label class="sm-rail__seg"><input type="radio" name="access_session" value="" class="sr-only">until signed out</label>
+        </div>
+        <p class="mt-1 text-xs text-muted">Applies to email sign-ins. A session not used for a year ends on its own.</p>
+      </div>
+    </fieldset>
+  </div>
+
+  <section aria-labelledby="viewers-heading" data-access-viewers hidden>
+    <div class="sticker-card overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-3">
+        <h2 id="viewers-heading" class="panel-label">viewers</h2>
+        <span class="font-mono text-xs text-muted" data-viewer-count></span>
+      </div>
+      <p class="px-4 pb-2 font-mono text-xs text-quiet"># people appear here after their first sign-in · block and unblock apply at once</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead class="table-head bg-[color:var(--theme-surface-sunk)]">
+            <tr>
+              <th scope="col" class="px-4 py-2">Email</th>
+              <th scope="col" class="px-4 py-2">Last visit</th>
+              <th scope="col" class="px-4 py-2">Passkey</th>
+              <th scope="col" class="px-4 py-2">Status</th>
+              <th scope="col" class="px-4 py-2"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody data-viewer-rows class="divide-y divide-[color:var(--theme-line)]"></tbody>
+        </table>
+      </div>
+      <aside class="access-drawer px-4 pb-4" data-viewer-drawer>
+        <p class="font-mono text-xs text-quiet"># pick a viewer to see their history</p>
+      </aside>
+    </div>
+  </section>
+</div>

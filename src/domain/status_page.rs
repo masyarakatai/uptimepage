@@ -68,6 +68,10 @@ pub struct NewStatusPage {
     pub name: String,
     #[serde(default)]
     pub enabled: bool,
+    /// Written with the page, so a page created private is never public.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub access: Option<super::AccessWrite>,
 }
 
 /// Partial update of a page's identity + branding. `branding = Some` replaces
@@ -79,6 +83,10 @@ pub struct StatusPageUpdate {
     pub enabled: Option<bool>,
     pub branding: Option<PublicOrgBranding>,
     pub public_locale: Option<Locale>,
+    /// Replaces who may open the page, in the same transaction as the rest.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub access: Option<super::AccessWrite>,
 }
 
 /// One monitor as it appears on a page, with per-page curation overrides.

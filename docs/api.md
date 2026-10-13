@@ -105,8 +105,8 @@ edit it with `PATCH`. Model + caps in [Per-org status pages](per-org-status.md).
 |--------|------|---------|
 | `GET` | `/api/v1/status-pages` | list this org's pages |
 | `POST` | `/api/v1/status-pages` | create a page (capped at `max_status_pages`; slug globally unique) |
-| `GET` | `/api/v1/status-pages/{id}` | one page + its live URL and logo URL |
-| `PATCH` | `/api/v1/status-pages/{id}` | rename, change slug, publish/unpublish, set the language (`public_locale`), edit branding |
+| `GET` | `/api/v1/status-pages/{id}` | one page + its live URL, logo URL and `access` |
+| `PATCH` | `/api/v1/status-pages/{id}` | rename, change slug, publish/unpublish, set the language (`public_locale`), edit branding, change who may open it (`access`) |
 | `DELETE` | `/api/v1/status-pages/{id}` | delete the page |
 | `GET` | `/api/v1/status-pages/{id}/components` | the monitors curated onto the page |
 | `POST` | `/api/v1/status-pages/{id}/components` | add a monitor (distinct-target cap `max_public_components`) |
@@ -115,13 +115,46 @@ edit it with `PATCH`. Model + caps in [Per-org status pages](per-org-status.md).
 | `POST` | `/api/v1/status-pages/{id}/components/reorder` | set component order |
 | `POST` | `/api/v1/status-pages/{id}/logo` | upload a logo (multipart) |
 | `DELETE` | `/api/v1/status-pages/{id}/logo` | remove the logo |
+| `GET` | `/api/v1/status-pages/{id}/access/viewers` | who signed in to a private page |
+| `POST` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/block` | sign a viewer out, remove their passkeys and subscription, and keep them out |
+| `POST` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/unblock` | lift a block |
+| `GET` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/history` | a viewer's visit days and sign-in events, kept a year |
+
+`access` is who may open the page. It is `null` on a page never made private,
+and as a write it replaces what is stored, whole. `POST` and `PATCH` take it
+beside the other fields and commit it in the same transaction:
+
+```json
+{
+  "access": {
+    "protected": true,
+    "email": { "enabled": true, "passkeys_enabled": true, "recheck_days": null, "session_days": null },
+    "rules": [
+      { "kind": "domain", "value": "example.com" },
+      { "kind": "address", "value": "name@partner.example" }
+    ]
+  }
+}
+```
+
+`protected: true` needs a plan with private pages (`403 PRIVATE_PAGES_DISABLED`
+otherwise; a page that already is private stays editable after its plan loses
+them), the email code on, and at least one rule. `recheck_days` is 30, 90,
+365 or `null`; `session_days` is 7, 30, 90 or `null`. Entries are normalised
+(lower case, an international domain in its ASCII form) and deduplicated, up to
+500. Anything else is `400 ACCESS_INVALID`, with `field` naming the part. See
+[Who can open a page](public-status.md#who-can-open-a-page).
 
 ### Public status endpoints
 
 Unauthenticated; mounted at `/api/public/v1/*` and bypassed at Caddy via the
 `@public` matcher (see [Deployment](deployment.md#public-status-surface)).
 Each response carries `Cache-Control: public, max-age=10,
-stale-while-revalidate=30`. A monitor not curated onto the page being
+stale-while-revalidate=30`. A [private page](public-status.md#who-can-open-a-page)
+answers these only to a signed-in viewer, with `Cache-Control: private,
+no-store`, and anyone else with `401 PAGE_SIGN_IN_REQUIRED`. Its feed also
+answers a viewer's personal link (`?viewer=…&t=…`), for readers that carry no
+cookie. A monitor not curated onto the page being
 served is invisible on every public surface — direct lookups return 404
 and it never appears in any list. Wire types literally cannot serialise
 sensitive target fields (`url`, `headers`, `basic_auth`, `bearer_token`).

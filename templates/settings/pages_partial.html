@@ -28,10 +28,12 @@
         {% if r.plan_held %}
         <span class="status-badge status-badge--held shrink-0"
               title="Your plan no longer covers this page, so its URL returns 404 and its subscribers are not mailed. Nothing has been deleted.">held</span>
+        {% else if r.visibility() == "private" %}
+        <span class="status-badge status-badge--private shrink-0"><svg viewBox="0 0 12 12" width="10" height="10" fill="currentColor" aria-hidden="true"><path d="M3.5 5V3.75a2.5 2.5 0 0 1 5 0V5h.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h.5Zm1.25 0h2.5V3.75a1.25 1.25 0 0 0-2.5 0V5Z"/></svg>private</span>
         {% else if r.enabled %}
-        <span class="status-badge status-badge--up shrink-0">published</span>
+        <span class="status-badge status-badge--up shrink-0">public</span>
         {% else %}
-        <span class="status-badge status-badge--disabled shrink-0">draft</span>
+        <span class="status-badge status-badge--disabled shrink-0">off</span>
         {% endif %}
       </div>
 
@@ -43,8 +45,8 @@
       {% endif %}
 
       <p class="page-card__meta">
-        {{ r.subscriber_count }} subscriber{% if r.subscriber_count != 1 %}s{% endif %}
-        {% if r.plan_held %}&middot; back to {% if r.enabled %}published{% else %}draft{% endif %} when the plan covers it{% endif %}
+        {% if r.private %}{{ r.viewers }} viewer{% if r.viewers != 1 %}s{% endif %} &middot; {% endif %}{{ r.subscriber_count }} subscriber{% if r.subscriber_count != 1 %}s{% endif %}
+        {% if r.plan_held %}&middot; back to {{ r.visibility() }} when the plan covers it{% endif %}
       </p>
 
       <div class="page-card__foot">
@@ -92,7 +94,8 @@
       <p># each page has its own URL and its own set of monitors</p>
       <p># run several — e.g. a public page and a separate internal one</p>
       <p># a monitor can sit on more than one page</p>
-      <p># unpublished = draft, its URL 404s until you publish it</p>
+      <p># off ........ its URL 404s until you make it public or private</p>
+      <p># private .... only the addresses and domains on its access list can open it</p>
       <p># held ....... over your plan's page count; nothing deleted, choose which to keep under usage</p>
     </div>
   </details>

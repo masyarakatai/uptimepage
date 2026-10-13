@@ -10,6 +10,7 @@ pub const PARTITIONED_TABLES: &[&str] = &[
     "quota_events",
     "org_audit_log",
     "credential_events",
+    "status_page_access_events",
 ];
 
 /// Months provisioned ahead, so a lagging maintenance run still has a partition.

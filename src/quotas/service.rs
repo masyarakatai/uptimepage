@@ -71,6 +71,7 @@ struct PlanRow {
     sms_alerts_enabled: bool,
     incident_narration_enabled: bool,
     on_call_enabled: bool,
+    private_pages_enabled: bool,
     max_flow_checks: i32,
     max_flow_steps: i32,
     is_listed: bool,
@@ -113,6 +114,7 @@ impl From<PlanRow> for Plan {
             sms_alerts_enabled: r.sms_alerts_enabled,
             incident_narration_enabled: r.incident_narration_enabled,
             on_call_enabled: r.on_call_enabled,
+            private_pages_enabled: r.private_pages_enabled,
             max_flow_checks: r.max_flow_checks,
             max_flow_steps: r.max_flow_steps,
             is_listed: r.is_listed,
@@ -153,6 +155,10 @@ pub struct QuotaService {
     /// Account → epoch of its latest invalidation. Same TTL as the plan cache:
     /// past it every entry that could predate the change has expired anyway.
     invalidated: Cache<AccountId, u64>,
+    /// The operator owns the `plans` rows on a self-hosted install, so a
+    /// feature gate read from them would only gate the operator against
+    /// themselves.
+    self_hosted: bool,
 }
 
 /// The account's plan plus its current pooled counts — the totals across
@@ -193,6 +199,7 @@ impl QuotaService {
                 .time_to_live(plan_ttl)
                 .max_capacity(10_000)
                 .build(),
+            self_hosted: !cfg.marketing.enabled,
         }
     }
 
@@ -267,7 +274,7 @@ impl QuotaService {
                     .plan_cache
                     .try_get_with(org, async {
                         let mut conn = db.acquire().await?;
-                        load(&mut conn, org, started).await
+                        load(&mut conn, org, started, self.self_hosted).await
                     })
                     .await
                     .map_err(|e| lookup_error(&e))?,
@@ -277,7 +284,7 @@ impl QuotaService {
                 Source::Conn(conn) => match self.plan_cache.get(&org).await {
                     Some(hit) => hit,
                     None => {
-                        let loaded = load(conn, org, started)
+                        let loaded = load(conn, org, started, self.self_hosted)
                             .await
                             .map_err(|e| lookup_error(&e))?;
                         self.plan_cache.insert(org, loaded.clone()).await;
@@ -739,7 +746,12 @@ enum Source<'a> {
 
 /// One org's account and effective plan, read on `conn`: the plan row with
 /// the account's override and add-ons folded in.
-async fn load(conn: &mut PgConnection, org: OrgId, started: u64) -> Result<Resolved, sqlx::Error> {
+async fn load(
+    conn: &mut PgConnection,
+    org: OrgId,
+    started: u64,
+    self_hosted: bool,
+) -> Result<Resolved, sqlx::Error> {
     let p: PlanRow = sqlx::query_as(
         "SELECT o.account_id, \
          p.id, p.name, p.description, p.max_targets, \
@@ -757,7 +769,7 @@ async fn load(conn: &mut PgConnection, org: OrgId, started: u64) -> Result<Resol
          p.test_now_per_minute, p.check_now_per_minute, \
          p.custom_domain_enabled, p.white_label_enabled, \
          p.sms_alerts_enabled, p.incident_narration_enabled, \
-         p.on_call_enabled, p.max_flow_checks, p.max_flow_steps, \
+         p.on_call_enabled, p.private_pages_enabled, p.max_flow_checks, p.max_flow_steps, \
          p.is_listed, p.created_at, p.updated_at \
          FROM organizations o \
          JOIN accounts a ON a.id = o.account_id \
@@ -782,6 +794,7 @@ async fn load(conn: &mut PgConnection, org: OrgId, started: u64) -> Result<Resol
     plan.max_regions = plan.max_regions.max(1);
     // An account always holds the org being resolved.
     plan.max_orgs = plan.max_orgs.max(1);
+    plan.private_pages_enabled |= self_hosted;
     Ok(Resolved {
         account,
         plan: Arc::new(plan),
@@ -984,6 +997,7 @@ pub(crate) fn unlimited_plan() -> Plan {
         sms_alerts_enabled: true,
         incident_narration_enabled: true,
         on_call_enabled: true,
+        private_pages_enabled: true,
         // A flow needs an engine behind it, so grant no cap the fixture cannot run.
         max_flow_checks: 0,
         max_flow_steps: 30,

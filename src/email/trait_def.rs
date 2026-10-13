@@ -104,6 +104,15 @@ pub enum EmailTemplate {
         expires_hours: u32,
         unsubscribe_url: String,
     },
+    /// Signs a visitor in to a private status page: a code for the tab that
+    /// asked and a link for another device, in the page's language.
+    PageAccessCode {
+        locale: Locale,
+        page_name: String,
+        url: String,
+        code: String,
+        expires_in_minutes: u32,
+    },
     /// A public incident update delivered to a confirmed subscriber.
     SubscriberIncident {
         locale: Locale,
@@ -316,6 +325,20 @@ impl EmailTemplate {
                 *expires_hours,
                 unsubscribe_url,
             ),
+            EmailTemplate::PageAccessCode {
+                locale,
+                page_name,
+                url,
+                code,
+                expires_in_minutes,
+            } => templates::page_access_code::render(
+                Tr::new(*locale),
+                site_name,
+                page_name,
+                url,
+                code,
+                *expires_in_minutes,
+            ),
             EmailTemplate::SubscriberIncident {
                 locale,
                 page_name,
@@ -437,6 +460,7 @@ impl EmailTemplate {
             EmailTemplate::HeartbeatNeverPinged { monitor_url, .. } => monitor_url.as_deref(),
             EmailTemplate::IncidentAlert(_) => None,
             EmailTemplate::SubscriberConfirm { confirm_url, .. } => Some(confirm_url),
+            EmailTemplate::PageAccessCode { url, .. } => Some(url),
             EmailTemplate::SubscriberIncident { incident_url, .. } => Some(incident_url),
             EmailTemplate::SubscriberMaintenance { page_url, .. } => Some(page_url),
             EmailTemplate::SupportRequest { .. } => None,

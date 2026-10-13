@@ -4,6 +4,11 @@
             <h2 class="text-sm font-semibold text-body">{{ tr.t("subscribe-title") }}</h2>
             <button type="button" data-subscribe-close aria-label="{{ tr.t("subscribe-close") }}" class="-m-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded text-xl leading-none text-quiet transition-[color,scale] hover:text-body motion-safe:active:scale-[0.96]">&times;</button>
         </div>
+        {% if let Some(email) = reader.viewer %}
+        <p class="text-pretty text-xs text-muted">{{ tr.t("subscribe-as-lead") }}</p>
+        <input type="hidden" name="channel" value="email">
+        <p class="font-mono text-sm break-all text-body">{{ email }}</p>
+        {% else %}
         <p class="text-pretty text-xs text-muted">{{ tr.t("subscribe-lead") }}</p>
         <div role="radiogroup" aria-label="{{ tr.t("subscribe-method") }}" class="flex gap-4 text-xs text-muted">
             <label class="inline-flex items-center gap-1">
@@ -24,9 +29,14 @@
                    placeholder="https://your-endpoint.example.com/hook">
             <p class="mt-1 text-[0.7rem] text-quiet">{{ tr.t("subscribe-webhook-hint") }}</p>
         </div>
+        {% endif %}
         <button type="submit" class="sticker-btn sticker-btn--primary justify-center px-4 py-2.5 text-sm">{{ tr.t("subscribe-submit") }}</button>
+        {% if reader.viewer.is_some() %}
+        <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-as-note") }}</p>
+        {% else %}
         <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-privacy") }}</p>
-        <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-feed-prompt") }} <a class="underline hover:text-body" href="{{ rss_url }}">RSS</a></p>
+        {% endif %}
+        <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-feed-prompt") }} <a class="underline hover:text-body" href="{{ reader.rss_url }}">RSS</a></p>
     </form>
 </dialog>
 <script defer src="{{ "js/public/subscribe_dialog.js"|asset }}"></script>

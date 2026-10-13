@@ -49,6 +49,7 @@ async fn seed_org(pool: &sqlx::PgPool, slug: &str, enabled: bool) -> (OrgId, Use
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: slug.into(),
                 name: slug.into(),
                 enabled,

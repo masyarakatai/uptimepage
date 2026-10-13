@@ -916,6 +916,7 @@ async fn update_org_slug_does_not_touch_status_page_slug() {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: page_slug.clone(),
                 name: "P".into(),
                 enabled: true,

@@ -9,12 +9,32 @@
   <div class="form-grid grid grid-cols-1 gap-6 lg:grid-cols-[17rem_1fr] lg:items-start lg:gap-8 xl:grid-cols-[17rem_1fr_15rem]">
 
   <aside class="type-rail lg:sticky lg:top-6">
-    <span class="form-legend">how it ships</span>
-    <div class="check-type-cards check-type-cards--rail mt-3" role="radiogroup" aria-label="Visibility">
-      {% call reg::chooser_card("", "enabled", "1", enabled, "published", "anyone with the URL can read it") %}{% endcall %}
-      {% call reg::chooser_card("", "enabled", "0", !enabled, "draft", "the URL 404s until you publish") %}{% endcall %}
+    <span class="form-legend">who can open it</span>
+    <div class="check-type-cards check-type-cards--rail mt-3" role="radiogroup" aria-label="Who can open it">
+      {% call reg::chooser_card("", "visibility", "public", visibility == "public", "public", "anyone with the URL can read it") %}{% endcall %}
+      {% if lock.is_some() && visibility != "private" %}
+      {% call reg::chooser_card_locked("private", "only people on the access list", "team", "warn") %}{% endcall %}
+      {% else %}
+      {% call reg::chooser_card("", "visibility", "private", visibility == "private", "private", "only people on the access list") %}{% endcall %}
+      {% endif %}
+      {% call reg::chooser_card("", "visibility", "off", visibility == "off", "off", "the URL 404s") %}{% endcall %}
     </div>
     <p class="mt-2 font-mono text-xs text-quiet"># takes effect when you save</p>
+
+    <div class="mt-6"><span class="form-legend">edit</span></div>
+    <div class="check-type-cards check-type-cards--rail mt-3" role="tablist" aria-label="Page sections">
+      <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true"
+              data-tab="general" class="check-type-card check-type-card--on w-full cursor-pointer text-left">
+        <span class="check-type-card__name">general</span>
+        <span class="check-type-card__desc">name, address, look, components</span>
+      </button>
+      <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1"
+              data-tab="access" class="check-type-card w-full cursor-pointer text-left">
+        <span class="check-type-card__name">access</span>
+        <span class="check-type-card__desc" data-access-meta>{% if lock.is_some() %}who can open a private page{% else %}{{ rule_count }} on the list · {{ viewers_active }} viewer{% if viewers_active != 1 %}s{% endif %}{% endif %}</span>
+        {% if lock.is_some() %}<span class="card-badge card-badge--warn">team</span>{% endif %}
+      </button>
+    </div>
     {% if status_url != "" %}
     <p class="mt-5 font-mono text-xs text-quiet"># live url</p>
     <a id="live-url" href="{{ status_url }}" target="_blank" rel="noopener"
@@ -35,7 +55,7 @@
     <p class="text-sm text-muted">Your name for it. What visitors read is set below.</p>
   </header>
 
-  <div class="space-y-6">
+  <div role="tabpanel" id="panel-general" aria-labelledby="tab-general" data-panel="general" class="space-y-6">
 
   <fieldset>
     <legend class="float-left mb-3 w-full"><span class="form-legend">where it lives</span></legend>
@@ -54,10 +74,11 @@
       </p>
       <span class="mt-1 block text-xs text-muted">3–30 lowercase letters, digits or hyphens; must start with a letter.</span>
 
-      <label class="mt-4 flex items-center gap-2 text-sm text-body">
+      <label class="mt-4 flex items-center gap-2 text-sm text-body" data-public-only{% if visibility == "private" %} hidden{% endif %}>
         <input id="f-hide-search" type="checkbox" class="h-4 w-4"{% if hide_from_search %} checked{% endif %}>
         <span>hide from search engines: anyone with the URL still reads it</span>
       </label>
+      <p class="mt-4 font-mono text-xs text-quiet" data-private-only{% if visibility != "private" %} hidden{% endif %}># private pages are always hidden from search engines</p>
     </div>
   </fieldset>
 
@@ -159,6 +180,7 @@
 
   </div>
   </div>
+  {% include "settings/_page_access_panel.html" %}
   </div>
 
   <aside class="action-rail lg:col-span-2 xl:col-span-1 xl:sticky xl:top-6">
@@ -181,6 +203,7 @@
   </div>
   </form>
 
+  <div data-panel="general" class="space-y-6">
   <!-- ── Components ───────────────────────────────────────────── -->
   <section aria-labelledby="components-heading">
     <div class="sticker-card overflow-hidden">
@@ -287,6 +310,9 @@
         Embed a live status badge that links back to your status page. Drop it in a
         site footer or README. Grab HTML or Markdown; the image updates on its own.{% if !enabled %} Goes live once the page is public.{% endif %}
       </p>
+      {% if visibility == "private" %}
+      <p class="alert-card alert-card--muted text-xs">A private page shows its badge only to signed-in viewers, so an embed on another site draws no image.</p>
+      {% endif %}
 
       {% if enabled %}<img src="{{ badge }}" height="20" alt="overall status badge" loading="lazy" decoding="async" class="block">{% endif %}
 
@@ -321,7 +347,9 @@
   </div>
   <script defer src="{{ "js/public/copy.js"|asset }}"></script>
   {% endif %}
+  </div>
 
+  <script defer src="{{ "js/ui/page_access_editor.js"|asset }}"></script>
   <script>
     (() => {
       const root = document.querySelector('[data-page-id]');
@@ -331,7 +359,7 @@
       // toggled. Page-level saves take the centre, where the eye already is.
       function err(msg, placement) {
         window.smToastClear?.();
-        window.smToast?.({ message: String(msg), kind: 'error', placement });
+        window.smToast?.({ message: msg instanceof Error ? msg.message : String(msg), kind: 'error', placement });
       }
       function ok(msg, placement) { window.smToast?.({ message: msg, kind: 'ok', placement }); }
 
@@ -345,7 +373,11 @@
         const opt = { method, headers: { 'X-Requested-With': 'uptimepage' } };
         if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
         const res = await fetch(path, opt);
-        if (!res.ok) { const d = await res.json().catch(() => null); throw (d && d.error && d.error.message) || ('HTTP ' + res.status); }
+        if (!res.ok) {
+          const e = (await res.json().catch(() => null))?.error || {};
+          // Code and field say which tab the fault is on.
+          throw Object.assign(new Error(e.message || ('HTTP ' + res.status)), { code: e.code, field: e.field });
+        }
         return res;
       }
 
@@ -429,25 +461,33 @@
           : 'font-mono text-xs text-muted';
       }
       slugEl.addEventListener('input', refreshSlugShape);
+      // The slug sits on the general tab, which may be hidden behind access.
+      function focusSlug() {
+        window.smPageAccess?.show('general', false);
+        slugEl.focus();
+      }
 
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const btn = form.querySelector('button[type=submit]');
         if (btn.disabled) return;
         const slug = slugEl.value.trim().toLowerCase();
-        if (!slug) { err('url slug is required.', 'center'); slugEl.focus(); return; }
+        if (!slug) { err('url slug is required.', 'center'); focusSlug(); return; }
         slugEl.value = slug;
         const label = btn.textContent;
         btn.disabled = true; btn.textContent = 'saving…';
         let saved = false;
         try {
           const style = form.querySelector('input[name=public_style]:checked');
-          const visibility = form.querySelector('input[name=enabled]:checked');
-          if (!style || !visibility) throw 'the form is missing a selection — reload the page.';
-          await api('PATCH', '/api/v1/status-pages/' + id, {
+          const access = window.smPageAccess;
+          if (!style || !access) throw 'the form is missing a selection — reload the page.';
+          const refused = access.refusal();
+          if (refused) { access.show('access'); throw refused; }
+          const res = await api('PATCH', '/api/v1/status-pages/' + id, {
             slug,
             name: document.getElementById('f-name').value,
-            enabled: visibility.value === '1',
+            enabled: access.visibility() !== 'off',
+            access: access.payload(),
             public_locale: document.getElementById('f-locale').value,
             branding: {
               public_display_name: document.getElementById('f-display').value || null,
@@ -459,7 +499,9 @@
               public_website_url: document.getElementById('f-website').value || null,
             },
           });
+          const page = await res.json().catch(() => null);
           dirty = false;
+          access.saved(page && page.access);
           slugEl.dataset.original = slug;
           refreshSlugWarning();
           slugStatus.textContent = '';
@@ -470,11 +512,15 @@
           }
           saved = true;
         } catch (m) {
-          const aboutSlug = /slug|address/i.test(String(m));
-          if (aboutSlug) {
-            slugStatus.textContent = String(m);
+          const code = m instanceof Error ? m.code : undefined;
+          if (code === 'SLUG_INVALID' || code === 'SLUG_TAKEN') {
+            slugStatus.textContent = m.message;
             slugStatus.className = 'font-mono text-xs text-[color:var(--theme-state-bad-fg)]';
-            slugEl.focus();
+            focusSlug();
+          } else if (code === 'ACCESS_INVALID' || code === 'PRIVATE_PAGES_DISABLED') {
+            window.smPageAccess?.show('access');
+          } else if (m instanceof Error && m.field) {
+            window.smPageAccess?.show('general', false);
           }
           err(m, 'center');
         }

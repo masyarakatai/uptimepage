@@ -256,7 +256,24 @@ app.{$UPTIMEPAGE_DOMAIN} {
 				window 1m
 			}
 		}
-		header Cache-Control "public, max-age=10, stale-while-revalidate=30"
+		# A default only: a private page answers `private, no-store` itself.
+		header ?Cache-Control "public, max-age=10, stale-while-revalidate=30"
+		invoke app_upstream
+	}
+
+	# Signing in to a private status page (self-host serves it here). Mail
+	# volume is capped per address and per page in the app; this caps the
+	# requests that ask for it.
+	@page_access path /access/*
+	handle @page_access {
+		rate_limit {
+			zone page_access_app {
+				key {remote_host}
+				ipv6_prefix 64
+				events 30
+				window 1m
+			}
+		}
 		invoke app_upstream
 	}
 
@@ -719,6 +736,18 @@ mcp.{$UPTIMEPAGE_DOMAIN} {
 		}
 	}
 
+	# Private page sign-in, under the site-wide allowance too. The app caps
+	# the mail itself; this caps the requests that ask for it.
+	@page_access path /access/*
+	rate_limit @page_access {
+		zone page_access_status {
+			key {remote_host}
+			ipv6_prefix 64
+			events 30
+			window 1m
+		}
+	}
+
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		defer
@@ -877,6 +906,16 @@ https:// {
 			key {remote_host}
 			ipv6_prefix 64
 			events 60
+			window 1m
+		}
+	}
+
+	@page_access path /access/*
+	rate_limit @page_access {
+		zone page_access_custom {
+			key {remote_host}
+			ipv6_prefix 64
+			events 30
 			window 1m
 		}
 	}

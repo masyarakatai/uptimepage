@@ -213,6 +213,7 @@ async fn logged_in_operator_cannot_touch_another_orgs_status_page() {
         .create(
             org_a,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("apage"),
                 name: "A page".into(),
                 enabled: true,
@@ -320,6 +321,7 @@ async fn non_owner_member_cannot_mutate_status_pages() {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("opage"),
                 name: "page".into(),
                 enabled: true,

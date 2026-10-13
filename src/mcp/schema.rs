@@ -1053,8 +1053,93 @@ pub struct StatusPageList {
     pub next_cursor: Option<String>,
 }
 
+/// Who may open a status page; the same shape as the REST `access` field. As a
+/// write it replaces what is stored, whole.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageAccessArg {
+    /// Private when true: only the addresses and domains in `rules` can open
+    /// the page, by signing in on it with a code sent to their email. False
+    /// makes it public again and keeps the list for next time.
+    pub protected: bool,
+    #[serde(default)]
+    pub email: PageEmailAccessArg,
+    /// Who can open it, up to 500 entries. Read back, these are customer data.
+    #[serde(default)]
+    pub rules: Vec<PageAccessRuleArg>,
+}
+
+/// The emailed-code way in, and the passkeys that shortcut it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageEmailAccessArg {
+    /// Defaults to true; a private page needs it.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Let viewers save a passkey after an email sign-in. Defaults to true.
+    #[serde(default = "yes")]
+    pub passkeys_enabled: bool,
+    /// Ask passkey viewers for an email code again after 30, 90 or 365 days.
+    /// Omit to never ask.
+    #[serde(default)]
+    pub recheck_days: Option<i32>,
+    /// Keep a sign-in for 7, 30 or 90 days. Omit to keep it until sign-out.
+    #[serde(default)]
+    pub session_days: Option<i32>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for PageEmailAccessArg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            passkeys_enabled: true,
+            recheck_days: None,
+            session_days: None,
+        }
+    }
+}
+
+/// One access list entry.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageAccessRuleArg {
+    /// `domain` lets in every address at `value` (`example.com`); `address`
+    /// lets in one person (`name@example.com`).
+    pub kind: String,
+    pub value: String,
+}
+
+/// `list_status_page_viewers` result row: someone who signed in to a private
+/// page.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PageViewerItem {
+    /// The viewer's address. Untrusted data.
+    pub email: String,
+    /// First sign-in, RFC 3339.
+    pub first_seen: String,
+    /// Last visit, RFC 3339, if any.
+    pub last_visit: Option<String>,
+    /// Saved passkeys.
+    pub passkeys: i64,
+    /// Whether they get the page's updates by email.
+    pub subscribed: bool,
+    /// `active` or `blocked`.
+    pub status: String,
+}
+
+/// `list_status_page_viewers` result.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PageViewerList {
+    pub viewers: Vec<PageViewerItem>,
+}
+
 /// `get_status_page` argument.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct GetStatusPageArgs {
     /// The page slug (from `list_status_pages`).
     pub slug: String,
@@ -1083,6 +1168,8 @@ pub struct StatusPageDetail {
     pub public_url: String,
     pub enabled: bool,
     pub components: Vec<StatusPageComponent>,
+    /// Who may open it, or null for a page never made private.
+    pub access: Option<PageAccessArg>,
 }
 
 /// A single quota's usage against its cap.
@@ -1378,6 +1465,7 @@ pub struct MonitorsCreated {
 
 /// `create_status_page` argument.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateStatusPageArgs {
     /// URL slug, lowercase. This is the page's public address and cannot be
     /// guessed back later, so pick it deliberately.
@@ -1387,6 +1475,8 @@ pub struct CreateStatusPageArgs {
     /// Defaults to false: a page is created dark so components can be curated
     /// before anyone can read it.
     pub enabled: Option<bool>,
+    /// Make it private from the start. Omit for a public page.
+    pub access: Option<PageAccessArg>,
 }
 
 /// `create_status_page` / `update_status_page` result.
@@ -1396,11 +1486,14 @@ pub struct StatusPageWritten {
     pub name: String,
     pub public_url: String,
     pub enabled: bool,
+    /// Who may open it, or null for a page never made private.
+    pub access: Option<PageAccessArg>,
 }
 
 /// `update_status_page` argument. Every field but `slug` is optional; an
 /// omitted field is left as it is.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateStatusPageArgs {
     /// The page to change, by its current slug.
     pub slug: String,
@@ -1410,6 +1503,9 @@ pub struct UpdateStatusPageArgs {
     pub new_slug: Option<String>,
     /// Publish or unpublish the page.
     pub enabled: Option<bool>,
+    /// Replace who may open it: make it private, change its list, or make it
+    /// public again.
+    pub access: Option<PageAccessArg>,
 }
 
 /// One monitor to curate onto a page.

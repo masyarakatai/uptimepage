@@ -218,25 +218,35 @@ async fn reconcile_status_pages(
 ) -> Result<Vec<Moved>> {
     let sql = format!(
         r#"WITH pool AS (
-               SELECT id, org_id, name, created_at, enabled, plan_keep AS kept
+               SELECT id, org_id, name, created_at, enabled, plan_keep AS kept,
+                      -- A private page is never made public behind the
+                      -- owner's back: without the plan feature it is held.
+                      (NOT $3 AND EXISTS (
+                          SELECT 1 FROM status_page_access a
+                          WHERE a.status_page_id = status_pages.id
+                            AND a.org_id = status_pages.org_id AND a.protected
+                      )) AS unsold
                FROM status_pages
                WHERE org_id IN ({orgs})
            ),
+           -- A page the plan does not sell is held whatever happens, so it
+           -- takes no seat and its pick decides nothing.
            pick AS (
-               SELECT coalesce(bool_or(kept), false) AS picked,
-                      count(*) > $2 AS over_cap
+               SELECT coalesce(bool_or(kept) FILTER (WHERE NOT unsold), false) AS picked,
+                      count(*) FILTER (WHERE NOT unsold) > $2 AS over_cap
                FROM pool
            ),
            ranked AS (
-               SELECT id, org_id, name, kept,
+               SELECT id, org_id, name, kept, unsold,
                       row_number() OVER (
-                          ORDER BY kept DESC, enabled DESC, created_at ASC, id ASC
+                          ORDER BY unsold ASC, kept DESC, enabled DESC, created_at ASC, id ASC
                       ) AS rank
                FROM pool
            ),
            want AS (
                SELECT r.id, r.org_id, r.name,
-                      (r.rank > $2 OR (p.picked AND p.over_cap AND NOT r.kept)) AS hold
+                      (r.unsold OR r.rank > $2
+                       OR (p.picked AND p.over_cap AND NOT r.kept)) AS hold
                FROM ranked r CROSS JOIN pick p
            )
            UPDATE status_pages sp
@@ -250,6 +260,7 @@ async fn reconcile_status_pages(
     sqlx::query_as(&sql)
         .bind(account.0)
         .bind(i64::from(plan.max_status_pages))
+        .bind(plan.private_pages_enabled)
         .fetch_all(&mut **tx)
         .await
         .context("reconcile_account: status pages")
@@ -391,14 +402,18 @@ pub async fn accounts_needing_reconcile(pool: &PgPool) -> Result<Vec<(AccountId,
                JOIN live lt ON lt.id = t.org_id AND lt.account_id = a.id
            ) tc
            CROSS JOIN LATERAL (
-               SELECT count(*) AS n, bool_or(sp.plan_hold_at IS NOT NULL) AS holds
+               SELECT count(*) AS n, bool_or(sp.plan_hold_at IS NOT NULL) AS holds,
+                      bool_or(spa.protected) AS private
                FROM status_pages sp
                JOIN live lp ON lp.id = sp.org_id AND lp.account_id = a.id
+               LEFT JOIN status_page_access spa
+                    ON spa.status_page_id = sp.id AND spa.org_id = sp.org_id
            ) pc
            WHERE coalesce(tc.holds, false) OR coalesce(pc.holds, false)
               OR tc.n > p.max_targets
               OR tc.flows > p.max_flow_checks
               OR pc.n > p.max_status_pages
+              OR (coalesce(pc.private, false) AND NOT p.private_pages_enabled)
               -- An override *replaces* a named cap, so it can put the effective
               -- ceiling below the plans row this query reads, and the reconcile
               -- that follows resolves the effective plan. Comparing only

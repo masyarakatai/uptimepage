@@ -320,7 +320,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create a status page. It is created unpublished unless you pass enabled, so its components can be curated before anyone can read it. The slug is the page's public address: it is first-come across the platform and moving it later breaks every existing link, so confirm it with the user rather than inventing one. Add monitors to it with add_status_page_components. Not read-only.",
+        description = "Create a status page. It is created unpublished unless you pass enabled, so its components can be curated before anyone can read it. The slug is the page's public address: it is first-come across the platform and moving it later breaks every existing link, so confirm it with the user rather than inventing one. Pass access with protected true to make it private: only the listed domains and addresses can open it, after signing in with a code sent to their email (Team plan). Add monitors to it with add_status_page_components. Not read-only.",
         title = "Create status page",
         annotations(
             read_only_hint = false,
@@ -342,7 +342,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Rename a status page, move it to a new slug, or publish and unpublish it. An omitted field is left alone. Changing the slug moves the public URL and breaks existing links. Not read-only; idempotent.",
+        description = "Rename a status page, move it to a new slug, publish and unpublish it, or change who may open it. An omitted field is left alone. Changing the slug moves the public URL and breaks existing links. access replaces the page's access settings and list whole: protected true makes it private to the listed domains and addresses (Team plan), and removes subscribers the list does not cover; protected false makes it public again and keeps the list. Not read-only; idempotent.",
         title = "Update status page",
         annotations(
             read_only_hint = false,

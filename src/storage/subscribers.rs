@@ -82,6 +82,49 @@ pub async fn subscribe(pool: &PgPool, new: &NewSubscriber) -> Result<Subscriber>
     Subscriber::try_from(row).map_err(Into::into)
 }
 
+/// A signed-in viewer of a private page subscribing their own address. The
+/// sign-in already proved the address, so it is verified at once.
+pub async fn subscribe_viewer(
+    pool: &PgPool,
+    page: crate::domain::PageRef,
+    viewer: Uuid,
+    email: &str,
+) -> Result<()> {
+    // A subscription from before the page went private keeps the address as
+    // it was typed; sign-in already tied it to this viewer, so reuse it.
+    let claimed = sqlx::query(
+        "UPDATE status_page_subscribers \
+         SET verified_at = COALESCE(verified_at, now()), updated_at = now() \
+         WHERE status_page_id = $1 AND org_id = $2 AND viewer_id = $3 AND channel = 'email'",
+    )
+    .bind(page.page.0)
+    .bind(page.org.0)
+    .bind(viewer)
+    .execute(pool)
+    .await
+    .context("subscribers::subscribe_viewer claimed")?;
+    if claimed.rows_affected() > 0 {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO status_page_subscribers \
+             (status_page_id, org_id, channel, target, config, verified_at, viewer_id) \
+         VALUES ($1, $2, 'email', $3, '{}'::jsonb, now(), $4) \
+         ON CONFLICT (status_page_id, channel, target) DO UPDATE SET \
+             verified_at = COALESCE(status_page_subscribers.verified_at, now()), \
+             viewer_id = EXCLUDED.viewer_id, updated_at = now() \
+         WHERE status_page_subscribers.org_id = EXCLUDED.org_id",
+    )
+    .bind(page.page.0)
+    .bind(page.org.0)
+    .bind(email)
+    .bind(viewer)
+    .execute(pool)
+    .await
+    .context("subscribers::subscribe_viewer")?;
+    Ok(())
+}
+
 /// Mark a subscriber verified. Used by the webhook confirmation-ping path,
 /// which proves URL ownership by a live 2xx rather than a mailed token.
 pub async fn mark_verified(pool: &PgPool, subscriber_id: Uuid) -> Result<()> {

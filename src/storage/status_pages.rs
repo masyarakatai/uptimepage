@@ -66,9 +66,9 @@ use crate::domain::{
 };
 use crate::error::codes;
 use crate::error::{AppError, Result};
-use crate::storage::accounts;
 use crate::storage::admin::NOT_HELD_PREDICATE;
 use crate::storage::locks::{account_lock_key, advisory_xact_lock};
+use crate::storage::{accounts, page_access};
 
 /// Outcome of [`StatusPageStore::add_component`]. The store stays free of
 /// plan/HTTP concerns; the handler maps `OverCap` to a quota 422 with the real
@@ -333,6 +333,16 @@ impl StatusPageStore for PgStatusPageStore {
             serde_json::json!({ "page_id": row.id, "slug": row.slug, "name": row.name }),
         )
         .await?;
+        if let Some(w) = &new.access {
+            page_access::settings::replace_in_tx(
+                &mut tx,
+                org,
+                StatusPageId(row.id),
+                &w.access,
+                w.actor,
+            )
+            .await?;
+        }
         tx.commit().await.map_err(db_err)?;
         Ok(Some(row.into_page()))
     }
@@ -370,6 +380,7 @@ impl StatusPageStore for PgStatusPageStore {
         // Branding `Some` replaces the display fields wholesale; `None` leaves
         // them. name/slug/enabled/locale use COALESCE so a partial update is honest.
         let b = upd.branding;
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let row: Option<PageRow> = sqlx::query_as(&format!(
             r#"UPDATE status_pages SET
                  name = COALESCE($3, name),
@@ -404,10 +415,19 @@ impl StatusPageStore for PgStatusPageStore {
         .bind(b.as_ref().and_then(|x| x.public_website_url.clone()))
         .bind(source.as_str())
         .bind(upd.public_locale.map(Locale::as_str))
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| if is_unique_violation(&e) { slug_taken() } else { db_err(e) })?;
-        Ok(row.map(PageRow::into_page))
+        let Some(row) = row else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
+        // After the page row: its lock is what serialises two edits of one page.
+        if let Some(w) = &upd.access {
+            page_access::settings::replace_in_tx(&mut tx, org, id, &w.access, w.actor).await?;
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(Some(row.into_page()))
     }
 
     async fn delete(&self, org: OrgId, id: StatusPageId, actor: Option<UserId>) -> Result<bool> {
@@ -819,6 +839,14 @@ impl InMemoryStatusPageStore {
     }
 }
 
+/// Who may open a page lives beside it in Postgres; the in-memory fixture
+/// keeps no such state, so it refuses rather than drop the write.
+fn private_pages_need_postgres() -> AppError {
+    AppError::Other(anyhow::anyhow!(
+        "private status pages need the Postgres store"
+    ))
+}
+
 #[async_trait]
 impl StatusPageStore for InMemoryStatusPageStore {
     async fn create(
@@ -829,6 +857,9 @@ impl StatusPageStore for InMemoryStatusPageStore {
         max_pages: i64,
         _actor: Option<UserId>,
     ) -> Result<Option<StatusPage>> {
+        if new.access.is_some() {
+            return Err(private_pages_need_postgres());
+        }
         let mut st = self.inner.lock().unwrap();
         if st.pages.iter().filter(|p| p.org_id == org).count() as i64 >= max_pages {
             return Ok(None); // cap hit — caller maps to a plan-named quota error
@@ -882,6 +913,9 @@ impl StatusPageStore for InMemoryStatusPageStore {
         upd: StatusPageUpdate,
         source: WriteSource,
     ) -> Result<Option<StatusPage>> {
+        if upd.access.is_some() {
+            return Err(private_pages_need_postgres());
+        }
         let mut st = self.inner.lock().unwrap();
         // Existence (in this org) before the slug check, so a foreign/missing
         // page is a 404, not a SLUG_TAKEN leak — matching the Pg UPDATE which
@@ -1248,6 +1282,7 @@ mod tests {
                     slug: "p".into(),
                     name: "P".into(),
                     enabled: true,
+                    access: None,
                 },
                 WriteSource::Api,
                 10,

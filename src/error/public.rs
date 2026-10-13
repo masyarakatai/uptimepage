@@ -31,6 +31,7 @@ pub mod codes {
     pub const BAD_REQUEST: &str = "BAD_REQUEST";
     pub const INVALID_DAYS: &str = "INVALID_DAYS";
     pub const STATUS_DATA_UNAVAILABLE: &str = "STATUS_DATA_UNAVAILABLE";
+    pub const PAGE_SIGN_IN_REQUIRED: &str = "PAGE_SIGN_IN_REQUIRED";
 }
 
 #[derive(Debug, Error)]
@@ -43,6 +44,9 @@ pub enum PublicAppError {
     BadRequest(&'static str),
     #[error("status data unavailable")]
     Unavailable,
+    /// A private page, and no session that may read it.
+    #[error("sign in required")]
+    SignInRequired,
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -61,6 +65,11 @@ impl PublicAppError {
                 "Query parameter 'days' must be between 1 and 365.",
             ),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, codes::BAD_REQUEST, msg),
+            Self::SignInRequired => (
+                StatusCode::UNAUTHORIZED,
+                codes::PAGE_SIGN_IN_REQUIRED,
+                "This status page is private. Sign in on the page to read it.",
+            ),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 codes::STATUS_DATA_UNAVAILABLE,
@@ -81,13 +90,17 @@ impl IntoResponse for PublicAppError {
             tracing::error!(error = %err, "public surface internal error");
         }
         let (status, code, message) = self.parts();
-        (
+        let mut resp = (
             status,
             Json(PublicApiError {
                 error: PublicApiErrorBody { code, message },
             }),
         )
-            .into_response()
+            .into_response();
+        if matches!(self, Self::SignInRequired) {
+            crate::public_status::access::mark_private(&mut resp);
+        }
+        resp
     }
 }
 

@@ -35,6 +35,7 @@ async fn page_asset_put_delete_write_audit_rows_and_delete_is_org_scoped() {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: common::unique_slug("aud"),
                 name: "Aud".into(),
                 enabled: true,

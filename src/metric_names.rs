@@ -89,6 +89,12 @@ pub const PASSKEY_LOGIN_REFUSED: &str = "uptimepage_passkey_login_refused_total"
 /// spec calls this a possible clone. Synced passkeys carry no counter, so
 /// they never reach this; anything here is worth looking at.
 pub const PASSKEY_COUNTER_STALLED: &str = "uptimepage_passkey_counter_stalled_total";
+/// Sign-in codes mailed for private status pages. Only listed addresses get one.
+pub const PAGE_ACCESS_CODES_SENT: &str = "uptimepage_page_access_codes_sent_total";
+/// Viewer sessions opened on private status pages, labelled `method`.
+pub const PAGE_ACCESS_SIGN_INS: &str = "uptimepage_page_access_sign_ins_total";
+/// Private status page sign-ins refused, labelled `reason`.
+pub const PAGE_ACCESS_SIGN_IN_REFUSED: &str = "uptimepage_page_access_sign_in_refused_total";
 pub const ORGS_EMPTIED: &str = "uptimepage_orgs_emptied_total";
 pub const HTTP_REQUESTS_TOTAL: &str = "uptimepage_http_requests_total";
 pub const HTTP_REQUEST_DURATION_MS: &str = "uptimepage_http_request_duration_ms";

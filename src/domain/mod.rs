@@ -23,6 +23,7 @@ pub mod monitor_share;
 pub mod notification_channel;
 pub mod on_call;
 pub mod org;
+pub mod page_access;
 pub mod page_asset;
 pub mod preferences;
 pub mod public;
@@ -96,6 +97,11 @@ pub use on_call::{
 pub use org::{
     AccountId, BrandingError, OrgId, Organization, PublicOrgBranding, PublicStyle, SlugError,
     page_display_name, validate_slug,
+};
+pub use page_access::{
+    AccessError, AccessEventKind, AccessEventMethod, AccessRule, AccessRuleKind, AccessSpec,
+    AccessWrite, EmailAccessSpec, MAX_ACCESS_RULES, PageAccess, PageAccessSettings,
+    PageSessionMethod, RECHECK_DAY_CHOICES, RuleError, SESSION_DAY_CHOICES, normalize_email,
 };
 pub use page_asset::{AssetSlot, SlotPolicy};
 pub use preferences::{DisplayPrefs, TimeFormat};

@@ -15,6 +15,7 @@ use crate::error::AppError;
 use crate::public_status::urls::{
     public_base, public_host_suffix, public_logo_url, public_status_url,
 };
+use crate::request::CurrentUser;
 use crate::request::auth::CurrentOrg;
 use crate::templates::filters;
 use crate::web::error::WebResult;
@@ -41,6 +42,26 @@ pub struct PageRow {
     /// subscribers hear nothing. `enabled` is untouched underneath, which is
     /// what it returns to.
     pub plan_held: bool,
+    /// Only the people on its access list can open it.
+    pub private: bool,
+    /// Viewers not blocked, for a private page's card.
+    pub viewers: i64,
+}
+
+impl PageRow {
+    /// What the page is, or returns to once its plan covers it again.
+    pub fn visibility(&self) -> &'static str {
+        visibility(self.enabled, self.private)
+    }
+}
+
+/// The three states the rail offers, from the two stored flags.
+fn visibility(enabled: bool, private: bool) -> &'static str {
+    match (enabled, private) {
+        (false, _) => "off",
+        (true, true) => "private",
+        (true, false) => "public",
+    }
 }
 
 #[derive(Template, WebTemplate)]
@@ -70,6 +91,13 @@ async fn build_rows(state: &AppState, org: OrgId) -> WebResult<Vec<PageRow>> {
             .collect(),
         None => std::collections::HashMap::new(),
     };
+    let (access, viewers) = match state.db.as_ref() {
+        Some(pool) => (
+            crate::storage::page_access::settings::load_for_org(pool, org).await?,
+            crate::storage::page_access::viewers::counts_for_org(pool, org).await?,
+        ),
+        None => Default::default(),
+    };
     Ok(pages
         .into_iter()
         .map(|p| {
@@ -79,6 +107,8 @@ async fn build_rows(state: &AppState, org: OrgId) -> WebResult<Vec<PageRow>> {
             let subscriber_count = counts.get(&p.id.0).copied().unwrap_or(0);
             PageRow {
                 id: p.id.to_string(),
+                private: access.get(&p.id).is_some_and(|a| a.is_private()),
+                viewers: viewers.get(&p.id).map_or(0, |c| c.active),
                 name: p.name,
                 slug: p.slug,
                 enabled: p.enabled,
@@ -231,10 +261,20 @@ pub struct PageEditorPage {
     pub components: Vec<ComponentRow>,
     /// Confirmed + pending subscribers, newest first.
     pub subscribers: Vec<SubscriberView>,
+    /// `public`, `private` or `off`, as the rail's first legend reads.
+    pub visibility: &'static str,
+    /// `Some` when the plan does not include private pages.
+    pub lock: Option<crate::web::views::team_lock::TeamLock>,
+    /// The stored access settings and list, for the access tab's script.
+    pub access_json: String,
+    pub rule_count: usize,
+    pub viewers_active: i64,
+    pub viewers_blocked: i64,
 }
 
 pub async fn page_editor(
     State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
     org: Result<CurrentOrg, AppError>,
     Path(id): Path<Uuid>,
 ) -> WebResult<Response> {
@@ -254,7 +294,34 @@ pub async fn page_editor(
             .into_response());
     };
 
-    let white_label = state.quotas.limit_for_org(org).await?.white_label_enabled;
+    let plan = state.quotas.limit_for_org(org).await?;
+    let white_label = plan.white_label_enabled;
+    let lock = match (plan.private_pages_enabled, state.db.as_ref()) {
+        (true, _) => None,
+        (false, Some(pool)) => Some(crate::web::views::team_lock::TeamLock {
+            payer: crate::storage::accounts::pays_for_org(pool, user, org).await?,
+            teaser: true,
+        }),
+        (false, None) => Some(crate::web::views::team_lock::TeamLock {
+            payer: false,
+            teaser: true,
+        }),
+    };
+    let (access, counts) = match state.db.as_ref() {
+        Some(pool) => (
+            crate::storage::page_access::settings::load(
+                pool,
+                crate::domain::PageRef { page: page_id, org },
+            )
+            .await?
+            .unwrap_or_default(),
+            crate::storage::page_access::viewers::counts_for_page(pool, org, page_id).await?,
+        ),
+        None => Default::default(),
+    };
+    let visibility = visibility(page.enabled, access.is_private());
+    let access_json = serde_json::to_string(&crate::domain::AccessSpec::from(&access))
+        .map_err(|e| AppError::Other(anyhow::anyhow!("encode page access: {e}")))?;
 
     // On-page components (curated, in order) + every other org monitor.
     let curated = state
@@ -453,6 +520,12 @@ pub async fn page_editor(
         max_logo_dim_px: cfg.max_logo_dimension_px,
         components: rows,
         subscribers,
+        visibility,
+        lock,
+        access_json,
+        rule_count: access.rules.len(),
+        viewers_active: counts.active,
+        viewers_blocked: counts.blocked,
     }
     .into_response())
 }
@@ -522,6 +595,12 @@ mod tests {
                 detail_link: false,
             }],
             subscribers: Vec::new(),
+            visibility: "public",
+            lock: None,
+            access_json: r#"{"protected":false,"email":{"enabled":true,"passkeys_enabled":true,"recheck_days":null,"session_days":null},"rules":[]}"#.into(),
+            rule_count: 0,
+            viewers_active: 0,
+            viewers_blocked: 0,
         }
     }
 
@@ -608,15 +687,20 @@ mod tests {
         assert!(html.contains(r#"data-original="acme""#), "{html}");
     }
 
-    /// Publish state is a rail choice now, not a checkbox buried in the form.
+    /// Who can open the page is a rail choice, not a checkbox buried in the form.
     #[test]
-    fn the_rail_offers_publish_and_draft() {
+    fn the_rail_offers_public_private_and_off() {
         let html = editor(None).render().unwrap();
         assert!(
-            html.contains(r#"name="enabled" value="1" checked"#),
+            html.contains(r#"name="visibility" value="public" checked"#),
             "{html}"
         );
-        assert!(html.contains(r#"name="enabled" value="0""#), "{html}");
+        for v in ["private", "off"] {
+            assert!(
+                html.contains(&format!(r#"name="visibility" value="{v}""#)),
+                "{v}"
+            );
+        }
         assert!(!html.contains(r#"id="f-enabled""#), "{html}");
     }
 
@@ -680,7 +764,53 @@ mod tests {
             url: format!("https://{name}.uptimepage.dev"),
             subscriber_count: 1,
             plan_held: false,
+            private: false,
+            viewers: 0,
         }
+    }
+
+    #[test]
+    fn a_private_page_card_names_viewers_and_what_a_hold_returns_it_to() {
+        let mut private = page_row("weber");
+        private.private = true;
+        private.viewers = 3;
+        let mut held = page_row("lindner");
+        held.private = true;
+        held.plan_held = true;
+        let html = PagesPartial {
+            rows: vec![private, held, page_row("acme")],
+            at_limit: false,
+            max_pages: None,
+        }
+        .render()
+        .unwrap();
+        assert!(html.contains("status-badge--private"), "{html}");
+        assert!(html.contains("3 viewers"), "{html}");
+        assert!(
+            html.contains("back to private when the plan covers it"),
+            "{html}"
+        );
+        assert!(html.contains(">public</span>"), "{html}");
+    }
+
+    #[test]
+    fn the_editor_has_an_access_tab_and_locks_private_below_team() {
+        let open = editor(None).render().unwrap();
+        assert!(open.contains(r#"role="tablist""#));
+        assert!(open.contains(r#"data-panel="access""#));
+        assert!(open.contains("page_access_editor"));
+
+        let mut locked = editor(None);
+        locked.lock = Some(crate::web::views::team_lock::TeamLock {
+            payer: true,
+            teaser: true,
+        });
+        let html = locked.render().unwrap();
+        assert!(
+            !html.contains(r#"value="private""#),
+            "no private radio below Team"
+        );
+        assert!(html.contains("on the Team plan"));
     }
 
     #[test]

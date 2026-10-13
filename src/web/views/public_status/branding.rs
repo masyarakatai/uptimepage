@@ -162,7 +162,7 @@ pub async fn resolve_branding(
 /// A tenant subdomain serves the status page at its root, which is the URL
 /// customers hand out, so that is the one to link and to declare canonical.
 /// A path-based deploy keeps `/status`, its root being the operator dashboard.
-pub(super) fn status_home(state: &AppState, headers: &HeaderMap) -> &'static str {
+pub(crate) fn status_home(state: &AppState, headers: &HeaderMap) -> &'static str {
     if is_subdomain_public_request(&state.request_state(), headers) {
         "/"
     } else {

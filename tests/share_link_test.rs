@@ -423,6 +423,7 @@ async fn page_with_link(state: &AppState, slug: &str) -> (StatusPageId, Uuid, St
         .create(
             org(),
             NewStatusPage {
+                access: None,
                 slug: slug.into(),
                 name: slug.into(),
                 enabled: true,

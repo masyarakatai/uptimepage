@@ -354,6 +354,7 @@ async fn two_tenants_never_see_each_others_data() {
         .create(
             a.org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("sp-a"),
                 name: "a-page".into(),
                 enabled: true,
@@ -369,6 +370,7 @@ async fn two_tenants_never_see_each_others_data() {
         .create(
             b.org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("sp-b"),
                 name: "b-page".into(),
                 enabled: true,

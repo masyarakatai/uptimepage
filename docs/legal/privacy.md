@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Last updated:** 2026-09-29
+**Last updated:** 2026-10-13
 
 This Privacy Policy explains how the uptimepage service ("we", "us") collects and processes personal data. It is intended to satisfy our obligations under the EU General Data Protection Regulation (GDPR) and similar laws.
 
@@ -78,6 +78,8 @@ We do **not** use third-party analytics services that export your data (no Googl
 
 **Status page subscribers:** if you subscribe to a status page run by one of our customers, that customer decides how your data is used and is its controller; we process it on their behalf. We store your email address or webhook URL, when you confirmed the subscription, and a record of each notification we send you. We use it only to send that page's incident and maintenance updates. Emails go out through Resend. Every email carries an unsubscribe link, and an address that bounces or reports a message as spam is removed. For any other request about your data, contact the organisation that runs the page, or write to us and we will pass it on.
 
+**Private status page viewers:** a customer can make a status page private, so that only the email addresses and domains they list can open it. If you sign in to such a page, that customer is the controller of your data and we process it on their behalf, as for subscribers above. We store your email address, when you last proved it with a code, when you last visited and which days you opened the page, any passkey you save for the page, and a record of each sign-in attempt with a hashed IP address and browser. When you ask for a code we check your address against the page's list; an address that is not on it gets no mail, and we keep only that an attempt was made, not the address. The customer sees the addresses that signed in, when, and their sign-in history, and can block an address at any time. For any other request about your data, contact the organisation that runs the page, or write to us and we will pass it on.
+
 We do not engage in automated decision-making with significant effects on you (no profiling, no scoring).
 
 ## 4. How Long We Keep It
@@ -103,6 +105,10 @@ We do not engage in automated decision-making with significant effects on you (n
 | One-time codes for linking an account, and Pushover, Slack and Discord link offers | 8 days |
 | Status page subscriptions (email address or webhook URL) | Until you unsubscribe, your address bounces, or the page owner removes you or deletes the page. Unconfirmed ones are deleted once the confirmation link expires |
 | Status page notification records | 30 days |
+| Private status page viewers (email address, passkeys, block) | Until the page owner deletes the page |
+| Private status page sign-in history and visit days | 1 year |
+| Private status page sessions | Until you sign out or the period the page owner set ends, and at most 1 year after your last visit |
+| Private status page sign-in codes | 7 days |
 | Subscription records and billing history (plan changes and why) | Until account deletion |
 | Payment provider event IDs (to ignore duplicate deliveries) | 30 days |
 | Server access logs | 30 days |

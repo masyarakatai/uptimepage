@@ -9,7 +9,7 @@ use askama_web::WebTemplate;
 use axum::extract::{Form, Query, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -20,6 +20,7 @@ use crate::domain::{NewSubscriber, PageRef, SubscriberChannel};
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::http_outbound::post_bytes_with_headers;
 use crate::i18n::Tr;
+use crate::public_status::access::{Access, mark_private, same_origin};
 use crate::request::host::resolve_status_page;
 use crate::storage::status_pages::{
     self, PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
@@ -59,6 +60,19 @@ impl SubscribeNotice {
 
     fn bad(tr: Tr, status: StatusCode, heading: &str, message: &str) -> Response {
         (status, Self::new(tr, false, heading, message, "")).into_response()
+    }
+
+    fn subscribed_as(tr: Tr, email: &str) -> Response {
+        let mut resp = SubscribeNotice {
+            tr,
+            ok: true,
+            heading: tr.t("notice-subscribed"),
+            message: tr.t_args("notice-subscribed-as-body", [("email", email.into())]),
+            code: String::new(),
+        }
+        .into_response();
+        mark_private(&mut resp);
+        resp
     }
 }
 
@@ -130,6 +144,23 @@ pub async fn subscribe(
     let Some(pool) = state.db.as_ref() else {
         return Ok(invalid_page(tr));
     };
+
+    // On a private page only a signed-in viewer subscribes, as themselves.
+    match state.page_gate.check(Some(pool), page, &headers).await {
+        Ok(Access::Public) => {}
+        Ok(Access::Viewer(viewer)) => {
+            if !same_origin(&headers) {
+                return Ok(StatusCode::FORBIDDEN.into_response());
+            }
+            subscribers::subscribe_viewer(pool, page, viewer.id, &viewer.email).await?;
+            return Ok(SubscribeNotice::subscribed_as(tr, &viewer.email));
+        }
+        Ok(Access::SignInRequired(_)) => {
+            let home = crate::web::views::public_status::status_home_for(&state, &headers);
+            return Ok(Redirect::to(home).into_response());
+        }
+        Err(_) => return Ok(invalid_page(tr)),
+    }
 
     if form.channel == "webhook" {
         return subscribe_webhook(&state, pool, page, form.url.trim(), tr).await;

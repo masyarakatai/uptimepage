@@ -253,6 +253,12 @@ pub const BILLING_PROVIDER_REFUSED: &str = "BILLING_PROVIDER_REFUSED";
 pub const BILLING_PROVIDER_UNREACHABLE: &str = "BILLING_PROVIDER_UNREACHABLE";
 // Public status-page settings + logo upload.
 pub const BRANDING_INVALID: &str = "BRANDING_INVALID";
+/// A private status page's settings or list did not validate.
+pub const ACCESS_INVALID: &str = "ACCESS_INVALID";
+/// The plan does not include private status pages (403).
+pub const PRIVATE_PAGES_DISABLED: &str = "PRIVATE_PAGES_DISABLED";
+/// No such viewer on this page (404).
+pub const VIEWER_NOT_FOUND: &str = "VIEWER_NOT_FOUND";
 pub const LOGO_MISSING: &str = "LOGO_MISSING";
 pub const LOGO_TYPE_INVALID: &str = "LOGO_TYPE_INVALID";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";

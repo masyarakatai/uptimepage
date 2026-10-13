@@ -68,6 +68,7 @@ fn every_purge_window_the_nightly_job_binds_rejects_zero() {
         |c: &mut AppConfig| c.retention.quota_events_days = 0,
         |c: &mut AppConfig| c.retention.audit_log_days = 0,
         |c: &mut AppConfig| c.retention.mcp_audit_days = 0,
+        |c: &mut AppConfig| c.retention.page_access_events_days = 0,
         |c: &mut AppConfig| c.auth.session.idle_timeout_days = 0,
         |c: &mut AppConfig| c.tenancy.deletion_grace_period_days = 0,
     ] {

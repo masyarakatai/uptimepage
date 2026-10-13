@@ -162,6 +162,7 @@ quota_events_days = 90
 audit_log_days = 730              # 2 years
 mcp_audit_days = 730              # 2 years
 api_tokens_post_expiry_days = 30
+page_access_events_days = 365     # private status page sign-ins and visits
 
 # `base_domain` is required when tenancy.subdomain_public_routes = true; the
 # startup assertion refuses to boot without it (would let the slug extractor

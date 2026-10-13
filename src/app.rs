@@ -235,6 +235,11 @@ pub struct AppState {
     /// Keys the hash app accounts are stored and matched by, so a leaked row
     /// names no Telegram or Pushover account.
     pub app_link_secret: String,
+    /// Keys a private page viewer's personal feed link. Empty turns those
+    /// links off.
+    pub page_feed_secret: String,
+    /// Who may read a private status page; shared by every surface of it.
+    pub page_gate: Arc<crate::public_status::access::PageGate>,
     /// The paid lifecycle behind its provider. `None` until
     /// [`Self::with_billing_checkout_secret`] builds it, and for good when no
     /// provider is configured, which leaves every billing surface absent.
@@ -529,6 +534,8 @@ impl AppState {
             alert_channel_stop_secret: String::new(),
             incident_ack_secret: String::new(),
             app_link_secret: String::new(),
+            page_feed_secret: String::new(),
+            page_gate: Arc::new(crate::public_status::access::PageGate::default()),
             billing: None,
         }
     }
@@ -576,6 +583,12 @@ impl AppState {
     /// Set the persisted secret that keys incident acknowledge links.
     pub fn with_incident_ack_secret(mut self, secret: String) -> Self {
         self.incident_ack_secret = secret;
+        self
+    }
+
+    /// Set the persisted secret that keys a private page viewer's feed link.
+    pub fn with_page_feed_secret(mut self, secret: String) -> Self {
+        self.page_feed_secret = secret;
         self
     }
 

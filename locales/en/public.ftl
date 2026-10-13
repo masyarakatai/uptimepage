@@ -244,3 +244,54 @@ email-view-page-button = View status page
 email-unsubscribe = Unsubscribe
 email-unsubscribe-text = Unsubscribe:
 email-footnote = You're receiving this because you subscribed to { $page }. { $unsubscribe }.
+
+## Private page sign-in
+
+access-title = This page is private
+access-lead = Sign in with your work email to see the status of { $page }.
+access-email-label = Email address
+access-send = Email me a code
+access-or = or
+access-passkey = Sign in with a passkey
+access-fine = If this address can open the page, a code is on its way. Nothing is sent otherwise.
+access-check-title = Check your inbox
+access-sent = If { $email } can open this page, we sent it a code. It works once and expires in { $minutes } minutes.
+access-code-label = Code
+access-sign-in = Sign in
+access-one-try = One try. The link in the same email still works if it fails.
+access-again = Send another
+access-other = Use a different email
+access-no-mail = No email after a few minutes? Ask whoever shared this page with you to check that your address is on the list.
+access-pk-title = Skip the code next time?
+access-pk-lead = Save a passkey in your password manager or on this device. Next time you sign in with it and no email is needed.
+access-pk-save = Save a passkey
+access-pk-skip = Not now
+access-pk-failed = That passkey could not be saved. You are still signed in.
+access-ref-title = That code did not work
+access-ref-lead = Each code works once. Ask for a new one, or use the link in the same email.
+access-ref-again = Send a new code
+access-confirm-title = Open { $page }
+access-confirm-lead = Continue as { $email }?
+access-confirm-button = Continue
+access-invalid-title = That link did not work
+access-invalid-lead = It was used, has expired, or a newer one was sent. Ask for a new code.
+access-passkey-refused = That passkey did not work here. Sign in with your email instead.
+access-passkey-recheck = It has been a while. Confirm your email once more to keep using your passkey.
+access-bad-email = Enter your email address.
+access-bad-code = That is not a code. Codes are 6 letters and digits; nothing was used up, so try again.
+access-signed-as = signed in as
+access-sign-out = sign out
+subscribe-as-lead = Get an email when an incident starts, changes or ends.
+subscribe-as-note = Stops on its own if you lose access to this page.
+notice-subscribed-as-body = Updates for this page now go to { $email }.
+
+## Private page sign-in email
+
+email-access-subject = Your code for { $page }
+email-access-heading = Sign in
+email-access-preheader = One-time code, good for { $minutes } minutes.
+email-access-lead = Here is your code to open { $page }. Enter it in the tab you started from:
+email-access-link = Or open the page from this email:
+email-access-button = Open { $page }
+email-access-expiry = The code and the link expire in { $minutes } minutes and work once.
+email-access-not-you = If you didn't ask to open this page, you can ignore this message.

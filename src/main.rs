@@ -520,6 +520,13 @@ async fn main() -> Result<()> {
     )
     .await
     .map_err(|e| AppError::Other(anyhow::anyhow!("app link secret: {e}")))?;
+    let page_feed_secret = uptimepage::storage::app_secrets::ensure_secret(
+        &pg_pool_for_stores,
+        cipher.as_deref(),
+        "page_feed",
+    )
+    .await
+    .map_err(|e| AppError::Other(anyhow::anyhow!("page feed secret: {e}")))?;
     let org_directory: Arc<dyn uptimepage::storage::orgs::OrgDirectory> = Arc::new(
         uptimepage::storage::orgs::PgOrgDirectory::new(pg_pool_for_stores.clone()),
     );
@@ -702,6 +709,14 @@ async fn main() -> Result<()> {
         uptimepage::storage::passkeys::purge_expired,
     ));
 
+    let page_access_cleanup_handle: JoinHandle<()> = tokio::spawn(run_purge_loop(
+        pg_pool_for_stores.clone(),
+        root.clone(),
+        Duration::from_secs(5 * 60),
+        "page_access_cleanup",
+        uptimepage::storage::page_access::purge_spent,
+    ));
+
     let channel_verification_cleanup_handle: JoinHandle<()> = tokio::spawn(run_purge_loop(
         pg_pool_for_stores.clone(),
         root.clone(),
@@ -832,6 +847,7 @@ async fn main() -> Result<()> {
         .with_subscription_unsubscribe_secret(unsubscribe_secret)
         .with_alert_channel_stop_secret(alert_channel_stop_secret)
         .with_incident_ack_secret(incident_ack_secret)
+        .with_page_feed_secret(page_feed_secret)
         .with_app_link_secret(app_link_secret)
         .with_billing_checkout_secret(billing_checkout_secret)
         .with_shutdown(root.clone());
@@ -1081,6 +1097,7 @@ async fn main() -> Result<()> {
             invitation_purge_handle,
             oauth_state_cleanup_handle,
             webauthn_state_cleanup_handle,
+            page_access_cleanup_handle,
             channel_verification_cleanup_handle,
             subscriber_dispatch_handle,
             subscriber_token_cleanup_handle,

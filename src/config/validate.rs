@@ -107,6 +107,10 @@ impl AppConfig {
             (self.retention.audit_log_days, "retention.audit_log_days"),
             (self.retention.mcp_audit_days, "retention.mcp_audit_days"),
             (
+                self.retention.page_access_events_days,
+                "retention.page_access_events_days",
+            ),
+            (
                 self.auth.session.idle_timeout_days,
                 "auth.session.idle_timeout_days",
             ),

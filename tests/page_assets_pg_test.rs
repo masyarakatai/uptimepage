@@ -42,6 +42,7 @@ async fn page_asset_roundtrip_live_pg() {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("pa-page"),
                 name: "P".into(),
                 enabled: true,

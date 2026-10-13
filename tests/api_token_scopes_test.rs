@@ -406,6 +406,7 @@ async fn status_page_settings_require_status_page_scope() {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("sp-page"),
                 name: "SP".into(),
                 enabled: true,

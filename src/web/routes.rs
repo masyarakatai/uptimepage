@@ -339,6 +339,31 @@ pub fn routes(state: AppState) -> Router {
 
     if cfg.tenancy.public_routes_active() {
         r = r
+            // Signing in to a private page, on that page's host.
+            .route("/access/request", post(views::page_access::request_code))
+            .route("/access/code", post(views::page_access::submit_code))
+            .route(
+                "/access/verify",
+                get(views::page_access::verify_landing).post(views::page_access::verify_confirm),
+            )
+            .route("/access/sign-out", post(views::page_access::sign_out))
+            .route("/access/passkey", get(views::page_access::passkey_offer))
+            .route(
+                "/access/passkey/register/start",
+                post(views::page_access::register_start),
+            )
+            .route(
+                "/access/passkey/register/finish",
+                post(views::page_access::register_finish),
+            )
+            .route(
+                "/access/passkey/login/start",
+                post(views::page_access::login_start),
+            )
+            .route(
+                "/access/passkey/login/finish",
+                post(views::page_access::login_finish),
+            )
             .route("/status", get(views::public_status::status_path))
             .route("/status/incidents", get(views::public_status::archive))
             .route(

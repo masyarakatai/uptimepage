@@ -86,6 +86,8 @@ pub struct UsageFeatures {
     pub white_label_enabled: bool,
     pub sms_alerts_enabled: bool,
     pub incident_narration_enabled: bool,
+    /// Pages only the people on their access list can open.
+    pub private_pages_enabled: bool,
     pub max_flow_checks: i32,
     /// Steps one flow monitor may declare on this plan.
     pub max_flow_steps: i32,
@@ -181,6 +183,7 @@ pub async fn get_org_usage(
             white_label_enabled: p.white_label_enabled,
             sms_alerts_enabled: p.sms_alerts_enabled,
             incident_narration_enabled: p.incident_narration_enabled,
+            private_pages_enabled: p.private_pages_enabled,
             max_flow_checks: p.max_flow_checks,
             max_flow_steps: crate::domain::FlowCheck::allowed_steps(p.max_flow_steps) as i32,
             evidence_days: p.evidence_days,

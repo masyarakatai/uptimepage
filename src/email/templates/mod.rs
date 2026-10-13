@@ -10,6 +10,7 @@ pub mod incident_alert;
 pub mod invitation;
 pub mod layout;
 pub mod magic_link;
+pub mod page_access_code;
 pub mod subscriber_confirm;
 pub mod subscriber_incident;
 pub mod subscriber_maintenance;

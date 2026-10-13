@@ -5,7 +5,8 @@
 // Zones that also listen for sm:poll-resume refetch once on return.
 //
 // [data-reload-on-404] zones reload once their own endpoint is gone — revoked
-// share token, deleted monitor, unpublished page.
+// share token, deleted monitor, unpublished page — or answers 401, a private
+// page this browser may no longer read.
 //
 // Not an hx-trigger filter or an hx-on attribute: htmx compiles both with
 // Function(), which the status-page CSP forbids, and drops a filter it can't
@@ -29,7 +30,8 @@
     // poll, so they'd sit on a deleted monitor forever. The server already
     // renders the right page. The pause guard keeps this to visible tabs.
     document.body.addEventListener("htmx:responseError", (ev) => {
-        if (ev.detail?.xhr?.status !== 404) return;
+        const status = ev.detail?.xhr?.status;
+        if (status !== 404 && status !== 401) return;
         if (ev.detail.elt?.matches?.("[data-reload-on-404]")) location.reload();
     });
 })();

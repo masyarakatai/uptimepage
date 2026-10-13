@@ -33,6 +33,7 @@ use common::{default_http_check, make_user, pg_pool_from_env, unique_slug};
 
 fn page(slug: &str) -> NewStatusPage {
     NewStatusPage {
+        access: None,
         slug: slug.into(),
         name: "P".into(),
         enabled: true,

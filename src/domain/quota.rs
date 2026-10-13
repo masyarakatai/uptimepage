@@ -59,6 +59,8 @@ pub struct Plan {
     pub sms_alerts_enabled: bool,
     pub incident_narration_enabled: bool,
     pub on_call_enabled: bool,
+    /// Pages only the people on their access list can open.
+    pub private_pages_enabled: bool,
     /// Cap on browser-flow monitors; 0 both disables the kind and gates it.
     pub max_flow_checks: i32,
     /// Steps one flow monitor may declare, clamped to the engine ceiling.

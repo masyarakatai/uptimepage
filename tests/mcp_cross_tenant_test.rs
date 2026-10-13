@@ -894,6 +894,7 @@ async fn seed_page(pool: &PgPool, org: OrgId, slug: &str) -> StatusPageId {
         .create(
             org,
             NewStatusPage {
+                access: None,
                 slug: slug.into(),
                 name: SEEDED_PAGE.into(),
                 enabled: true,
@@ -1349,4 +1350,176 @@ async fn a_connector_cannot_create_past_the_plans_page_cap() {
         .await
         .unwrap();
     assert_eq!(count, i64::from(max));
+}
+
+/// A page held because its plan lost private pages stays editable when its
+/// access comes back unchanged, and no other page can be made private.
+#[tokio::test]
+#[ignore]
+async fn a_held_private_page_stays_editable() {
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    // SaaS, so the plan decides, and set before anything resolves it.
+    let app = build_saas_router_with_pg_cfg(pool.clone(), |cfg| {
+        cfg.mcp.enabled = true;
+        cfg.marketing.enabled = true;
+    })
+    .await;
+    let (org, user) = seed_org(&pool, "mcpheld").await;
+    sqlx::query(
+        "UPDATE accounts SET plan_id = 'pro' \
+         WHERE id = (SELECT account_id FROM organizations WHERE id = $1)",
+    )
+    .bind(org.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mcp = connector(app, &pool, user, org, &["full_access"]).await;
+    let (held, open) = (unique_slug("mcpheld"), unique_slug("mcpopen"));
+    seed_page(&pool, org, &open).await;
+    let held_id = seed_page(&pool, org, &held).await;
+    // Made private while the plan still had private pages, then held.
+    sqlx::query(
+        "WITH h AS (UPDATE status_pages SET plan_hold_at = now() WHERE id = $1), \
+              a AS (INSERT INTO status_page_access (status_page_id, org_id, protected) \
+                    VALUES ($1, $2, true)) \
+         INSERT INTO status_page_access_rules (status_page_id, org_id, kind, value) \
+         VALUES ($1, $2, 'domain', 'dealer.example')",
+    )
+    .bind(held_id.0)
+    .bind(org.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let access =
+        json!({ "protected": true, "rules": [{ "kind": "domain", "value": "dealer.example" }] });
+
+    let renamed = mcp
+        .call(
+            "update_status_page",
+            json!({ "slug": held, "name": "Weber Partner", "access": access }),
+        )
+        .await;
+    assert_eq!(error_code(&renamed), None, "{renamed}");
+    assert_eq!(
+        renamed["result"]["structuredContent"]["access"]["protected"],
+        true
+    );
+
+    let refused = mcp
+        .call(
+            "update_status_page",
+            json!({ "slug": open, "access": access }),
+        )
+        .await;
+    assert_eq!(
+        error_code(&refused).as_deref(),
+        Some("invalid_argument"),
+        "{refused}"
+    );
+    let (private,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM status_page_access a JOIN status_pages p ON p.id = a.status_page_id \
+         WHERE p.slug = $1 AND a.protected",
+    )
+    .bind(&open)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(private, 0);
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_page_is_made_private_and_its_viewers_listed() {
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    let (mcp, org_a, org_b) = connect(&pool).await;
+    let slug = unique_slug("mcppriv");
+
+    let refused = mcp
+        .call(
+            "create_status_page",
+            json!({ "slug": slug, "name": "Weber", "access": {
+                "protected": true, "rules": [{ "kind": "team", "value": "dealer.example" }] } }),
+        )
+        .await;
+    assert_eq!(
+        error_code(&refused).as_deref(),
+        Some("invalid_argument"),
+        "{refused}"
+    );
+    let empty = mcp
+        .call(
+            "create_status_page",
+            json!({ "slug": slug, "name": "Weber", "access": { "protected": true } }),
+        )
+        .await;
+    assert_eq!(
+        error_code(&empty).as_deref(),
+        Some("invalid_argument"),
+        "{empty}"
+    );
+    assert!(page_row(&pool, &slug).await.is_none());
+
+    let created = mcp
+        .call(
+            "create_status_page",
+            json!({ "slug": slug, "name": "Weber", "access": {
+                "protected": true, "rules": [{ "kind": "domain", "value": "Dealer.example" }] } }),
+        )
+        .await;
+    assert_eq!(error_code(&created), None, "{created}");
+    let access = &created["result"]["structuredContent"]["access"];
+    assert_eq!(access["protected"], true);
+    assert_eq!(access["rules"][0]["value"], "dealer.example");
+
+    let (page,): (Uuid,) = sqlx::query_as("SELECT id FROM status_pages WHERE slug = $1")
+        .bind(&slug)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    uptimepage::storage::page_access::viewers::record_verified(
+        &pool,
+        uptimepage::domain::PageRef {
+            page: StatusPageId(page),
+            org: org_a,
+        },
+        "anna@dealer.example",
+    )
+    .await
+    .unwrap();
+    let listed = mcp
+        .call("list_status_page_viewers", json!({ "slug": slug }))
+        .await;
+    assert_eq!(error_code(&listed), None, "{listed}");
+    let viewers = &listed["result"]["structuredContent"]["viewers"];
+    assert_eq!(viewers[0]["email"], "anna@dealer.example");
+    assert_eq!(viewers[0]["status"], "active");
+
+    let opened = mcp
+        .call(
+            "update_status_page",
+            json!({ "slug": slug, "access": { "protected": false,
+                    "rules": [{ "kind": "domain", "value": "dealer.example" }] } }),
+        )
+        .await;
+    assert_eq!(error_code(&opened), None, "{opened}");
+    assert_eq!(
+        opened["result"]["structuredContent"]["access"]["protected"],
+        false
+    );
+
+    // Another org's page is not there to list.
+    let other_slug = unique_slug("mcpprivb");
+    seed_page(&pool, org_b, &other_slug).await;
+    let foreign = mcp
+        .call("list_status_page_viewers", json!({ "slug": other_slug }))
+        .await;
+    assert_eq!(
+        error_code(&foreign).as_deref(),
+        Some("not_found"),
+        "{foreign}"
+    );
 }

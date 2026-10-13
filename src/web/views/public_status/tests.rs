@@ -83,6 +83,7 @@ fn sample_branding() -> BrandingView {
 fn full_page_renders_chrome_and_components() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -281,6 +282,7 @@ fn empty_page_renders_with_zero_components() {
     p.groups.clear();
     let view = build_view(&p, &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -320,6 +322,7 @@ fn active_incident_banner_renders_when_present() {
     });
     let view = build_view(&p, &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -346,6 +349,7 @@ fn maintenance_card_renders_when_present() {
     });
     let view = build_view(&p, &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -438,6 +442,7 @@ fn every_status_label_has_a_message_in_every_locale() {
 fn german_page_renders_german_chrome() {
     let tr = Tr::new(crate::domain::Locale::De);
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr,
         view: build_view(&sample_page(), &[], &Default::default(), tr),
         branding: sample_branding(),
@@ -545,7 +550,7 @@ fn incident_detail_renders() {
         branding: sample_branding(),
         incident: detail,
         generated_at: Utc::now(),
-        rss_url: RSS_URL,
+        reader: Reader::default(),
         og: OgMeta::default(),
     }
     .render()
@@ -567,7 +572,7 @@ fn a_recovering_incident_reads_as_monitoring_without_the_ongoing_badge() {
             branding: sample_branding(),
             incident: IncidentDetailView::from_incident(inc, Utc::now(), Tr::default()),
             generated_at: Utc::now(),
-            rss_url: RSS_URL,
+            reader: Reader::default(),
             og: OgMeta::default(),
         }
         .render()
@@ -603,7 +608,7 @@ fn incident_detail_renders_published_postmortem() {
         branding: sample_branding(),
         incident: IncidentDetailView::from_incident(&inc, Utc::now(), Tr::default()),
         generated_at: Utc::now(),
-        rss_url: RSS_URL,
+        reader: Reader::default(),
         og: OgMeta::default(),
     }
     .render()
@@ -620,7 +625,7 @@ fn incident_detail_renders_published_postmortem() {
         branding: sample_branding(),
         incident: IncidentDetailView::from_incident(&plain, Utc::now(), Tr::default()),
         generated_at: Utc::now(),
-        rss_url: RSS_URL,
+        reader: Reader::default(),
         og: OgMeta::default(),
     }
     .render()
@@ -724,6 +729,7 @@ fn branding_renders_logo_about_and_color() {
         ..PublicOrgBranding::default()
     });
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding,
@@ -742,6 +748,7 @@ fn branding_renders_logo_about_and_color() {
 fn og_tags_render_with_image_when_marketing_origin_set() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -845,6 +852,7 @@ fn og_image_is_empty_without_marketing_origin() {
 fn og_tags_fall_back_to_summary_when_image_empty() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -871,6 +879,7 @@ fn og_tags_fall_back_to_summary_when_image_empty() {
 fn powered_by_shown_by_default() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),
@@ -892,6 +901,7 @@ fn footer_source_links_follow_their_flag() {
     };
     let status = |b: BrandingView| {
         StatusFullPage {
+            reader: Reader::default(),
             tr: Tr::default(),
             view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
             branding: b,
@@ -907,7 +917,7 @@ fn footer_source_links_follow_their_flag() {
             branding: b,
             incident: IncidentDetailView::from_incident(&inc, Utc::now(), Tr::default()),
             generated_at: Utc::now(),
-            rss_url: RSS_URL,
+            reader: Reader::default(),
             og: OgMeta::default(),
         }
         .render()
@@ -934,6 +944,7 @@ fn malicious_brand_color_cannot_escape_style_rule() {
         ..PublicOrgBranding::default()
     });
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding,
@@ -1023,7 +1034,7 @@ fn archive_page_renders_buckets_and_next_link() {
         branding: sample_branding(),
         months,
         next_cursor: Some("opaque-cursor-token".into()),
-        rss_url: RSS_URL,
+        reader: Reader::default(),
         robots: "index,follow",
         og: OgMeta::default(),
     };
@@ -1068,6 +1079,7 @@ fn only_a_plan_that_sells_white_label_follows_the_operators_link() {
         });
         branding.follow_website_link = follow;
         StatusFullPage {
+            reader: Reader::default(),
             tr: Tr::default(),
             view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
             branding,
@@ -1096,6 +1108,7 @@ fn follow_link_needs_white_label_on_hosted_and_nothing_on_self_host() {
 #[test]
 fn the_header_brand_falls_back_to_the_status_page_root() {
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
         branding: sample_branding(),
@@ -1117,6 +1130,7 @@ fn hiding_a_page_from_search_takes_every_page_with_it() {
     assert_eq!(archive_robots(None, &branding), "noindex,follow");
 
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
         branding,
@@ -1134,7 +1148,7 @@ fn archive_page_renders_empty_state_without_next_link() {
         branding: sample_branding(),
         months: Vec::new(),
         next_cursor: None,
-        rss_url: RSS_URL,
+        reader: Reader::default(),
         robots: "noindex,follow",
         og: OgMeta::default(),
     };
@@ -1153,6 +1167,7 @@ fn branding_defaults_when_all_fields_null() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let branding = branding_with(PublicOrgBranding::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding,
@@ -1215,6 +1230,7 @@ fn past_incidents_render_as_rows_with_older_ones_folded_away() {
 fn the_status_page_loads_the_script_that_keeps_rows_open() {
     let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
     let html = StatusFullPage {
+        reader: Reader::default(),
         tr: Tr::default(),
         view,
         branding: sample_branding(),

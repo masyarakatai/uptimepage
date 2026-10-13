@@ -54,6 +54,7 @@ async fn owner_page(pool: PgPool) -> (axum::Router, String) {
         .create(
             org.id,
             NewStatusPage {
+                access: None,
                 slug: unique_slug("sp-page"),
                 name: "SP Page".into(),
                 enabled: true,

@@ -374,6 +374,22 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
             "/status-pages/{id}/subscribers/{subscriber_id}",
             axum::routing::delete(handlers::status_page::remove_subscriber),
         )
+        .route(
+            "/status-pages/{id}/access/viewers",
+            get(handlers::status_page::list_viewers),
+        )
+        .route(
+            "/status-pages/{id}/access/viewers/{viewer_id}/block",
+            post(handlers::status_page::block_viewer),
+        )
+        .route(
+            "/status-pages/{id}/access/viewers/{viewer_id}/unblock",
+            post(handlers::status_page::unblock_viewer),
+        )
+        .route(
+            "/status-pages/{id}/access/viewers/{viewer_id}/history",
+            get(handlers::status_page::viewer_history),
+        )
         .route("/orgs/{id}/usage", get(handlers::usage::get_org_usage))
         .route(
             "/account/holds",

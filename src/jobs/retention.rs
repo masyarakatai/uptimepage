@@ -18,6 +18,8 @@
 //!     session that is never looked up again still can't outlive the Cookie
 //!     Policy's idle promise at rest.
 //!  4. App link codes nothing reads any more ([`linked_apps::purge_dead_codes`]).
+//!  5. Private status page history past `page_access_events_days`: the sign-in
+//!     trail, the per-day visit rows, and viewer sessions unused that long.
 //!
 //! `check_results` (ClickHouse) is deliberately NOT mutated here. Its
 //! retention is the table's own `TTL` (a background merge). A broad
@@ -54,6 +56,9 @@ pub struct RetentionReport {
     pub sessions: u64,
     pub api_tokens: u64,
     pub app_link_codes: u64,
+    pub page_access_events: u64,
+    pub page_viewer_days: u64,
+    pub page_sessions: u64,
 }
 
 /// Whole seconds from now until the next 03:00 UTC.
@@ -124,6 +129,12 @@ fn emit_metrics(r: &RetentionReport) {
         .increment(r.api_tokens);
     metrics::counter!("retention_purged_rows_total", "table" => "app_link_challenges")
         .increment(r.app_link_codes);
+    metrics::counter!("retention_purged_rows_total", "table" => "status_page_access_events")
+        .increment(r.page_access_events);
+    metrics::counter!("retention_purged_rows_total", "table" => "status_page_viewer_days")
+        .increment(r.page_viewer_days);
+    metrics::counter!("retention_purged_rows_total", "table" => "status_page_sessions")
+        .increment(r.page_sessions);
     // Gauges, not counters: depth/age describe a *current* backlog. A
     // sustained non-zero pending count (or a climbing oldest-age) is the
     // alert condition for a stuck ClickHouse erasure path.
@@ -217,6 +228,35 @@ pub async fn purge_old_data(
     // Privacy Policy states.
     let app_link_codes = linked_apps::purge_dead_codes(pool).await?;
 
+    let page_access_events = trim_partitioned(
+        pool,
+        "status_page_access_events",
+        "DELETE FROM status_page_access_events \
+         WHERE occurred_at < now() - ($1::int * INTERVAL '1 day')",
+        retention.page_access_events_days,
+        "retention: status_page_access_events",
+    )
+    .await?;
+    let page_viewer_days = delete_older_than(
+        pool,
+        "DELETE FROM status_page_viewer_days \
+         WHERE day < (now() - ($1::int * INTERVAL '1 day'))::date",
+        retention.page_access_events_days,
+        "retention: status_page_viewer_days",
+    )
+    .await?;
+    // A session left unlimited by the owner still ends once nobody has used it
+    // for as long as the visit history is kept.
+    let page_sessions = delete_older_than(
+        pool,
+        "DELETE FROM status_page_sessions \
+         WHERE expires_at < now() \
+            OR last_used_at < now() - ($1::int * INTERVAL '1 day')",
+        retention.page_access_events_days,
+        "retention: status_page_sessions",
+    )
+    .await?;
+
     Ok(RetentionReport {
         purge,
         purge_queue,
@@ -228,6 +268,9 @@ pub async fn purge_old_data(
         sessions,
         api_tokens,
         app_link_codes,
+        page_access_events,
+        page_viewer_days,
+        page_sessions,
     })
 }
 

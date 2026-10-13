@@ -1,6 +1,6 @@
 # Cookie Policy
 
-**Last updated:** 2026-10-11
+**Last updated:** 2026-10-13
 
 ## What Cookies We Use
 
@@ -57,6 +57,14 @@ You can configure your browser to reject all cookies, but you would not be able 
 
 The public per-organisation status pages (e.g., `acme.example.com`)
 do **not** set any cookies. They are fully anonymous. A browser that holds the two theme cookies above still sends them there, and the status pages ignore them.
+
+A status page its owner has made private sets these, on that page's own address only, when you sign in to read it:
+
+| Name | Purpose | Duration | Required? |
+|---|---|---|---|
+| `_up_page` | Keeps you signed in to that one page | The period the page's owner chose (7, 30 or 90 days), or until you sign out, at most 400 days | Yes, to read a private page |
+| `_up_page_code` | Binds the sign-in code we email you to the browser that asked for it | 20 minutes | Only while signing in |
+| `_up_page_confirm` | Ties the sign-in link you opened to the button you press on it | 20 minutes | Only while signing in |
 
 ## Contact
 
