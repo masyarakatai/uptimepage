@@ -36,13 +36,14 @@ use tower_cookies::cookie::time::Duration as CookieDuration;
 use tower_cookies::{Cookie, Cookies};
 
 use crate::app::AppState;
-use crate::auth::email_norm;
 use crate::auth::login_audit::{self, LoginMethod};
 use crate::auth::url::token_link;
 use crate::auth::{fingerprint, magic_link};
 use crate::config::SessionConfig;
+use crate::domain::email_norm;
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::error::Result;
+use crate::security::sign_in_code::RedeemedVia;
 use crate::security::token_hash;
 use crate::storage::orgs as orgs_store;
 use crate::templates::filters;
@@ -436,7 +437,7 @@ pub async fn verify_confirm(
         &state,
         &cookies,
         row,
-        magic_link::RedeemedVia::Link,
+        RedeemedVia::Link,
         Requester {
             client_ip,
             headers: &headers,
@@ -491,7 +492,7 @@ pub async fn submit_code(
                 &state,
                 &cookies,
                 row,
-                magic_link::RedeemedVia::Code,
+                RedeemedVia::Code,
                 Requester {
                     client_ip,
                     headers: &headers,
@@ -546,7 +547,7 @@ async fn open_session_for(
     state: &AppState,
     cookies: &Cookies,
     row: magic_link::MagicLinkRow,
-    via: magic_link::RedeemedVia,
+    via: RedeemedVia,
     from: Requester<'_>,
 ) -> Result<Response> {
     let Requester {

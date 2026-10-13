@@ -15,8 +15,8 @@ use axum::http::header::{ORIGIN, USER_AGENT};
 use serde::Serialize;
 
 use crate::auth::login_audit::LoginMethod;
-use crate::auth::magic_link::RedeemedVia;
 use crate::http_outbound::OutboundHttpClient;
+use crate::security::sign_in_code::RedeemedVia;
 
 /// Shared with the marketing site so a visit spanning both hosts is one session.
 const WEBSITE_ID: &str = "2ef8ae40-ba4a-40a4-90bf-6d6b2b1eae2e";

@@ -14,11 +14,11 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::login_audit::{self, LoginAttempt, LoginMethod};
-use crate::auth::magic_link::RedeemedVia;
 use crate::auth::session as session_store;
 use crate::auth::url::safe_redirect_target;
 use crate::domain::{OrgId, UserId};
 use crate::error::Result;
+use crate::security::sign_in_code::RedeemedVia;
 use crate::storage::users::SessionOrg;
 
 use crate::auth::invitations::{self, AcceptedInvitation};

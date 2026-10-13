@@ -1776,7 +1776,7 @@ mod tests {
             .unwrap();
         assert!(html.contains(&format!(
             r#"maxlength="{}""#,
-            crate::auth::email_norm::MAX_EMAIL_LEN
+            crate::domain::email_norm::MAX_EMAIL_LEN
         )));
     }
 
@@ -1790,7 +1790,7 @@ mod tests {
         assert!(html.contains(r#"id="magic-link-code""#));
         assert!(html.contains(r#"autocomplete="one-time-code""#));
         assert!(html.contains(r#"placeholder="4KP9RT""#));
-        assert_eq!("4KP9RT".len(), crate::auth::magic_link::CODE_LEN);
+        assert_eq!("4KP9RT".len(), crate::security::sign_in_code::CODE_LEN);
         assert!(
             html.contains("The link in the same email still works"),
             "one try is only fair if the fallback is named"

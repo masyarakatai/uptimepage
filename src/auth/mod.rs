@@ -5,7 +5,6 @@
 pub mod account;
 pub mod api_tokens;
 pub mod discord;
-pub mod email_norm;
 pub mod fingerprint;
 pub mod github;
 pub mod gitlab;

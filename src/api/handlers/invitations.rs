@@ -22,9 +22,9 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::email_norm;
 use crate::auth::invitations as inv;
 use crate::auth::url::token_link;
+use crate::domain::email_norm;
 use crate::domain::{OrgId, Organization, Role, UserId};
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::error::codes;

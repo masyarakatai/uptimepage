@@ -11,6 +11,7 @@ pub mod mac;
 pub mod outbound_connector;
 pub(crate) mod rdap;
 pub mod redaction;
+pub mod sign_in_code;
 pub mod ssrf;
 pub mod token_hash;
 

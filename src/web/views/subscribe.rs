@@ -14,8 +14,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::email_norm;
 use crate::auth::url::token_link;
+use crate::domain::email_norm;
 use crate::domain::{NewSubscriber, PageRef, SubscriberChannel};
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::http_outbound::post_bytes_with_headers;
