@@ -14,7 +14,7 @@ use crate::i18n::Tr;
 use crate::security::sha256_hex;
 use crate::security::token_hash::generate_raw_token;
 use crate::storage::status_pages::{
-    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
+    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME, PAGE_SERVED,
 };
 
 pub const CONFIRM_TTL_HOURS: i64 = 24;
@@ -334,7 +334,7 @@ pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingUpdate
                        AND EXISTS (SELECT 1 FROM incident_events e
                                    WHERE e.incident_id = i.id AND e.kind = 'published')))
          WHERE s.channel IN ('email', 'webhook') AND s.verified_at IS NOT NULL
-           AND {PAGE_NOT_HELD}
+           AND {PAGE_SERVED}
            -- The page drops a held monitor from its component list, so mailing
            -- about one would send readers to a page that shows neither the
            -- component nor the incident.

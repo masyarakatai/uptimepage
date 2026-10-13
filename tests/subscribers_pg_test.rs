@@ -566,6 +566,89 @@ async fn a_cancelled_maintenance_window_is_not_fanned_out() {
     cleanup(&pool, org).await;
 }
 
+async fn pending_counts(pool: &PgPool, sub: Uuid) -> (usize, usize) {
+    let updates = subscribers::list_pending(pool, 1000)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.subscriber_id == sub)
+        .count();
+    let windows = subscriber_maintenance::list_pending(pool, 1000)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.subscriber_id == sub)
+        .count();
+    (updates, windows)
+}
+
+/// A page that 404s (Off, held, or its org deleted) mails its subscribers
+/// nothing about incidents or maintenance until it is served again.
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_page_that_is_not_served_mails_its_subscribers_nothing() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let org = seed_org(&pool).await;
+    let target = seed_target(&pool, org).await;
+    let page = seed_page(&pool, org).await;
+    add_component(&pool, org, page, target).await;
+    let sub = confirmed_subscriber(&pool, org, page, "quiet@example.com").await;
+    let incident = seed_public_incident(&pool, org, target).await;
+    add_update(&pool, org, incident, 0).await;
+    let window = seed_maintenance(&pool, org, 24, 25).await;
+    add_maintenance_component(&pool, org, window, target).await;
+
+    assert_eq!(
+        pending_counts(&pool, sub).await,
+        (1, 1),
+        "a served page mails"
+    );
+
+    for (state, sql, id) in [
+        (
+            "Off",
+            "UPDATE status_pages SET enabled = false WHERE id = $1",
+            page,
+        ),
+        (
+            "held",
+            "UPDATE status_pages SET plan_hold_at = now() WHERE id = $1",
+            page,
+        ),
+        (
+            "deleted org",
+            "UPDATE organizations SET deleted_at = now() WHERE id = $1",
+            org,
+        ),
+    ] {
+        sqlx::query(sql).bind(id).execute(&pool).await.unwrap();
+        assert_eq!(
+            pending_counts(&pool, sub).await,
+            (0, 0),
+            "{state}: mails nobody"
+        );
+        sqlx::query("UPDATE status_pages SET enabled = true, plan_hold_at = NULL WHERE id = $1")
+            .bind(page)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE organizations SET deleted_at = NULL WHERE id = $1")
+            .bind(org)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending_counts(&pool, sub).await,
+            (1, 1),
+            "{state}: served again"
+        );
+    }
+
+    cleanup(&pool, org).await;
+}
+
 #[tokio::test]
 #[ignore = "needs live Postgres (DATABASE_URL)"]
 async fn maintenance_fanout_scheduled_and_completed() {

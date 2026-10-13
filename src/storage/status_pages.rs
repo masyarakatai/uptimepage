@@ -12,6 +12,13 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// A literal, so [`PAGE_CUSTOM_DOMAIN_PUBLISHED`] can build on it with `concat!`.
+macro_rules! page_served {
+    () => {
+        "(sp.enabled AND sp.plan_hold_at IS NULL AND sp_org.deleted_at IS NULL)"
+    };
+}
+
 /// The plan a page's account is on, for a query that aliases the page `sp`.
 pub(crate) const PAGE_PLAN_JOIN: &str = "JOIN organizations sp_org ON sp_org.id = sp.org_id \
      JOIN accounts sp_acct ON sp_acct.id = sp_org.account_id \
@@ -32,16 +39,24 @@ pub(crate) const PAGE_CUSTOM_DOMAIN_SERVED: &str =
 /// handshake would hand every one of those a connection failure, and mail
 /// cannot be recalled.
 ///
-/// Restates the page's own liveness because callers differ:
-/// `subscribers::list_pending` filters the plan hold but not `enabled` or a
-/// soft-deleted org.
-pub(crate) const PAGE_CUSTOM_DOMAIN_PUBLISHED: &str = "(sp.custom_domain_activated_at IS NOT NULL      AND sp_plan.custom_domain_enabled      AND sp.enabled      AND sp.plan_hold_at IS NULL      AND sp_org.deleted_at IS NULL)";
+/// Carries [`PAGE_SERVED`] itself because callers differ: `subscribe.rs` reads
+/// a page by id and filters nothing.
+pub(crate) const PAGE_CUSTOM_DOMAIN_PUBLISHED: &str = concat!(
+    "(sp.custom_domain_activated_at IS NOT NULL AND sp_plan.custom_domain_enabled AND ",
+    page_served!(),
+    ")"
+);
 
 /// Whether the plan still covers this page. Over cap, the excess pages carry a
 /// `plan_hold_at`: they 404 publicly and their subscribers hear nothing, while
 /// the console keeps them whole so the operator can see what is waiting and
 /// choose differently. For a query that aliases the page `sp`.
 pub(crate) const PAGE_NOT_HELD: &str = "sp.plan_hold_at IS NULL";
+
+/// Served at its URL: on, not held, its org not deleted. Anything else 404s,
+/// so its subscribers hear nothing either. For a query that aliases the page
+/// `sp` and joins [`PAGE_PLAN_JOIN`].
+pub(crate) const PAGE_SERVED: &str = page_served!();
 
 use crate::custom_domains::CustomDomainRow;
 use crate::domain::{
@@ -1184,9 +1199,7 @@ pub async fn load_verified_custom_domains(pool: &PgPool) -> Result<Vec<CustomDom
            FROM status_pages sp
            {PAGE_PLAN_JOIN}
            WHERE sp.custom_domain IS NOT NULL
-             AND sp.enabled = true
-             AND {PAGE_NOT_HELD}
-             AND sp_org.deleted_at IS NULL
+             AND {PAGE_SERVED}
              AND {PAGE_CUSTOM_DOMAIN_SERVED}
            ORDER BY sp.custom_domain, sp.id"#
     ))

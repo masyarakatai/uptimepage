@@ -21,6 +21,7 @@ use crate::storage::count_sql;
 use crate::storage::locks::{
     account_lock_key, advisory_xact_lock, membership_lock_key, signup_lock_key, user_lock_key,
 };
+use crate::storage::status_pages::PAGE_SERVED;
 
 /// Returns the id of the single live (non-soft-deleted) organisation, or
 /// `None` if zero or more than one exist. Used by the path-based public
@@ -1407,9 +1408,9 @@ pub async fn find_id_by_slug(pool: &PgPool, slug: &str) -> Result<Option<OrgId>>
 pub struct ResolvedPublicPage(pub PageRef);
 
 /// PUBLIC-STATUS PATH ONLY. Resolves a page slug to a [`ResolvedPublicPage`]
-/// for the `*.{base_domain}` surface. Filters `status_pages.enabled = true`, the
-/// page not held by its plan, and the owning org not soft-deleted — if any fails
-/// the row is invisible (the handler maps `None` to 404).
+/// for the `*.{base_domain}` surface. Filters [`PAGE_SERVED`]: if the page is
+/// off, held by its plan, or its org is soft-deleted, the row is invisible (the
+/// handler maps `None` to 404).
 ///
 /// This and [`resolve_default_page_for_lone_org`] are the only two doors onto
 /// the public surface, so gating both is what lets everything downstream —
@@ -1418,16 +1419,14 @@ pub async fn find_public_status_page_by_slug(
     pool: &PgPool,
     slug: &str,
 ) -> Result<Option<ResolvedPublicPage>> {
-    let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(&format!(
         r#"/* SAFE: public-page lookup is intentionally not org_id-scoped */
            SELECT sp.id, sp.org_id
            FROM status_pages sp
-           JOIN organizations o ON o.id = sp.org_id
+           JOIN organizations sp_org ON sp_org.id = sp.org_id
            WHERE sp.slug = $1
-             AND sp.enabled = true
-             AND sp.plan_hold_at IS NULL
-             AND o.deleted_at IS NULL"#,
-    )
+             AND {PAGE_SERVED}"#
+    ))
     .bind(slug)
     .fetch_optional(pool)
     .await

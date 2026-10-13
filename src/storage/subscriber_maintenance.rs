@@ -12,7 +12,7 @@ use crate::domain::Locale;
 use crate::error::Result;
 use crate::storage::admin::not_held_sql;
 use crate::storage::status_pages::{
-    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_NOT_HELD, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
+    PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME, PAGE_SERVED,
 };
 use crate::storage::subscribers::{
     CLAIM_ORPHAN_MINUTES, FANOUT_LOOKBACK_HOURS, FANOUT_MAX_ATTEMPTS,
@@ -78,7 +78,7 @@ pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingMainte
              WHERE s.channel IN ('email', 'webhook') AND s.verified_at IS NOT NULL
                AND mw.deleted_at IS NULL
                AND mw.ends_at >= now() - make_interval(hours => $2)
-               AND {PAGE_NOT_HELD}
+               AND {PAGE_SERVED}
                AND {COMPONENT_NOT_HELD}
          ) cand
          WHERE event_at >= verified_at
