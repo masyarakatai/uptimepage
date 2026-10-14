@@ -2846,14 +2846,19 @@
     @media (min-width: 64rem) {
         .type-rail { border-right: 1px solid var(--theme-line); padding-right: 2rem; }
     }
-    /* Mirrors the type rail once a third column fits; a bar below that. */
+    /* Mirrors the type rail once a third column fits; below that, a bar under
+       the form column, clear of the sticky type rail. */
     .action-rail {
         align-self: start;
         border-top: 1px solid var(--theme-line);
         padding-top: 1rem;
     }
+    @media (min-width: 64rem) {
+        .action-rail { grid-column-start: 2; }
+    }
     @media (min-width: 80rem) {
         .action-rail {
+            grid-column-start: 3;
             border-top: 0;
             padding-top: 0;
             border-left: 1px solid var(--theme-line);
