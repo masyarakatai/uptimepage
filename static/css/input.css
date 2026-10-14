@@ -182,13 +182,21 @@
        intermediaries (the public page doesn't render any dashboard widgets).
        A future .theme-terminal / .theme-winter class set on <body> swaps the
        whole register without template edits. */
+    /* A column the height of the screen, so the footer sits at the bottom of
+       a short page. main and footer take the full width up to their max-w,
+       which auto margins in a flex column would otherwise shrink to fit. */
     .public-shell {
         font-family: var(--font-body);
         background: var(--theme-surface);
         color: var(--theme-text);
         position: relative;
         min-height: 100vh;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
     }
+    .public-shell > main { flex: 1 0 auto; width: 100%; }
+    .public-shell > footer { width: 100%; }
 
     /* Page-load reveal. Direct section children rise in sequence — one
        orchestrated entrance per first paint, then the class is removed by
