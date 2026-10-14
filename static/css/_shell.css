@@ -19,9 +19,13 @@
         );
     }
     .app-shell::after { content: none; }
-    .app-shell > *,
-    .public-shell > *,
-    .marketing-shell > * { position: relative; z-index: 1; }
+    /* Not dialogs or popovers: open, they sit in the top layer, where
+       `relative` computes to `absolute` at the top of the document, so they
+       open off screen on a scrolled page and focus scrolls the page up.
+       :where keeps the old specificity. */
+    .app-shell > :where(:not(dialog, [popover])),
+    .public-shell > :where(:not(dialog, [popover])),
+    .marketing-shell > :where(:not(dialog, [popover])) { position: relative; z-index: 1; }
 
     /* Visible focus ring on every interactive element. Must be a real
        `outline`, not Tailwind `ring` (a box-shadow): the cartoon controls
