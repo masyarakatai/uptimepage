@@ -14,9 +14,10 @@ use crate::public_status::HistoryIncidentMarker;
 use crate::public_status::overall_status::{day_tone, overall_label_id};
 
 use super::incident_display::{UPDATE_PREVIEW_CHARS, impact_classes, phase_classes};
-use super::past::{PastIncidents, build_past};
+use super::past::{HistoryTab, PastEvents, TabLink, build_past, mixed_within_caps, tab_links};
 
 pub const RSS_URL: &str = "/api/public/v1/incidents.rss";
+pub const ARCHIVE_URL: &str = "/status/incidents";
 pub(super) const HISTORY_LEN: usize = 90;
 
 pub struct StatusView {
@@ -30,10 +31,12 @@ pub struct StatusView {
     pub groups: Vec<GroupView>,
     pub active_heading: String,
     pub active_incidents: Vec<IncidentSummary>,
-    pub past: PastIncidents,
-    /// True when the org has more incidents past the rendered window. Drives
-    /// the "older incidents" archive link in the recent-incidents section.
-    pub recent_incidents_has_more: bool,
+    pub past: PastEvents,
+    pub history_tabs: Vec<TabLink>,
+    /// The archive, on the tab the reader picked.
+    pub archive_url: String,
+    /// The refresh poll's URL, which keeps the tab the reader picked.
+    pub poll_url: String,
     pub active_maintenance: Vec<MaintenanceView>,
     pub upcoming_maintenance: Vec<MaintenanceView>,
     pub has_active_incident: bool,
@@ -148,10 +151,34 @@ pub struct MaintenanceView {
     /// `(in 2h)` for upcoming windows; `None` once started.
     pub starts_in: Option<String>,
 }
+/// The archive on `tab`, from `cursor` on.
+pub(super) fn archive_path(tab: HistoryTab, cursor: Option<&str>) -> String {
+    let query: Vec<String> = tab
+        .query()
+        .map(|show| format!("show={show}"))
+        .into_iter()
+        .chain(cursor.map(|c| format!("cursor={c}")))
+        .collect();
+    if query.is_empty() {
+        ARCHIVE_URL.to_owned()
+    } else {
+        format!("{ARCHIVE_URL}?{}", query.join("&"))
+    }
+}
+
+/// Which history tab the reader picked, and the path the page is served at,
+/// which the tab links point back to.
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryRequest {
+    pub tab: HistoryTab,
+    pub home: &'static str,
+}
+
 pub(super) fn build_view(
     page: &PublicStatusPage,
     history_markers: &[HistoryIncidentMarker],
     silenced: &std::collections::HashSet<Uuid>,
+    history: HistoryRequest,
     tr: Tr,
 ) -> StatusView {
     let now = page.generated_at;
@@ -178,7 +205,18 @@ pub(super) fn build_view(
         .iter()
         .map(|i| build_incident_summary(i, now, tr))
         .collect::<Vec<_>>();
-    let past = build_past(&page.recent_incidents, now, tr);
+    let tab = history.tab;
+    let (incidents, windows) = match tab {
+        HistoryTab::All => mixed_within_caps(
+            &page.recent_incidents,
+            page.recent_incidents_has_more,
+            &page.recent_maintenance,
+            page.recent_maintenance_has_more,
+        ),
+        _ => (&page.recent_incidents[..], &page.recent_maintenance[..]),
+    };
+    let past = build_past(incidents, windows, tab, now, tr);
+    let show = tab.query().map(|q| format!("show={q}"));
 
     let active_m = page
         .active_maintenance
@@ -207,7 +245,12 @@ pub(super) fn build_view(
         active_heading: tr.t_args("active-incidents-heading", [("count", active.len().into())]),
         active_incidents: active,
         past,
-        recent_incidents_has_more: page.recent_incidents_has_more,
+        history_tabs: tab_links(history.home, "#history", tab, tr),
+        archive_url: archive_path(tab, None),
+        poll_url: match &show {
+            Some(show) => format!("?fragment=1&{show}"),
+            None => "?fragment=1".to_owned(),
+        },
         has_maintenance: !active_m.is_empty() || !upcoming_m.is_empty(),
         active_maintenance: active_m,
         upcoming_maintenance: upcoming_m,

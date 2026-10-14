@@ -22,12 +22,14 @@ use common::{body_text, build_test_app_with_web_and_public_source};
 use uptimepage::domain::{
     ComponentHistoryResponse, DayState, IncidentImpact, IncidentSeverity, IncidentStatusPhase,
     Locale, OverallState, OverallStatus, PageRef, PublicComponent, PublicComponentGroup,
-    PublicComponentStatus, PublicIncident, PublicIncidentUpdate, PublicMaintenanceList,
-    PublicStatusPage,
+    PublicComponentStatus, PublicIncident, PublicIncidentUpdate, PublicMaintenance,
+    PublicMaintenanceList, PublicStatusPage,
 };
 use uptimepage::error::public::PublicAppError;
 use uptimepage::pagination::CursorPage;
-use uptimepage::public_status::{IncidentListQuery, PublicSource, source::FeedLinks};
+use uptimepage::public_status::{
+    IncidentListQuery, MaintenanceListQuery, PublicSource, source::FeedLinks,
+};
 
 const OPERATOR_TITLE: &str = "API down in EU-WEST — investigating router";
 const PUBLIC_COMPONENT_NAME: &str = "Public API";
@@ -91,6 +93,8 @@ impl PublicSource for PublishedSource {
             active_incidents: vec![incident.clone()],
             recent_incidents: vec![incident],
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         }))
@@ -120,6 +124,14 @@ impl PublicSource for PublishedSource {
     }
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!("not exercised by HTML page tests")
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
     async fn incidents_rss(
         &self,
@@ -165,6 +177,14 @@ impl PublicSource for GermanSource {
     }
     async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         PublishedSource.maintenance(page).await
+    }
+
+    async fn list_maintenance(
+        &self,
+        page: PageRef,
+        q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        PublishedSource.list_maintenance(page, q).await
     }
     async fn incidents_rss(
         &self,
@@ -214,6 +234,14 @@ impl PublicSource for LinkedSource {
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!("not exercised by HTML page tests")
     }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
+    }
     async fn incidents_rss(
         &self,
         _page: PageRef,
@@ -256,6 +284,8 @@ impl PublicSource for EmptyDataSource {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         }))
@@ -284,6 +314,14 @@ impl PublicSource for EmptyDataSource {
     }
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!()
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
     async fn incidents_rss(
         &self,
@@ -339,6 +377,8 @@ impl PublicSource for MaintenanceDominatesSource {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: vec![maintenance],
             upcoming_maintenance: Vec::new(),
         }))
@@ -367,6 +407,14 @@ impl PublicSource for MaintenanceDominatesSource {
     }
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!()
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
     async fn incidents_rss(
         &self,

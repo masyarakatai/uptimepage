@@ -91,6 +91,7 @@ async fn openapi_doc_lists_every_documented_path() {
         "/api/public/v1/incidents/{id}",
         "/api/public/v1/incidents.rss",
         "/api/public/v1/maintenance",
+        "/api/public/v1/maintenance/past",
     ] {
         assert!(paths.contains_key(expected), "missing path {expected}");
     }
@@ -114,6 +115,7 @@ async fn public_endpoints_have_empty_security() {
         "/api/public/v1/incidents/{id}",
         "/api/public/v1/incidents.rss",
         "/api/public/v1/maintenance",
+        "/api/public/v1/maintenance/past",
     ] {
         let security = &doc["paths"][path]["get"]["security"];
         assert!(

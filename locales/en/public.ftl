@@ -43,7 +43,7 @@ starts-in = (in { $duration })
 
 skip-to-content = Skip to main content
 title-status-suffix = Live uptime and incident history
-title-archive-suffix = Past outages
+title-archive-suffix = Past incidents and maintenance
 rss-link-title = Incidents (RSS)
 rss-aria = Subscribe to incident updates via RSS
 rss-title = { $page } Incidents
@@ -68,7 +68,7 @@ back-to-status = ← Back to status
 og-status-description = Live and past status for { $name }: current uptime for every component, open and recent incidents, scheduled maintenance windows, and email or webhook updates.
 og-incident-description = { $title }: current phase, when it started and ended, and every update posted on the { $page } page.
 og-incident-description-affecting = { $title }, affecting { $component }: current phase, when it started and ended, and every update posted on the { $page } page.
-og-archive-description = Every incident published on the { $page } page, grouped by month, with the components affected, when each one started and ended, and the updates posted.
+og-archive-description = Every incident and maintenance window published on the { $page } page, grouped by month, with the components affected, when each one started and ended, and the updates posted.
 
 ## Status labels
 
@@ -139,14 +139,46 @@ history-summary-outages =
        *[other] { $days } days, { $outages } outages, { $degraded } degraded
     }
 no-components = No public components have been configured yet.
-past-incidents-heading = Past incidents (30 days)
-older-incidents = Older incidents →
-past-none-recent = No incidents in the past 7 days.
-past-earlier =
-    { $count ->
-        [one] 1 earlier incident
-       *[other] { $count } earlier incidents
+history-heading = History (30 days)
+history-tabs-label = Show
+history-tab =
+    { $tab ->
+        [incidents] Incidents
+        [maintenance] Maintenance
+       *[all] All
     }
+history-none =
+    { $tab ->
+        [incidents] No resolved incidents in the past 30 days.
+        [maintenance] No completed maintenance in the past 30 days.
+       *[all] No resolved incidents or completed maintenance in the past 30 days.
+    }
+history-none-recent =
+    { $tab ->
+        [incidents] No resolved incidents in the past 7 days.
+        [maintenance] No completed maintenance in the past 7 days.
+       *[all] No resolved incidents or completed maintenance in the past 7 days.
+    }
+history-earlier =
+    { $tab ->
+        [incidents]
+            { $count ->
+                [one] 1 earlier incident
+               *[other] { $count } earlier incidents
+            }
+        [maintenance]
+            { $count ->
+                [one] 1 earlier maintenance window
+               *[other] { $count } earlier maintenance windows
+            }
+       *[all]
+            { $count ->
+                [one] 1 earlier entry
+               *[other] { $count } earlier entries
+            }
+    }
+history-full = Full history →
+history-older = Older entries →
 past-incident-count =
     { $count ->
         [one] 1 incident
@@ -169,8 +201,18 @@ postmortem-root-cause = Root cause
 postmortem-impact = Impact
 postmortem-action-items = Action items
 postmortem-published = Published
-archive-heading = Incident history
-archive-empty = No incidents recorded.
+archive-heading =
+    { $tab ->
+        [incidents] Incident history
+        [maintenance] Maintenance history
+       *[all] History
+    }
+archive-empty =
+    { $tab ->
+        [incidents] No incidents recorded.
+        [maintenance] No maintenance recorded.
+       *[all] Nothing recorded yet.
+    }
 
 ## Subscribe dialog
 

@@ -43,7 +43,7 @@ starts-in = (in { $duration })
 
 skip-to-content = Zum Hauptinhalt springen
 title-status-suffix = Verfügbarkeit live und Störungsverlauf
-title-archive-suffix = Vergangene Ausfälle
+title-archive-suffix = Vergangene Störungen und Wartungen
 rss-link-title = Störungen (RSS)
 rss-aria = Störungsmeldungen per RSS abonnieren
 rss-title = { $page }: Störungen
@@ -68,7 +68,7 @@ back-to-status = ← Zurück zur Statusseite
 og-status-description = Aktueller und vergangener Status von { $name }: Verfügbarkeit jeder Komponente, offene und kürzliche Störungen, geplante Wartungsfenster sowie Benachrichtigungen per E-Mail oder Webhook.
 og-incident-description = { $title }: aktuelle Phase, Beginn und Ende sowie alle Updates auf der Seite { $page }.
 og-incident-description-affecting = { $title }, betrifft { $component }: aktuelle Phase, Beginn und Ende sowie alle Updates auf der Seite { $page }.
-og-archive-description = Alle auf der Seite { $page } veröffentlichten Störungen, nach Monat gruppiert, mit den betroffenen Komponenten, Beginn und Ende sowie den veröffentlichten Updates.
+og-archive-description = Alle auf der Seite { $page } veröffentlichten Störungen und Wartungen, nach Monat gruppiert, mit den betroffenen Komponenten, Beginn und Ende sowie den veröffentlichten Updates.
 
 ## Status labels
 
@@ -155,14 +155,46 @@ history-summary-outages =
        *[other] { $outages } Ausfälle
     }, { $degraded } beeinträchtigt
 no-components = Es wurden noch keine öffentlichen Komponenten eingerichtet.
-past-incidents-heading = Vergangene Störungen (30 Tage)
-older-incidents = Ältere Störungen →
-past-none-recent = Keine Störungen in den letzten 7 Tagen.
-past-earlier =
-    { $count ->
-        [one] 1 frühere Störung
-       *[other] { $count } frühere Störungen
+history-heading = Verlauf (30 Tage)
+history-tabs-label = Anzeigen
+history-tab =
+    { $tab ->
+        [incidents] Störungen
+        [maintenance] Wartungen
+       *[all] Alle
     }
+history-none =
+    { $tab ->
+        [incidents] Keine behobenen Störungen in den letzten 30 Tagen.
+        [maintenance] Keine abgeschlossenen Wartungen in den letzten 30 Tagen.
+       *[all] Keine behobenen Störungen oder abgeschlossenen Wartungen in den letzten 30 Tagen.
+    }
+history-none-recent =
+    { $tab ->
+        [incidents] Keine behobenen Störungen in den letzten 7 Tagen.
+        [maintenance] Keine abgeschlossenen Wartungen in den letzten 7 Tagen.
+       *[all] Keine behobenen Störungen oder abgeschlossenen Wartungen in den letzten 7 Tagen.
+    }
+history-earlier =
+    { $tab ->
+        [incidents]
+            { $count ->
+                [one] 1 frühere Störung
+               *[other] { $count } frühere Störungen
+            }
+        [maintenance]
+            { $count ->
+                [one] 1 frühere Wartung
+               *[other] { $count } frühere Wartungen
+            }
+       *[all]
+            { $count ->
+                [one] 1 früherer Eintrag
+               *[other] { $count } frühere Einträge
+            }
+    }
+history-full = Vollständiger Verlauf →
+history-older = Ältere Einträge →
 past-incident-count =
     { $count ->
         [one] 1 Störung
@@ -185,8 +217,18 @@ postmortem-root-cause = Ursache
 postmortem-impact = Auswirkungen
 postmortem-action-items = Maßnahmen
 postmortem-published = Veröffentlicht
-archive-heading = Störungsverlauf
-archive-empty = Keine Störungen erfasst.
+archive-heading =
+    { $tab ->
+        [incidents] Störungsverlauf
+        [maintenance] Wartungsverlauf
+       *[all] Verlauf
+    }
+archive-empty =
+    { $tab ->
+        [incidents] Keine Störungen erfasst.
+        [maintenance] Keine Wartungen erfasst.
+       *[all] Noch nichts erfasst.
+    }
 
 ## Subscribe dialog
 

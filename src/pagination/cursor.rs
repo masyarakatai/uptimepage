@@ -16,19 +16,19 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::error::codes;
 
-/// Cursor for an incident list ordered by `(started_at DESC, id DESC)`. The
-/// id is the tiebreaker so two incidents sharing a `started_at` always sort
-/// deterministically; otherwise a page boundary at the tie could lose or
-/// duplicate rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IncidentCursor {
+/// Cursor for a history list ordered by `(started_at DESC, id DESC)`:
+/// incidents, maintenance windows, or both merged. The id is the tiebreaker
+/// so two rows sharing a `started_at` always sort deterministically;
+/// otherwise a page boundary at the tie could lose or duplicate rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct HistoryCursor {
     pub started_at: DateTime<Utc>,
     pub id: Uuid,
 }
 
-impl IncidentCursor {
+impl HistoryCursor {
     pub fn encode(&self) -> String {
-        let json = serde_json::to_vec(self).expect("IncidentCursor JSON-serialisable");
+        let json = serde_json::to_vec(self).expect("HistoryCursor JSON-serialisable");
         URL_SAFE_NO_PAD.encode(json)
     }
 
@@ -53,8 +53,8 @@ fn invalid_cursor(msg: &'static str) -> AppError {
 mod tests {
     use super::*;
 
-    fn fixed() -> IncidentCursor {
-        IncidentCursor {
+    fn fixed() -> HistoryCursor {
+        HistoryCursor {
             started_at: DateTime::parse_from_rfc3339("2026-05-22T10:15:30.456Z")
                 .unwrap()
                 .with_timezone(&Utc),
@@ -66,7 +66,7 @@ mod tests {
     fn round_trips() {
         let c = fixed();
         let s = c.encode();
-        let back = IncidentCursor::decode(&s).expect("round-trip must succeed");
+        let back = HistoryCursor::decode(&s).expect("round-trip must succeed");
         assert_eq!(back, c);
     }
 
@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        let err = IncidentCursor::decode("not a real cursor !!").expect_err("garbage must reject");
+        let err = HistoryCursor::decode("not a real cursor !!").expect_err("garbage must reject");
         match err {
             AppError::BadRequest { code, field, .. } => {
                 assert_eq!(code, codes::INVALID_CURSOR);
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn rejects_wrong_schema() {
         let bogus = URL_SAFE_NO_PAD.encode(b"{\"not\":\"a cursor\"}");
-        let err = IncidentCursor::decode(&bogus).expect_err("wrong schema must reject");
+        let err = HistoryCursor::decode(&bogus).expect_err("wrong schema must reject");
         assert!(matches!(
             err,
             AppError::BadRequest { code, .. } if code == codes::INVALID_CURSOR

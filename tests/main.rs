@@ -67,6 +67,7 @@ mod linked_apps_test;
 mod load_test_public;
 mod logging_audit_test;
 mod maintenance_audit_test;
+mod maintenance_history_test;
 mod maintenance_ui_test;
 mod manual_monitors_pg_test;
 mod manual_state_test;

@@ -299,6 +299,14 @@ seed-heartbeats:
 seed-flapping:
     bash scripts/seed-flapping.sh
 
+# Seed a status page whose history mixes incidents and maintenance windows
+# (ended, long-noted, archive-only, running, upcoming, cancelled, off-page),
+# then check the JSON API, the history tabs and the archive against the
+# running app. Needs `just up` + `just dev-login`; the checks need `just run`
+# and are skipped without it. Idempotent: tagged rows and the page wiped first.
+seed-maintenance-history:
+    bash scripts/seed-maintenance-history.sh
+
 # Walk through incidents, the recovery period and the status page on the local
 # stack: a month of seeded history plus a live service that flaps inside its
 # recovery period. Needs `just up`, `just dev-login`, and the app running with

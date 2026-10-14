@@ -20,15 +20,15 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uptimepage::domain::{
     AccessRule, ComponentHistoryResponse, OverallState, OverallStatus, PageAccess,
-    PageAccessSettings, PageRef, PublicIncident, PublicMaintenanceList, PublicStatusPage,
-    StatusPageId, UserId,
+    PageAccessSettings, PageRef, PublicIncident, PublicMaintenance, PublicMaintenanceList,
+    PublicStatusPage, StatusPageId, UserId,
 };
 use uptimepage::email::{EmailTemplate, InMemoryEmailSender};
 use uptimepage::error::public::PublicAppError;
 use uptimepage::pagination::page::CursorPage;
 use uptimepage::public_status::access::PageGate;
 use uptimepage::public_status::source::FeedLinks;
-use uptimepage::public_status::{IncidentListQuery, PublicSource};
+use uptimepage::public_status::{IncidentListQuery, MaintenanceListQuery, PublicSource};
 use uptimepage::storage::page_access::{settings, viewers};
 use uuid::Uuid;
 use webauthn_authenticator_rs::prelude::{
@@ -58,6 +58,8 @@ impl PublicSource for AnyPage {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         }))
@@ -97,6 +99,14 @@ impl PublicSource for AnyPage {
             active: Vec::new(),
             upcoming: Vec::new(),
         })
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
     async fn incidents_rss(
         &self,
@@ -373,12 +383,15 @@ fn address(local: &str, domain: &str) -> String {
 const GATED: &[&str] = &[
     "/",
     "/?fragment=1",
+    "/?show=maintenance",
     "/status/incidents",
+    "/status/incidents?show=maintenance",
     "/api/public/v1/status",
     "/api/public/v1/components/00000000-0000-0000-0000-000000000001/history",
     "/api/public/v1/incidents",
     "/api/public/v1/incidents.rss",
     "/api/public/v1/maintenance",
+    "/api/public/v1/maintenance/past",
     "/api/public/v1/badge.svg",
 ];
 

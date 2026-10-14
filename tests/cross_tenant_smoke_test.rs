@@ -31,6 +31,8 @@ fn page_with_marker(marker: &str) -> PublicStatusPage {
         active_incidents: Vec::new(),
         recent_incidents: Vec::new(),
         recent_incidents_has_more: false,
+        recent_maintenance: Vec::new(),
+        recent_maintenance_has_more: false,
         active_maintenance: Vec::new(),
         upcoming_maintenance: Vec::new(),
     }
@@ -153,6 +155,13 @@ async fn public_source_trait_threads_org_param_to_distinct_responses() {
             &self,
             _page: PageRef,
         ) -> Result<PublicMaintenanceList, PublicAppError> {
+            unreachable!()
+        }
+        async fn list_maintenance(
+            &self,
+            _page: PageRef,
+            _q: uptimepage::public_status::MaintenanceListQuery,
+        ) -> Result<CursorPage<uptimepage::domain::PublicMaintenance>, PublicAppError> {
             unreachable!()
         }
         async fn incidents_rss(

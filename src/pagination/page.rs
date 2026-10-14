@@ -2,7 +2,9 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::domain::metrics::TagCount;
-use crate::domain::{CheckResult, Incident, MaintenanceWindow, PublicIncident, Target};
+use crate::domain::{
+    CheckResult, Incident, MaintenanceWindow, PublicIncident, PublicMaintenance, Target,
+};
 use crate::security::redaction::RedactInPlace;
 
 /// Standard envelope returned by every paginated list endpoint.
@@ -107,3 +109,4 @@ where
 }
 
 pub type CursorPageOfPublicIncident = CursorPage<PublicIncident>;
+pub type CursorPageOfPublicMaintenance = CursorPage<PublicMaintenance>;

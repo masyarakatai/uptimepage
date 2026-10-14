@@ -25,16 +25,19 @@ use crate::api::json_arc::JsonArc;
 use crate::app::AppState;
 use crate::domain::PageRef;
 use crate::domain::{
-    ComponentHistoryResponse, PublicIncident, PublicMaintenanceList, PublicStatusPage,
+    ComponentHistoryResponse, PublicIncident, PublicMaintenance, PublicMaintenanceList,
+    PublicStatusPage,
 };
 use crate::error::public::{PublicApiError, PublicAppError};
 use crate::i18n::Tr;
-use crate::pagination::cursor::IncidentCursor;
-use crate::pagination::page::{CursorPage, CursorPageOfPublicIncident};
-use crate::public_status::IncidentListQuery;
+use crate::pagination::cursor::HistoryCursor;
+use crate::pagination::page::{
+    CursorPage, CursorPageOfPublicIncident, CursorPageOfPublicMaintenance,
+};
 use crate::public_status::access::{Access, mark_private};
 use crate::public_status::badge::{component_badge, overall_badge, render_badge};
 use crate::public_status::source::FeedLinks;
+use crate::public_status::{IncidentListQuery, MaintenanceListQuery};
 use crate::request::host::{ResolvedStatusPage, resolve_status_page};
 
 const NOINDEX: HeaderValue = HeaderValue::from_static("noindex");
@@ -216,19 +219,9 @@ pub async fn public_incidents(
     read: ReadablePage,
     Query(q): Query<IncidentsQuery>,
 ) -> Result<Served<Json<CursorPage<PublicIncident>>>, PublicAppError> {
-    // Cursor decode failure surfaces as `INVALID_CURSOR`. Map the internal
-    // `AppError` shape into `PublicAppError::BadRequest` so the public
-    // surface keeps its narrow error envelope (no internal context leaks
-    // through the unauthenticated path).
-    let cursor = q
-        .cursor
-        .as_deref()
-        .map(IncidentCursor::decode)
-        .transpose()
-        .map_err(|_| PublicAppError::BadRequest("invalid cursor"))?;
     let query = IncidentListQuery {
         limit: q.limit.unwrap_or(25).clamp(1, 100),
-        cursor,
+        cursor: public_cursor(q.cursor.as_deref())?,
         ongoing_only: q.ongoing_only.unwrap_or(false),
     };
     let listed = state.public_source.list_incidents(read.page, query).await?;
@@ -360,6 +353,57 @@ pub async fn public_maintenance(
 ) -> Result<Served<Json<PublicMaintenanceList>>, PublicAppError> {
     let m = state.public_source.maintenance(read.page).await?;
     Ok(Served::new(&state, &read, Json(m)).await)
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PastMaintenanceQuery {
+    /// Page size (default 25, max 100).
+    pub limit: Option<u32>,
+    /// Opaque cursor returned by the previous page's `next_cursor`. Omit
+    /// to fetch the first page.
+    pub cursor: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/v1/maintenance/past",
+    tag = "public_status",
+    summary = "Past maintenance windows (last 90 days, paginated)",
+    description = "Lists maintenance windows that have ended and affected at \
+                   least one component on the page, sorted by starts_at \
+                   descending. Cancelled windows are never listed. Capped at \
+                   90 days lookback; the cursor works like the incident list's.",
+    security(),
+    params(PastMaintenanceQuery),
+    responses(
+        (status = 200, body = CursorPageOfPublicMaintenance),
+        (status = 400, body = PublicApiError),
+    ),
+)]
+pub async fn public_past_maintenance(
+    State(state): State<AppState>,
+    read: ReadablePage,
+    Query(q): Query<PastMaintenanceQuery>,
+) -> Result<Served<Json<CursorPage<PublicMaintenance>>>, PublicAppError> {
+    let query = MaintenanceListQuery {
+        limit: q.limit.unwrap_or(25).clamp(1, 100),
+        cursor: public_cursor(q.cursor.as_deref())?,
+        ended_only: true,
+    };
+    let listed = state
+        .public_source
+        .list_maintenance(read.page, query)
+        .await?;
+    Ok(Served::new(&state, &read, Json(listed)).await)
+}
+
+/// A bad cursor is the client's mistake, answered in the narrow public
+/// envelope rather than the internal `INVALID_CURSOR` error.
+fn public_cursor(raw: Option<&str>) -> Result<Option<HistoryCursor>, PublicAppError> {
+    raw.map(HistoryCursor::decode)
+        .transpose()
+        .map_err(|_| PublicAppError::BadRequest("invalid cursor"))
 }
 
 #[utoipa::path(

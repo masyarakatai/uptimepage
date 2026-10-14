@@ -682,6 +682,10 @@ fn build_public_router() -> Router<AppState> {
             get(handlers::public::public_incidents_rss),
         )
         .route("/maintenance", get(handlers::public::public_maintenance))
+        .route(
+            "/maintenance/past",
+            get(handlers::public::public_past_maintenance),
+        )
         .route("/badge.svg", get(handlers::public::public_badge))
         .layer(from_fn(api_middleware::public_cache_control))
 }

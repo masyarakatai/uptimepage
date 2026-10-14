@@ -16,22 +16,24 @@ use uuid::Uuid;
 
 use crate::domain::{
     ComponentHistoryResponse, IncidentSeverity, IncidentStatusPhase, Locale, OrgId, PageRef,
-    PublicIncident, PublicIncidentUpdate, PublicMaintenanceList, PublicStatusPage, Recovered,
+    PublicIncident, PublicIncidentUpdate, PublicMaintenance, PublicMaintenanceList,
+    PublicStatusPage, Recovered,
 };
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
-use crate::pagination::cursor::IncidentCursor;
+use crate::pagination::cursor::HistoryCursor;
 use crate::pagination::page::CursorPage;
 
 use super::aggregator::{OrgAggregator, kept_component_name, on_page};
 use super::cache::{HistoryIncidentMarker, PageCache, PageCacheError, PageData};
+use super::history::{WindowQuery, page_windows};
 use super::xml::xml_escape;
 use crate::domain::stored_incident_impact;
 
 #[derive(Debug, Clone, Copy)]
 pub struct IncidentListQuery {
     pub limit: u32,
-    pub cursor: Option<IncidentCursor>,
+    pub cursor: Option<HistoryCursor>,
     pub ongoing_only: bool,
 }
 
@@ -43,6 +45,15 @@ impl Default for IncidentListQuery {
             ongoing_only: false,
         }
     }
+}
+
+/// Maintenance windows that have started, newest start first.
+#[derive(Debug, Clone, Copy)]
+pub struct MaintenanceListQuery {
+    pub limit: u32,
+    pub cursor: Option<HistoryCursor>,
+    /// Leave out a window still running.
+    pub ended_only: bool,
 }
 
 /// Public-status data layer, scoped to a single page. Every method takes a
@@ -94,6 +105,15 @@ pub trait PublicSource: Send + Sync {
         id: Uuid,
     ) -> Result<PublicIncident, PublicAppError>;
     async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError>;
+
+    /// Same lookback and cursor as [`Self::list_incidents`], so the two merge
+    /// into one history.
+    async fn list_maintenance(
+        &self,
+        page: PageRef,
+        q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError>;
+
     async fn incidents_rss(
         &self,
         page: PageRef,
@@ -242,6 +262,45 @@ impl PublicSource for OrgPublicSource {
         })
     }
 
+    async fn list_maintenance(
+        &self,
+        page: PageRef,
+        q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        let data = self.cached(page).await?;
+        let components: Vec<Uuid> = data
+            .page
+            .groups
+            .iter()
+            .flat_map(|g| &g.components)
+            .map(|c| c.id)
+            .collect();
+        let now = Utc::now();
+        let limit = q.limit.clamp(1, 100) as usize;
+        let mut windows = page_windows(
+            &self.pg,
+            page.org,
+            &components,
+            &data.component_names,
+            WindowQuery {
+                now,
+                since: now - ChronoDuration::days(self.rss_lookback_days as i64),
+                ended_only: q.ended_only,
+                cursor: q.cursor,
+                limit: limit as i64 + 1,
+            },
+        )
+        .await
+        .map_err(PublicAppError::Internal)?;
+        let next_cursor = (windows.len() > limit)
+            .then(|| {
+                windows.truncate(limit);
+                windows.last().map(|w| HistoryCursor::from(w).encode())
+            })
+            .flatten();
+        Ok(CursorPage::new(windows, next_cursor))
+    }
+
     async fn incidents_rss(
         &self,
         page: PageRef,
@@ -328,7 +387,7 @@ impl OrgPublicSource {
         }
         let next_cursor = if has_more {
             kept.last().map(|r| {
-                IncidentCursor {
+                HistoryCursor {
                     started_at: r.started_at,
                     id: r.id,
                 }
@@ -590,6 +649,8 @@ impl PublicSource for NoopPublicSource {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         }))
@@ -625,6 +686,14 @@ impl PublicSource for NoopPublicSource {
             active: Vec::new(),
             upcoming: Vec::new(),
         })
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
 
     async fn incidents_rss(

@@ -24,12 +24,13 @@ use uuid::Uuid;
 use common::build_test_app_with_public_source;
 use uptimepage::domain::{
     ComponentHistoryResponse, IncidentImpact, IncidentSeverity, IncidentStatusPhase, Locale,
-    PageRef, PublicIncident, PublicIncidentUpdate, PublicMaintenanceList, PublicStatusPage,
+    PageRef, PublicIncident, PublicIncidentUpdate, PublicMaintenance, PublicMaintenanceList,
+    PublicStatusPage,
 };
 use uptimepage::error::public::PublicAppError;
 use uptimepage::pagination::CursorPage;
 use uptimepage::public_status::{
-    IncidentListQuery, PublicSource, source::FeedLinks, source::build_rss,
+    IncidentListQuery, MaintenanceListQuery, PublicSource, source::FeedLinks, source::build_rss,
 };
 
 const INCIDENT_TITLE: &str = "Edge proxy 5xx spike";
@@ -111,6 +112,14 @@ impl PublicSource for TwoIncidentSource {
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!("not exercised by RSS test")
     }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
+    }
     async fn incidents_rss(
         &self,
         page: PageRef,
@@ -159,6 +168,14 @@ impl PublicSource for HiddenPageSource {
     }
     async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         self.0.maintenance(page).await
+    }
+
+    async fn list_maintenance(
+        &self,
+        page: PageRef,
+        q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        self.0.list_maintenance(page, q).await
     }
     async fn incidents_rss(
         &self,

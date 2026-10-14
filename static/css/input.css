@@ -2593,8 +2593,15 @@
         border-color: var(--theme-state-ok-line-soft);
     }
 
-    /* Past-incident rows (public/_past_incidents.html): one line per
-       incident; a folded row and the older-incidents toggle open in place. */
+    .public-sev--mnt {
+        background: var(--sm-state-mnt-soft-bg);
+        color: var(--sm-state-mnt-soft-fg);
+        border-color: var(--theme-line);
+    }
+
+    /* History rows (public/_past_incidents.html): one line per incident or
+       maintenance window; a folded row, a long description and the earlier
+       rows toggle open in place. */
     .past-row { @apply px-5 py-3; }
     .past-fold__summary,
     .past-earlier__summary {
@@ -2624,6 +2631,26 @@
     .past-fold__items {
         @apply mt-2 flex flex-col gap-1.5 pl-3;
         border-left: 1px solid var(--theme-line);
+    }
+    .past-fold__full { @apply mt-1; }
+
+    /* History tabs (All / Incidents / Maintenance). Links, so the current one
+       is marked by aria-current rather than a class. */
+    .history-tabs {
+        @apply inline-flex items-center gap-0.5 rounded-sm p-0.5 text-xs;
+        border: 1px solid var(--theme-line);
+        background: var(--theme-surface-elev);
+    }
+    .history-tab {
+        @apply rounded-sm px-2.5 py-1 font-medium;
+        color: var(--theme-text-muted);
+        text-decoration: none;
+    }
+    .history-tab:hover,
+    .history-tab:focus-visible { color: var(--theme-text); }
+    .history-tab[aria-current="page"] {
+        background: var(--theme-surface-sunk);
+        color: var(--theme-text);
     }
     @media (prefers-reduced-motion: reduce) {
         .past-fold__summary::after,

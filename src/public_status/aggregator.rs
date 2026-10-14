@@ -36,6 +36,7 @@ use crate::storage::capability_token;
 use crate::storage::status_pages::COMPONENT_ORDER;
 
 use super::cache::{HistoryIncidentMarker, PageSettings};
+use super::history::{WindowQuery, names_on_page, page_windows};
 use super::overall_status::{
     IncidentImpact, component_status, day_state, overall_state, overall_status,
 };
@@ -46,8 +47,10 @@ use super::overall_status::{
 #[derive(Debug, Clone)]
 pub struct AggregatorConfig {
     pub history_days: u32,
-    pub recent_incidents_days: u32,
-    pub max_recent_incidents: u32,
+    /// How far back the page lists finished incidents and maintenance.
+    pub recent_days: u32,
+    /// Rows each kind lists at most over that span.
+    pub max_recent: u32,
     pub upcoming_maintenance_horizon: ChronoDuration,
 }
 
@@ -55,8 +58,8 @@ impl Default for AggregatorConfig {
     fn default() -> Self {
         Self {
             history_days: 90,
-            recent_incidents_days: 30,
-            max_recent_incidents: 50,
+            recent_days: 30,
+            max_recent: 50,
             upcoming_maintenance_horizon: ChronoDuration::days(7),
         }
     }
@@ -151,6 +154,7 @@ impl OrgAggregator {
             (active_maintenance, upcoming_maintenance, maintenance_by_target),
             active_incidents,
             (recent_incidents, recent_incidents_has_more),
+            (recent_maintenance, recent_maintenance_has_more),
             marker_windows,
             paint_windows,
             day_presence,
@@ -158,6 +162,7 @@ impl OrgAggregator {
             self.load_maintenance(org, now, &component_ids, &name_by_id),
             self.load_active_incidents(page, org, &component_ids, &name_by_id, tr),
             self.load_recent_incidents(page, org, now, &component_ids, &name_by_id, tr),
+            self.load_recent_maintenance(org, now, &component_ids, &name_by_id),
             self.load_marker_windows(org, now, &component_ids),
             self.load_paint_windows(org, now, &component_ids, days),
             self.load_day_presence(org, &component_ids, now, days),
@@ -250,6 +255,8 @@ impl OrgAggregator {
                 recent_incidents_has_more,
                 active_maintenance,
                 upcoming_maintenance,
+                recent_maintenance,
+                recent_maintenance_has_more,
             },
             history_markers,
             name_by_id,
@@ -418,17 +425,17 @@ impl OrgAggregator {
             if on_page_components.is_empty() {
                 continue;
             }
-            let names: Vec<String> = on_page_components
-                .iter()
-                .filter_map(|id| name_by_id.get(id).cloned())
-                .collect();
             let pm = PublicMaintenance {
+                affected_component_names: names_on_page(
+                    component_ids,
+                    &on_page_components,
+                    name_by_id,
+                ),
                 id: row.id,
                 title: row.title,
                 description: row.description,
                 starts_at: row.starts_at,
                 ends_at: row.ends_at,
-                affected_component_names: names,
             };
             if row.starts_at <= now && row.ends_at > now {
                 active_target_ids.extend(on_page_components);
@@ -481,8 +488,8 @@ impl OrgAggregator {
         name_by_id: &HashMap<Uuid, String>,
         tr: Tr,
     ) -> Result<(Vec<PublicIncident>, bool)> {
-        let since = now - ChronoDuration::days(self.cfg.recent_incidents_days as i64);
-        let peek_limit = self.cfg.max_recent_incidents as i64 + 1;
+        let since = now - ChronoDuration::days(self.cfg.recent_days as i64);
+        let peek_limit = self.cfg.max_recent as i64 + 1;
         let mut rows: Vec<IncidentRow> = sqlx::query_as::<_, IncidentRow>(&format!(
             r#"SELECT i.id, i.target_id,
                       i.started_at, i.ended_at, i.severity, i.status_at_start,
@@ -507,12 +514,40 @@ impl OrgAggregator {
         .fetch_all(&self.pg)
         .await
         .context("load recent incidents")?;
-        let has_more = rows.len() as u32 > self.cfg.max_recent_incidents;
+        let has_more = rows.len() as u32 > self.cfg.max_recent;
         if has_more {
-            rows.truncate(self.cfg.max_recent_incidents as usize);
+            rows.truncate(self.cfg.max_recent as usize);
         }
         let hydrated = self.hydrate_incidents(org, rows, name_by_id, tr).await?;
         Ok((hydrated, has_more))
+    }
+
+    /// Windows that ended, over the span `load_recent_incidents` covers.
+    async fn load_recent_maintenance(
+        &self,
+        org: OrgId,
+        now: DateTime<Utc>,
+        component_ids: &[Uuid],
+        name_by_id: &HashMap<Uuid, String>,
+    ) -> Result<(Vec<PublicMaintenance>, bool)> {
+        let max = self.cfg.max_recent as usize;
+        let mut windows = page_windows(
+            &self.pg,
+            org,
+            component_ids,
+            name_by_id,
+            WindowQuery {
+                now,
+                since: now - ChronoDuration::days(self.cfg.recent_days as i64),
+                ended_only: true,
+                cursor: None,
+                limit: max as i64 + 1,
+            },
+        )
+        .await?;
+        let has_more = windows.len() > max;
+        windows.truncate(max);
+        Ok((windows, has_more))
     }
 
     /// 90-day slim incident pool for the popover matcher. 1000-row cap guards

@@ -1,28 +1,15 @@
-{# Past-incident rows, shared by the status page and the archive so the two
+{# History rows, shared by the status page and the archive so the two
    listings never drift. A single incident is one line that links to it; a
-   folded row opens to the incidents it holds. Folded rows carry a stable id
-   so the status region's refresh can reopen the ones a visitor opened, and
-   so does each summary, so focus survives the refresh too. #}
+   folded row opens to the incidents it holds; a maintenance window has no
+   page of its own, so one with a long description opens to the whole of it.
+   Rows that open carry a stable id so the status region's refresh can reopen
+   the ones a visitor opened, and so does each summary, so focus survives the
+   refresh too. #}
 {% macro rows(entries) %}
 <ul class="public-callout public-callout--neutral divide-y divide-[color:var(--theme-line)] overflow-hidden p-0">
     {% for e in entries %}
     <li class="past-row">
-        {% if e.items.is_empty() %}
-        <article class="space-y-1">
-            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span class="{{ e.impact_class }}">{{ e.impact_label }}</span>
-                {% if let Some(href) = e.permalink %}
-                <a href="{{ href }}" class="min-w-0 break-words font-medium text-body hover:underline">{{ e.title }}</a>
-                {% endif %}
-                {% if let Some(phase) = e.phase %}<span class="{{ phase.class }}">{{ phase.label }}</span>{% endif %}
-                {% if e.ongoing %}<span class="status-badge status-badge--down">{{ tr.t("incident-ongoing") }}</span>{% endif %}
-            </div>
-            <p class="text-xs text-quiet">
-                {% if !e.lead.is_empty() %}{{ e.lead }} · {% endif %}<time datetime="{{ e.started_at|iso_ts }}" data-tz="day-time">{{ e.started_at|human_ts }}</time> · {{ e.duration }}
-            </p>
-            {% if let Some(msg) = e.message %}<p class="text-pretty text-sm text-muted">{{ msg }}</p>{% endif %}
-        </article>
-        {% else %}
+        {% if !e.items.is_empty() %}
         <details class="past-fold" id="past-{{ e.key }}" data-keep-open>
             <summary class="past-fold__summary" id="past-{{ e.key }}-summary">
                 <span class="min-w-0 space-y-1">
@@ -47,8 +34,55 @@
                 {% endfor %}
             </ul>
         </details>
+        {% else if let Some(full) = e.full_message %}
+        <details class="past-fold group/fold" id="past-{{ e.key }}" data-keep-open>
+            <summary class="past-fold__summary" id="past-{{ e.key }}-summary">
+                <span class="min-w-0 space-y-1">
+                    {% call headline(e) %}{% endcall %}
+                    {% call meta(e) %}{% endcall %}
+                    {% if let Some(msg) = e.message %}<span class="block text-pretty text-sm text-muted group-open/fold:hidden">{{ msg }}</span>{% endif %}
+                </span>
+            </summary>
+            <p class="past-fold__full whitespace-pre-line text-pretty text-sm text-muted">{{ full }}</p>
+        </details>
+        {% else %}
+        <article class="space-y-1">
+            {% call headline(e) %}{% endcall %}
+            {% call meta(e) %}{% endcall %}
+            {% if let Some(msg) = e.message %}<p class="text-pretty text-sm text-muted">{{ msg }}</p>{% endif %}
+        </article>
         {% endif %}
     </li>
     {% endfor %}
 </ul>
+{% endmacro %}
+
+{% macro headline(e) %}
+<span class="flex flex-wrap items-center gap-x-2 gap-y-1">
+    <span class="{{ e.impact_class }}">{{ e.impact_label }}</span>
+    {% if let Some(href) = e.permalink %}
+    <a href="{{ href }}" class="min-w-0 break-words font-medium text-body hover:underline">{{ e.title }}</a>
+    {% else %}
+    <span class="min-w-0 break-words font-medium text-body">{{ e.title }}</span>
+    {% endif %}
+    {% if let Some(phase) = e.phase %}<span class="{{ phase.class }}">{{ phase.label }}</span>{% endif %}
+    {% if e.ongoing %}<span class="status-badge status-badge--down">{{ tr.t("incident-ongoing") }}</span>{% endif %}
+</span>
+{% endmacro %}
+
+{% macro meta(e) %}
+<span class="block text-xs text-quiet">
+    {% if !e.lead.is_empty() %}{{ e.lead }} · {% endif %}<time datetime="{{ e.started_at|iso_ts }}" data-tz="day-time">{{ e.started_at|human_ts }}</time> · {{ e.duration }}
+</span>
+{% endmacro %}
+
+{# The All / Incidents / Maintenance switch. Links rather than script, so a
+   tab works without JavaScript, survives the region's refresh, and keeps the
+   archive's paging on its own tab. Stable ids keep focus through the refresh. #}
+{% macro tabs(links, label) %}
+<nav class="history-tabs" aria-label="{{ label }}">
+    {% for t in links %}
+    <a href="{{ t.href }}" id="history-tab-{{ loop.index }}" class="history-tab"{% if t.current %} aria-current="page"{% endif %}>{{ t.label }}</a>
+    {% endfor %}
+</nav>
 {% endmacro %}

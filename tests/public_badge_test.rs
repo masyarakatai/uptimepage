@@ -22,12 +22,14 @@ use uuid::Uuid;
 use common::{UnavailablePublicSource, build_test_app_with_public_source};
 use uptimepage::domain::{
     ComponentHistoryResponse, DayState, OverallState, OverallStatus, PageRef, PublicComponent,
-    PublicComponentGroup, PublicComponentStatus, PublicIncident, PublicMaintenanceList,
-    PublicStatusPage,
+    PublicComponentGroup, PublicComponentStatus, PublicIncident, PublicMaintenance,
+    PublicMaintenanceList, PublicStatusPage,
 };
 use uptimepage::error::public::PublicAppError;
 use uptimepage::pagination::CursorPage;
-use uptimepage::public_status::{IncidentListQuery, PublicSource, source::FeedLinks};
+use uptimepage::public_status::{
+    IncidentListQuery, MaintenanceListQuery, PublicSource, source::FeedLinks,
+};
 
 fn known_component_id() -> Uuid {
     Uuid::parse_str("00000000-0000-0000-0000-000000000c01").unwrap()
@@ -63,6 +65,8 @@ impl PublicSource for BadgeSource {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         }))
@@ -91,6 +95,14 @@ impl PublicSource for BadgeSource {
     }
     async fn maintenance(&self, _page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         unimplemented!()
+    }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
     }
     async fn incidents_rss(
         &self,

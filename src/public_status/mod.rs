@@ -9,6 +9,7 @@ pub mod badge;
 pub mod cache;
 pub mod curation;
 pub mod custom_domain_ask;
+pub mod history;
 pub mod incident_writer;
 pub mod logo_storage;
 pub mod overall_status;
@@ -26,7 +27,9 @@ pub use incident_writer::{
     OpenIncident, PgIncidentStore,
 };
 pub use logo_storage::LogoMime;
-pub use source::{IncidentListQuery, NoopPublicSource, OrgPublicSource, PublicSource};
+pub use source::{
+    IncidentListQuery, MaintenanceListQuery, NoopPublicSource, OrgPublicSource, PublicSource,
+};
 
 /// `"{name} Status"`, unless the name already ends in the word "status".
 pub fn status_title(name: &str) -> String {

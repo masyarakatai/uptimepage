@@ -264,6 +264,8 @@ mod tests {
             active_incidents: Vec::new(),
             recent_incidents: Vec::new(),
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: Vec::new(),
         })

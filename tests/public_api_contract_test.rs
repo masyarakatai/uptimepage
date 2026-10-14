@@ -26,7 +26,9 @@ use uptimepage::domain::{
 };
 use uptimepage::error::public::PublicAppError;
 use uptimepage::pagination::CursorPage;
-use uptimepage::public_status::{IncidentListQuery, PublicSource, source::FeedLinks};
+use uptimepage::public_status::{
+    IncidentListQuery, MaintenanceListQuery, PublicSource, source::FeedLinks,
+};
 
 use common::{body_text, build_test_app_with_public_source};
 
@@ -116,6 +118,8 @@ impl PublicSource for FakePublicSource {
             active_incidents: vec![incident.clone()],
             recent_incidents: vec![incident],
             recent_incidents_has_more: false,
+            recent_maintenance: Vec::new(),
+            recent_maintenance_has_more: false,
             active_maintenance: Vec::new(),
             upcoming_maintenance: vec![maintenance],
         }))
@@ -200,6 +204,14 @@ impl PublicSource for FakePublicSource {
         })
     }
 
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        Ok(CursorPage::new(Vec::new(), None))
+    }
+
     async fn incidents_rss(
         &self,
         page: PageRef,
@@ -258,6 +270,14 @@ impl PublicSource for HiddenSource {
     async fn maintenance(&self, page: PageRef) -> Result<PublicMaintenanceList, PublicAppError> {
         self.0.maintenance(page).await
     }
+
+    async fn list_maintenance(
+        &self,
+        page: PageRef,
+        q: MaintenanceListQuery,
+    ) -> Result<CursorPage<PublicMaintenance>, PublicAppError> {
+        self.0.list_maintenance(page, q).await
+    }
     async fn incidents_rss(
         &self,
         page: PageRef,
@@ -273,6 +293,7 @@ async fn a_hidden_page_marks_every_public_representation_noindex() {
         "/api/public/v1/status",
         "/api/public/v1/incidents",
         "/api/public/v1/maintenance",
+        "/api/public/v1/maintenance/past",
         "/api/public/v1/badge.svg",
         "/api/public/v1/incidents.rss",
     ];
@@ -432,6 +453,7 @@ async fn public_endpoints_set_public_cache_headers() {
         "/api/public/v1/status",
         "/api/public/v1/incidents",
         "/api/public/v1/maintenance",
+        "/api/public/v1/maintenance/past",
     ] {
         let resp = router()
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -574,6 +596,7 @@ async fn openapi_marks_public_paths_as_unauthenticated() {
         "/api/public/v1/incidents/{id}",
         "/api/public/v1/incidents.rss",
         "/api/public/v1/maintenance",
+        "/api/public/v1/maintenance/past",
     ] {
         let entry = &doc["paths"][path]["get"];
         assert!(!entry.is_null(), "missing path {path} in OpenAPI doc");

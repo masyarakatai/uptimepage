@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ tr.t("archive-heading") }} · {{ branding.status_title() }} · {{ tr.t("title-archive-suffix") }}</title>
+    <title>{{ heading }} · {{ branding.status_title() }} · {{ tr.t("title-archive-suffix") }}</title>
     <meta name="robots" content="{{ robots }}">
     {% include "public/_og.html" %}
     <link rel="icon" type="image/svg+xml" href="{{ "img/favicon.svg"|asset }}">
@@ -23,11 +23,14 @@
             <a href="{{ branding.home }}" class="hover:underline">{{ tr.t("back-to-status") }}</a>
         </nav>
 
-        <h1 class="text-2xl font-semibold tracking-tight">{{ tr.t("archive-heading") }}</h1>
+        <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+            <h1 class="text-2xl font-semibold tracking-tight">{{ heading }}</h1>
+            {% call past::tabs(tabs.as_slice(), tr.t("history-tabs-label")) %}{% endcall %}
+        </div>
 
         {% if months.is_empty() %}
             <p class="public-callout public-callout--neutral p-8 text-center text-sm text-quiet">
-                {{ tr.t("archive-empty") }}
+                {{ empty }}
             </p>
         {% else %}
             {% for bucket in months %}
@@ -40,11 +43,11 @@
                 </section>
             {% endfor %}
 
-            {% if let Some(cursor) = next_cursor %}
+            {% if let Some(href) = older_url %}
                 <p class="text-right text-sm">
-                    <a href="/status/incidents?cursor={{ cursor }}"
+                    <a href="{{ href }}"
                        class="font-medium hover:underline text-accent">
-                        {{ tr.t("older-incidents") }}
+                        {{ tr.t("history-older") }}
                     </a>
                 </p>
             {% endif %}

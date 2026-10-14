@@ -83,6 +83,7 @@ use crate::storage::UptimeStats;
         handlers::public::public_incident,
         handlers::public::public_incidents_rss,
         handlers::public::public_maintenance,
+        handlers::public::public_past_maintenance,
         handlers::public::public_badge,
         handlers::maintenance::create_maintenance,
         handlers::maintenance::list_maintenance,

@@ -17,6 +17,7 @@ use crate::domain::{
 };
 use crate::i18n::Tr;
 use crate::public_status::HistoryIncidentMarker;
+use crate::public_status::history::HistoryEntry;
 use crate::storage::orgs::OrgBranding;
 
 #[test]
@@ -62,8 +63,17 @@ fn sample_page() -> PublicStatusPage {
         active_incidents: vec![],
         recent_incidents: vec![],
         recent_incidents_has_more: false,
+        recent_maintenance: Vec::new(),
+        recent_maintenance_has_more: false,
         active_maintenance: vec![],
         upcoming_maintenance: vec![],
+    }
+}
+
+fn all_tab() -> HistoryRequest {
+    HistoryRequest {
+        tab: HistoryTab::All,
+        home: "/",
     }
 }
 
@@ -81,7 +91,13 @@ fn sample_branding() -> BrandingView {
 
 #[test]
 fn full_page_renders_chrome_and_components() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -111,7 +127,13 @@ fn full_page_renders_chrome_and_components() {
 
 #[test]
 fn day_strip_renders_trigger_buttons_and_blob() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusRegion {
         tr: Tr::default(),
         view,
@@ -152,7 +174,7 @@ fn day_strip_blob_links_overlapping_incident() {
         started_at: p.generated_at - ChronoDuration::minutes(45),
         ended_at: Some(p.generated_at - ChronoDuration::minutes(5)),
     };
-    let view = build_view(&p, &[marker], &Default::default(), Tr::default());
+    let view = build_view(&p, &[marker], &Default::default(), all_tab(), Tr::default());
     // The JSON blob is the data source — assert against it, not the
     // rendered <li> markup (the JS builds those at runtime).
     assert!(view.day_strip_json.contains("Edge nodes returning 502"));
@@ -182,7 +204,7 @@ fn a_day_cell_is_coloured_by_how_long_it_was_down() {
     c.downtime[n - 2].major_secs = 4 * 60;
     c.history[n - 1] = DayState::MajorOutage;
     c.downtime[n - 1].major_secs = 90 * 60;
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let cells = &view.groups[0].components[0].history;
     assert_eq!(cells[n - 2].class, "day-cell--deg");
     assert_eq!(cells[n - 1].class, "day-cell--maj");
@@ -208,7 +230,7 @@ fn day_strip_blob_html_safe() {
         started_at: p.generated_at - ChronoDuration::minutes(30),
         ended_at: Some(p.generated_at - ChronoDuration::minutes(5)),
     };
-    let view = build_view(&p, &[marker], &Default::default(), Tr::default());
+    let view = build_view(&p, &[marker], &Default::default(), all_tab(), Tr::default());
     assert!(!view.day_strip_json.contains('<'));
     assert!(!view.day_strip_json.contains('>'));
     // `&` appears only as `&` — never raw.
@@ -256,7 +278,13 @@ fn day_related_keeps_incidents_touching_the_day() {
 
 #[test]
 fn fragment_renders_region_without_doctype() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusRegion {
         tr: Tr::default(),
         view,
@@ -264,7 +292,7 @@ fn fragment_renders_region_without_doctype() {
     .render()
     .unwrap();
     assert!(!html.contains("<!doctype html>"));
-    assert!(!html.contains("<nav"));
+    assert!(!html.contains("<header"), "no page chrome");
     assert!(html.contains(r#"id="status-region""#));
     assert!(html.contains(r#"hx-trigger="every 30s, sm:poll-resume from:body""#));
     assert!(html.contains("Gateway"));
@@ -280,7 +308,7 @@ fn fragment_renders_region_without_doctype() {
 fn empty_page_renders_with_zero_components() {
     let mut p = sample_page();
     p.groups.clear();
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -320,7 +348,7 @@ fn active_incident_banner_renders_when_present() {
         recovered: Vec::new(),
         recovering: false,
     });
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -347,7 +375,7 @@ fn maintenance_card_renders_when_present() {
         ends_at: Utc::now() + ChronoDuration::hours(1),
         affected_component_names: vec!["Gateway".into()],
     });
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -444,7 +472,7 @@ fn german_page_renders_german_chrome() {
     let html = StatusFullPage {
         reader: Reader::default(),
         tr,
-        view: build_view(&sample_page(), &[], &Default::default(), tr),
+        view: build_view(&sample_page(), &[], &Default::default(), all_tab(), tr),
         branding: sample_branding(),
         og: OgMeta::default(),
     }
@@ -719,7 +747,13 @@ fn render_about_adds_rel_to_links() {
 
 #[test]
 fn branding_renders_logo_about_and_color() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let branding = branding_with(PublicOrgBranding {
         public_display_name: Some("Acme Public".into()),
         public_about: Some("**hi** there".into()),
@@ -746,7 +780,13 @@ fn branding_renders_logo_about_and_color() {
 
 #[test]
 fn og_tags_render_with_image_when_marketing_origin_set() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -850,7 +890,13 @@ fn og_image_is_empty_without_marketing_origin() {
 
 #[test]
 fn og_tags_fall_back_to_summary_when_image_empty() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -877,7 +923,13 @@ fn og_tags_fall_back_to_summary_when_image_empty() {
 
 #[test]
 fn powered_by_shown_by_default() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -903,7 +955,13 @@ fn footer_source_links_follow_their_flag() {
         StatusFullPage {
             reader: Reader::default(),
             tr: Tr::default(),
-            view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
+            view: build_view(
+                &sample_page(),
+                &[],
+                &Default::default(),
+                all_tab(),
+                Tr::default(),
+            ),
             branding: b,
             og: OgMeta::default(),
         }
@@ -938,7 +996,13 @@ fn footer_source_links_follow_their_flag() {
 // sanitiser is the independent layer that holds even then.
 #[test]
 fn malicious_brand_color_cannot_escape_style_rule() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let branding = branding_with(PublicOrgBranding {
         public_brand_color: Some("red; } body { display: none } /*".into()),
         ..PublicOrgBranding::default()
@@ -1008,17 +1072,48 @@ fn bucket_by_month_groups_consecutive_incidents() {
     let apr = chrono::DateTime::parse_from_rfc3339("2026-04-15T11:30:00Z")
         .unwrap()
         .with_timezone(&Utc);
+    let window = PublicMaintenance {
+        id: Uuid::now_v7(),
+        title: "Database upgrade".into(),
+        description: None,
+        starts_at: may_b + ChronoDuration::days(3),
+        ends_at: may_b + ChronoDuration::days(3) + ChronoDuration::hours(1),
+        affected_component_names: vec!["API".into()],
+    };
     let items = vec![
-        fake_incident(may_a, 1, "May late"),
-        fake_incident(may_b, 2, "May early"),
-        fake_incident(apr, 3, "April"),
+        HistoryEntry::Incident(fake_incident(may_a, 1, "May late")),
+        HistoryEntry::Maintenance(window),
+        HistoryEntry::Incident(fake_incident(may_b, 2, "May early")),
+        HistoryEntry::Incident(fake_incident(apr, 3, "April")),
     ];
-    let buckets = bucket_by_month(&items, now, Tr::default());
+    let buckets = bucket_by_month(items, now, Tr::default());
     assert_eq!(buckets.len(), 2);
     assert_eq!(buckets[0].label, "May 2026");
-    assert_eq!(buckets[0].rows.len(), 2);
+    let may: Vec<&str> = buckets[0].rows.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(may, ["May late", "Database upgrade", "May early"]);
     assert_eq!(buckets[1].label, "April 2026");
     assert_eq!(buckets[1].rows.len(), 1);
+}
+
+fn archive_page(
+    tab: HistoryTab,
+    months: Vec<MonthBucket>,
+    cursor: Option<&str>,
+    robots: &'static str,
+) -> IncidentArchivePage {
+    let tr = Tr::default();
+    IncidentArchivePage {
+        tr,
+        branding: sample_branding(),
+        heading: tab.t(tr, "archive-heading"),
+        empty: tab.t(tr, "archive-empty"),
+        tabs: super::past::tab_links(ARCHIVE_URL, "", tab, tr),
+        months,
+        older_url: cursor.map(|c| archive_path(tab, Some(c))),
+        reader: Reader::default(),
+        robots,
+        og: OgMeta::default(),
+    }
 }
 
 #[test]
@@ -1027,24 +1122,47 @@ fn archive_page_renders_buckets_and_next_link() {
     let started = chrono::DateTime::parse_from_rfc3339("2026-05-22T10:00:00Z")
         .unwrap()
         .with_timezone(&Utc);
-    let items = vec![fake_incident(started, 1, "ECS rolled back")];
-    let months = bucket_by_month(&items, now, Tr::default());
-    let page = IncidentArchivePage {
-        tr: Tr::default(),
-        branding: sample_branding(),
+    let items = vec![HistoryEntry::Incident(fake_incident(
+        started,
+        1,
+        "ECS rolled back",
+    ))];
+    let months = bucket_by_month(items, now, Tr::default());
+    let html = archive_page(
+        HistoryTab::Incidents,
         months,
-        next_cursor: Some("opaque-cursor-token".into()),
-        reader: Reader::default(),
-        robots: "index,follow",
-        og: OgMeta::default(),
-    };
-    let html = page.render().unwrap();
-    assert!(html.contains("Incident history"));
+        Some("opaque-cursor-token"),
+        "noindex,follow",
+    )
+    .render()
+    .unwrap();
+    assert!(html.contains("<title>Incident history · "));
     assert!(html.contains("May 2026"));
     assert!(html.contains("ECS rolled back"));
     assert!(
-        html.contains("/status/incidents?cursor=opaque-cursor-token"),
-        "next-page link must include cursor"
+        html.contains("/status/incidents?show=incidents&#38;cursor=opaque-cursor-token"),
+        "the next page stays on the tab"
+    );
+    assert!(
+        html.contains(
+            r#"<a href="/status/incidents" id="history-tab-1" class="history-tab">All</a>"#
+        )
+    );
+    assert!(html.contains(
+        r#"<a href="/status/incidents?show=incidents" id="history-tab-2" class="history-tab" aria-current="page">Incidents</a>"#
+    ));
+}
+
+#[test]
+fn archive_path_keeps_the_tab_and_the_cursor() {
+    assert_eq!(archive_path(HistoryTab::All, None), "/status/incidents");
+    assert_eq!(
+        archive_path(HistoryTab::All, Some("c")),
+        "/status/incidents?cursor=c"
+    );
+    assert_eq!(
+        archive_path(HistoryTab::Maintenance, Some("c")),
+        "/status/incidents?show=maintenance&cursor=c"
     );
 }
 
@@ -1061,11 +1179,18 @@ fn status_url_puts_the_page_where_the_deploy_serves_it() {
 }
 
 #[test]
-fn only_the_cursorless_archive_page_is_indexable() {
+fn only_the_cursorless_archive_page_on_the_default_tab_is_indexable() {
     let branding = sample_branding();
-    assert_eq!(archive_robots(None, &branding), "index,follow");
     assert_eq!(
-        archive_robots(Some("opaque-cursor-token"), &branding),
+        archive_robots(HistoryTab::All, None, &branding),
+        "index,follow"
+    );
+    assert_eq!(
+        archive_robots(HistoryTab::All, Some("opaque-cursor-token"), &branding),
+        "noindex,follow"
+    );
+    assert_eq!(
+        archive_robots(HistoryTab::Maintenance, None, &branding),
         "noindex,follow"
     );
 }
@@ -1081,7 +1206,13 @@ fn only_a_plan_that_sells_white_label_follows_the_operators_link() {
         StatusFullPage {
             reader: Reader::default(),
             tr: Tr::default(),
-            view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
+            view: build_view(
+                &sample_page(),
+                &[],
+                &Default::default(),
+                all_tab(),
+                Tr::default(),
+            ),
             branding,
             og: OgMeta::default(),
         }
@@ -1110,7 +1241,13 @@ fn the_header_brand_falls_back_to_the_status_page_root() {
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
-        view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
+        view: build_view(
+            &sample_page(),
+            &[],
+            &Default::default(),
+            all_tab(),
+            Tr::default(),
+        ),
         branding: sample_branding(),
         og: OgMeta::default(),
     }
@@ -1127,12 +1264,21 @@ fn hiding_a_page_from_search_takes_every_page_with_it() {
         ..Default::default()
     });
     assert_eq!(branding.robots(), "noindex,follow");
-    assert_eq!(archive_robots(None, &branding), "noindex,follow");
+    assert_eq!(
+        archive_robots(HistoryTab::All, None, &branding),
+        "noindex,follow"
+    );
 
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
-        view: build_view(&sample_page(), &[], &Default::default(), Tr::default()),
+        view: build_view(
+            &sample_page(),
+            &[],
+            &Default::default(),
+            all_tab(),
+            Tr::default(),
+        ),
         branding,
         og: OgMeta::default(),
     }
@@ -1143,18 +1289,12 @@ fn hiding_a_page_from_search_takes_every_page_with_it() {
 
 #[test]
 fn archive_page_renders_empty_state_without_next_link() {
-    let page = IncidentArchivePage {
-        tr: Tr::default(),
-        branding: sample_branding(),
-        months: Vec::new(),
-        next_cursor: None,
-        reader: Reader::default(),
-        robots: "noindex,follow",
-        og: OgMeta::default(),
-    };
-    let html = page.render().unwrap();
-    assert!(html.contains("No incidents recorded."));
-    assert!(!html.contains("Older incidents"));
+    let html = archive_page(HistoryTab::Maintenance, Vec::new(), None, "noindex,follow")
+        .render()
+        .unwrap();
+    assert!(html.contains("No maintenance recorded."));
+    assert!(html.contains("Maintenance history"));
+    assert!(!html.contains("Older entries"));
     assert!(html.contains(r#"<meta name="robots" content="noindex,follow">"#));
 }
 
@@ -1164,7 +1304,13 @@ fn branding_defaults_when_all_fields_null() {
     // name and no logo image is emitted (the header shows text). The
     // default colour and powered-by footer are covered by their own
     // tests above; this one pins the resolved-name + no-logo path.
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let branding = branding_with(PublicOrgBranding::default());
     let html = StatusFullPage {
         reader: Reader::default(),
@@ -1193,14 +1339,14 @@ fn past_incidents_render_as_rows_with_older_ones_folded_away() {
         fake_incident(now - ChronoDuration::minutes(155), 2, "API degraded again"),
         fake_incident(now - ChronoDuration::days(20), 3, "API slow"),
     ];
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let html = StatusRegion {
         tr: Tr::default(),
         view,
     }
     .render()
     .unwrap();
-    assert!(html.contains("Past incidents (30 days)"));
+    assert!(html.contains("History (30 days)"));
     let folded = format!(
         r#"<details class="past-fold" id="past-{}" data-keep-open>"#,
         Uuid::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2])
@@ -1208,27 +1354,152 @@ fn past_incidents_render_as_rows_with_older_ones_folded_away() {
     assert!(html.contains(&folded), "the two blips share one row");
     assert!(html.contains("2 incidents"));
     assert!(html.contains(r#"<details class="past-earlier" id="past-earlier" data-keep-open>"#));
-    assert!(html.contains("1 earlier incident"));
+    assert!(html.contains("1 earlier entry"));
     assert!(html.contains(r#"data-tz="day-time""#));
-    assert!(!html.contains("No incidents in the past 7 days."));
+    assert!(!html.contains("No resolved incidents or completed maintenance in the past 7 days."));
 
     p.recent_incidents.truncate(0);
     p.recent_incidents
         .push(fake_incident(now - ChronoDuration::days(20), 3, "API slow"));
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let html = StatusRegion {
         tr: Tr::default(),
         view,
     }
     .render()
     .unwrap();
-    assert!(html.contains("No incidents in the past 7 days."));
-    assert!(!html.contains("past-fold\""));
+    assert!(html.contains("No resolved incidents or completed maintenance in the past 7 days."));
+    assert!(!html.contains(r#"class="past-fold"#));
+}
+
+#[test]
+fn a_page_with_no_history_still_shows_the_section_and_the_archive_link() {
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
+    let html = StatusRegion {
+        tr: Tr::default(),
+        view,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains(r#"<section id="history""#));
+    assert!(html.contains("History (30 days)"));
+    assert!(html.contains("No resolved incidents or completed maintenance in the past 30 days."));
+    assert!(html.contains(r#"<a href="/status/incidents" class="font-medium"#));
+    assert!(html.contains(
+        r#"<a href="/#history" id="history-tab-1" class="history-tab" aria-current="page">All</a>"#
+    ));
+}
+
+#[test]
+fn a_tab_keeps_itself_through_the_refresh_and_into_the_archive() {
+    let mut p = sample_page();
+    let now = p.generated_at;
+    p.recent_incidents = vec![fake_incident(
+        now - ChronoDuration::hours(2),
+        1,
+        "API degraded",
+    )];
+    p.recent_maintenance = vec![PublicMaintenance {
+        id: Uuid::from_u128(9),
+        title: "Database upgrade".into(),
+        description: Some("Primary moves to new hardware.".into()),
+        starts_at: now - ChronoDuration::hours(5),
+        ends_at: now - ChronoDuration::hours(4),
+        affected_component_names: vec!["Gateway".into()],
+    }];
+    let history = HistoryRequest {
+        tab: HistoryTab::Maintenance,
+        home: "/status",
+    };
+    let view = build_view(&p, &[], &Default::default(), history, Tr::default());
+    let html = StatusRegion {
+        tr: Tr::default(),
+        view,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains(r#"hx-get="?fragment=1&#38;show=maintenance""#));
+    assert!(html.contains(r#"href="/status/incidents?show=maintenance""#));
+    assert!(html.contains(
+        r#"<a href="/status?show=maintenance#history" id="history-tab-3" class="history-tab" aria-current="page">Maintenance</a>"#
+    ));
+    assert!(html.contains("Database upgrade"));
+    assert!(html.contains(r#"<span class="public-chip public-sev--mnt">Maintenance</span>"#));
+    assert!(html.contains("Primary moves to new hardware."));
+    assert!(
+        !html.contains("API degraded"),
+        "incidents are on their own tab"
+    );
+
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
+    let html = StatusRegion {
+        tr: Tr::default(),
+        view,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains("Database upgrade") && html.contains("API degraded"));
+    assert!(html.contains(r#"hx-get="?fragment=1""#));
+}
+
+#[test]
+fn a_long_maintenance_description_opens_in_place_and_hides_its_preview() {
+    let mut p = sample_page();
+    let now = p.generated_at;
+    let full = "Traffic moves to the standby links. ".repeat(12);
+    p.recent_maintenance = vec![PublicMaintenance {
+        id: Uuid::from_u128(9),
+        title: "Network maintenance".into(),
+        description: Some(full.clone()),
+        starts_at: now - ChronoDuration::hours(5),
+        ends_at: now - ChronoDuration::hours(4),
+        affected_component_names: vec!["Gateway".into()],
+    }];
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
+    let html = StatusRegion {
+        tr: Tr::default(),
+        view,
+    }
+    .render()
+    .unwrap();
+    let class_of = |text: &str| {
+        let tag = &html[..html.find(text).unwrap()];
+        let start = tag.rfind("class=\"").unwrap() + 7;
+        tag[start..start + tag[start..].find('"').unwrap()].to_owned()
+    };
+    assert!(
+        class_of(r#" id="past-"#)
+            .split(' ')
+            .any(|c| c == "group/fold"),
+        "the long description opens in place"
+    );
+    assert!(
+        class_of(">Traffic moves")
+            .split(' ')
+            .any(|c| c == "group-open/fold:hidden"),
+        "the preview hides itself once the row is open"
+    );
+    assert!(
+        html.contains(full.trim_end()),
+        "the open row shows all of it"
+    );
 }
 
 #[test]
 fn the_status_page_loads_the_script_that_keeps_rows_open() {
-    let view = build_view(&sample_page(), &[], &Default::default(), Tr::default());
+    let view = build_view(
+        &sample_page(),
+        &[],
+        &Default::default(),
+        all_tab(),
+        Tr::default(),
+    );
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -1247,7 +1518,7 @@ fn a_day_touched_for_no_measurable_time_still_names_its_state() {
     let comp_id = p.groups[0].components[0].id;
     let last = p.groups[0].components[0].history.len() - 1;
     p.groups[0].components[0].history[last] = DayState::PartialOutage;
-    let view = build_view(&p, &[], &Default::default(), Tr::default());
+    let view = build_view(&p, &[], &Default::default(), all_tab(), Tr::default());
     let cell = &view.groups[0].components[0].history[last];
     assert_eq!(
         cell.class, "day-cell--deg",

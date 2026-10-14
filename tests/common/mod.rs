@@ -1378,6 +1378,17 @@ impl PublicSource for UnavailablePublicSource {
     {
         Err(uptimepage::error::public::PublicAppError::Unavailable)
     }
+
+    async fn list_maintenance(
+        &self,
+        _page: PageRef,
+        _q: uptimepage::public_status::MaintenanceListQuery,
+    ) -> Result<
+        uptimepage::pagination::CursorPage<uptimepage::domain::PublicMaintenance>,
+        uptimepage::error::public::PublicAppError,
+    > {
+        Err(uptimepage::error::public::PublicAppError::Unavailable)
+    }
     async fn incidents_rss(
         &self,
         _page: PageRef,

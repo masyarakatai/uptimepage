@@ -4,8 +4,9 @@
 pub mod cursor;
 pub mod page;
 
-pub use cursor::IncidentCursor;
+pub use cursor::HistoryCursor;
 pub use page::{
-    CursorPage, CursorPageOfPublicIncident, PageEnvelope, PageOfCheckResult, PageOfIncident,
-    PageOfMaintenanceWindow, PageOfPublicIncident, PageOfTagCount, PageOfTarget,
+    CursorPage, CursorPageOfPublicIncident, CursorPageOfPublicMaintenance, PageEnvelope,
+    PageOfCheckResult, PageOfIncident, PageOfMaintenanceWindow, PageOfPublicIncident,
+    PageOfTagCount, PageOfTarget,
 };

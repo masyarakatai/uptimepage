@@ -440,13 +440,17 @@ pub struct PublicStatusPage {
     pub site_name: String,
     pub groups: Vec<PublicComponentGroup>,
     pub active_incidents: Vec<PublicIncident>,
+    /// Incidents that started in the last 30 days, newest first.
     pub recent_incidents: Vec<PublicIncident>,
-    /// True when the org has more incidents past `recent_incidents` than
-    /// were rendered into this snapshot. Drives the "older incidents" link
-    /// on the public page → archive view.
+    /// True when more incidents fall in that span than were listed.
     pub recent_incidents_has_more: bool,
     pub active_maintenance: Vec<PublicMaintenance>,
     pub upcoming_maintenance: Vec<PublicMaintenance>,
+    /// Windows that ended, among those that started in the same 30 days,
+    /// newest first. Cancelled windows are never listed.
+    pub recent_maintenance: Vec<PublicMaintenance>,
+    /// True when more ended windows fall in that span than were listed.
+    pub recent_maintenance_has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
