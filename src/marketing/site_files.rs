@@ -33,6 +33,7 @@ and schedules rotate people daily, weekly or on a custom length, with calendar o
 Organizations have role-based members and an audit log, and monitors, status pages and incidents are managed by \
 REST API, Terraform or MCP. The production source is published under AGPL, so a team can audit what it runs and \
 self-host if its requirements change. Public data is available as JSON, an RSS feed and an embeddable SVG badge. \
+On Team, a status page can be private instead: only the email addresses and domains on its list can open it, after signing in with a code sent by email. \
 Uptimepage operates the hosted service at uptimepage.dev: the Standard plan is free with no card, the first 1,000 \
 accounts get a more generous founding plan kept for life, and Pro and Team are the paid plans.";
 

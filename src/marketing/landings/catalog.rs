@@ -8,7 +8,7 @@ pub const LANDINGS: &[Landing] = &[
     Landing {
         path: "/status-page-for-saas",
         created: "2026-06-16",
-        lastmod: "2026-10-09",
+        lastmod: "2026-10-14",
         title: "Status Page & Uptime Monitoring for SaaS",
         eyebrow: "for saas teams",
         h1: "A status page your SaaS customers actually trust",
@@ -30,6 +30,10 @@ pub const LANDINGS: &[Landing] = &[
             Feature {
                 label: "Public history",
                 value: "90 days",
+            },
+            Feature {
+                label: "Private pages",
+                value: "Team, sign-in by email",
             },
             Feature {
                 label: "Price to start",
@@ -56,6 +60,10 @@ pub const LANDINGS: &[Landing] = &[
             Section {
                 heading: "A page that reads as yours",
                 body: "The page lives on your own subdomain with your logo and colours, or on a hostname you own such as status.yourcompany.com on Pro and Team, so it reads as part of your product rather than a third-party widget. Scheduled maintenance windows announce planned work ahead of time, so a migration weekend arrives as a calendar note instead of a surprise incident.",
+            },
+            Section {
+                heading: "A private page for the customers who need one",
+                body: "Some status is not for the whole internet: an enterprise customer whose contract promises its own page, a partner integration, an internal page for support. On Team, a page can be private. Only the email addresses and domains on its list can open it, after signing in with a code sent by email, and a passkey skips the code next time. Everything on it stays behind the sign-in, the RSS feed and the JSON API included, and nothing is cached or indexed.",
             },
         ],
         code: None,
