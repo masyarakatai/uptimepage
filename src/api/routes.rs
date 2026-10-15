@@ -32,13 +32,36 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
         shutdown.clone(),
     );
 
+    // One store for every route that takes an Idempotency-Key; the key covers
+    // the method and path, so routes never collide. Each route mounts it with
+    // its own body limit, inside auth and the rate limiter, so a replay is
+    // authorised and counted like the request it answers.
+    let idempotency = Arc::new(idempotency::IdempotencyCache::new());
+    let idempotent = |max_body: usize| {
+        from_fn_with_state(
+            idempotency::Idempotency::new(
+                Arc::clone(&idempotency),
+                max_body,
+                &state.cfg.auth.session.cookie_name,
+            ),
+            idempotency::middleware,
+        )
+    };
     let bulk = Router::new()
-        .route("/targets/bulk", post(handlers::targets::bulk_create))
-        .route("/targets/bulk-action", post(handlers::targets::bulk_action))
-        // Here for the idempotency layer: one call creates many monitors.
+        .route(
+            "/targets/bulk",
+            post(handlers::targets::bulk_create).layer(idempotent(BULK_BODY_LIMIT)),
+        )
+        .route(
+            "/targets/bulk-action",
+            post(handlers::targets::bulk_action).layer(idempotent(BULK_BODY_LIMIT)),
+        )
+        // Here for its larger body limit: one call creates many monitors.
         .route(
             "/targets/{id}/duplicate",
-            post(handlers::targets::duplicate).layer(DefaultBodyLimit::max(DUPLICATE_BODY_LIMIT)),
+            post(handlers::targets::duplicate)
+                .layer::<_, std::convert::Infallible>(idempotent(DUPLICATE_BODY_LIMIT))
+                .layer(DefaultBodyLimit::max(DUPLICATE_BODY_LIMIT)),
         )
         // `.merge`d below *after* v1's auth + rate-limit layers, so — like
         // `logo` — these routes must carry their own copies or they ship
@@ -54,10 +77,6 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
         .layer(from_fn_with_state(
             state.request_state(),
             crate::request::auth::api_token::middleware,
-        ))
-        .layer(from_fn_with_state(
-            Arc::new(idempotency::IdempotencyCache::new()),
-            idempotency::middleware,
         ))
         .layer(DefaultBodyLimit::max(BULK_BODY_LIMIT));
 
@@ -166,6 +185,13 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
                 .patch(handlers::maintenance::update_maintenance)
                 .delete(handlers::maintenance::delete_maintenance),
         )
+        // An update cannot be taken back and goes to every subscriber, so a
+        // retried post must not land twice.
+        .route(
+            "/maintenance/{id}/updates",
+            post(handlers::maintenance::post_maintenance_update)
+                .layer(idempotent(SINGLE_BODY_LIMIT)),
+        )
         .route(
             "/variables",
             get(handlers::variables::list).post(handlers::variables::create),
@@ -242,7 +268,7 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
         )
         .route(
             "/incidents/{id}/updates",
-            post(handlers::incidents::post_incident_update),
+            post(handlers::incidents::post_incident_update).layer(idempotent(SINGLE_BODY_LIMIT)),
         )
         .route(
             "/incidents/{id}/acknowledge",

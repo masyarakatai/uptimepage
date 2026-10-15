@@ -6,7 +6,7 @@ It is another authorized front door to the same stores the web app and [`/api/v1
 
 - **Transport** — Streamable HTTP at `POST/GET /mcp`, served on its own host (`mcp.{DOMAIN}` in production).
 - **Auth** — an org-bound scoped API token (`sm_live_…`), minted either by hand (Settings → API tokens) or by the one-click OAuth 2.1 connector flow.
-- **Surface** — 19 read tools (17 of them under the default grant; `list_notification_channels` needs `channels:read` and `list_variables` needs `variables:read`) + 19 write tools (each scope-gated, confirmed per action where the client can ask, and audited); see [Confirmations](#confirmations).
+- **Surface** — 19 read tools (17 of them under the default grant; `list_notification_channels` needs `channels:read` and `list_variables` needs `variables:read`) + 20 write tools (each scope-gated, confirmed per action where the client can ask, and audited); see [Confirmations](#confirmations).
 
 The server only mounts when enabled (see [Enabling](#enabling)); a deployment that leaves it off never exposes `/mcp`.
 
@@ -32,7 +32,7 @@ Side-effect-free (`readOnlyHint`). Each requires the scope named in its row: `ta
 | `get_incident` | `incidents:read` | One incident: affected monitor, severity, open/resolved times, error sample, and the full operator-update timeline. |
 | `get_incident_metrics` | `incidents:read` | Incident metrics over a trailing window (default 30 days): MTTA/MTTR, total, counts by severity and state, auto- vs human-resolved, and the noisiest monitors. |
 | `list_maintenance` | `maintenance:read` | Maintenance windows with their title, start and end, phase (`upcoming` / `active` / `completed` / `cancelled`), the monitors each covers, and whether it holds their paging. `status` narrows to `active`, `upcoming` or `past` (ended or cancelled); the default is all, latest start first. Cursor-paginated. |
-| `get_maintenance` | `maintenance:read` | One maintenance window, with its description. |
+| `get_maintenance` | `maintenance:read` | One maintenance window, with its description and the updates posted to it. |
 | `list_status_pages` | `status_page:read` | The org's status pages: slug, name, public URL, enabled. Cursor-paginated. |
 | `get_status_page` | `status_page:read` | One status page with its components and each linked monitor's current state, and `access`: who may open it, or `null` for a page never made private. |
 | `list_status_page_viewers` | `status_page:read` | Who signed in to a private page: address, first and last visit, saved passkeys, whether they subscribe, and whether they are blocked. Blocking stays in the app and the REST API. |
@@ -66,6 +66,7 @@ Not read-only. Each requires its scope **and**, from a client that can show one,
 | `create_maintenance` | `maintenance:write` | Schedule a maintenance window: `title`, optional `description`, `starts_at` and `ends_at` (RFC 3339; the end in the future, at most 30 days after the start), the `monitor_ids` it covers, and `suppress_alerts` (default `true`), the same rules as [`/api/v1/maintenance`](public-status.md#scheduling-maintenance). The confirmation names the covered monitors, says whether their paging is held, and says whether the window is announced: it shows on every published status page carrying one of them, whose subscribers are notified when it is scheduled and when it ends. The gentler alternative to `pause_monitor` for planned work, since checks keep running. |
 | `update_maintenance` | `maintenance:write` | Edit an upcoming or running window: `title`, `description`, `starts_at`, `ends_at`, `monitor_ids` (replaces the whole set) or `suppress_alerts`. `end_now` ends a running window at the server's clock and keeps it as completed work. A completed or cancelled window is history and is refused before anything is asked. Like `update_monitor`, the confirmation states old → new per field, a request that changes nothing writes nothing, and a window that moves while the prompt is open is refused as `conflict`. |
 | `cancel_maintenance` | `maintenance:delete` | Cancel a window that has not ended. It leaves the status pages and stops holding paging, and stays listed under `past` as a record; subscribers already told about it are not sent a cancellation. |
+| `post_maintenance_update` | `maintenance:write` | Post an update to an upcoming, running or completed window: that the work runs late, that it finished, or what changed. It shows on the status pages that show the window and in their history, and goes to their email and webhook subscribers. A completed window is otherwise read-only, so this is how a closing note is added. Refused on a cancelled window, and past 50 updates. |
 | `acknowledge_incident` | `incidents:write` | Take ownership of an incident and halt escalation. Internal only: it posts nothing to the public status page. Idempotent. |
 | `resolve_incident` | `incidents:write` | Mark the incident resolved. Internal only, same as acknowledge: the public page is untouched. Idempotent. |
 | `publish_incident` | `incidents:write` | Put an incident on every status page carrying the affected monitor, optionally seeding `public_title` and `public_description`. Subscribers may be notified. Idempotent. |
@@ -182,7 +183,7 @@ The connector advertises twelve grantable scopes. A request with no `scope` (or 
 | `channels:read` | `list_notification_channels`, and binding channels on `create_monitor` / `update_monitor` | opt-in |
 | `targets:write` | `create_monitor`, `create_monitors`, `update_monitor`, `pause_monitor`, `resume_monitor`, `set_monitor_state` | opt-in |
 | `targets:execute` | `run_check_now`, and the trial probes `create_monitor` / `create_monitors` run | opt-in |
-| `maintenance:write` | `create_maintenance`, `update_maintenance` | opt-in |
+| `maintenance:write` | `create_maintenance`, `update_maintenance`, `post_maintenance_update` | opt-in |
 | `maintenance:delete` | `cancel_maintenance` | opt-in |
 | `incidents:write` | `acknowledge_incident`, `resolve_incident`, `publish_incident`, `unpublish_incident`, `post_incident_update` | opt-in |
 | `status_page:write` | `create_status_page`, `update_status_page`, `add_status_page_components`, `update_status_page_component` — **and** the caller must be an owner of the org, the same bar `/api/v1` holds the public brand surface to | opt-in |

@@ -38,6 +38,60 @@ pub struct MaintenanceWindow {
     #[serde(default)]
     #[schema(nullable = true)]
     pub deleted_by: Option<UserId>,
+    /// What was posted about the window, oldest first.
+    #[serde(default)]
+    pub updates: Vec<MaintenanceUpdate>,
+}
+
+/// Where a window was when an update was posted to it, in the words the
+/// subscriber notices use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaintenanceUpdatePhase {
+    Scheduled,
+    InProgress,
+    Completed,
+}
+
+impl MaintenanceUpdatePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+        }
+    }
+
+    /// Unknown values read as completed: the column's check allows only these.
+    pub fn from_db(s: &str) -> Self {
+        match s {
+            "scheduled" => Self::Scheduled,
+            "in_progress" => Self::InProgress,
+            _ => Self::Completed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MaintenanceUpdate {
+    pub id: Uuid,
+    pub posted_at: DateTime<Utc>,
+    pub phase: MaintenanceUpdatePhase,
+    pub message: String,
+    /// Who posted it. Empty once that user is removed.
+    #[serde(default)]
+    #[schema(nullable = true)]
+    pub author: Option<UserId>,
+}
+
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewMaintenanceUpdate {
+    #[schema(
+        example = "The data copy is slower than planned. We now expect to finish by 23:30 UTC.",
+        max_length = 2000
+    )]
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]

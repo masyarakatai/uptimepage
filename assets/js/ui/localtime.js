@@ -17,6 +17,11 @@
 //   data-tz="day-time" — the date and time, short ("Oct 6, 4:22 PM", the year
 //                        added once it is not this one). For compact lists of
 //                        past events, where seconds are noise.
+//   data-tz="window"  — weekday, date and time with the zone named ("Tue, Oct
+//                        20, 10:00 PM EDT", the year added once it is not this
+//                        one). For a time readers plan around, such as a
+//                        maintenance window, where they must know which zone
+//                        they are reading.
 // The title tooltip otherwise carries the full local timestamp with zone name.
 //
 // The server emits a UTC fallback as the element's text, so the page is fully
@@ -42,7 +47,7 @@
         return undefined;
     }
 
-    var timeFmt, timeSecFmt, dateFmt, dateYearFmt, dayTimeFmt, dayTimeYearFmt, weekdayFmt, exactFmt, fullDateFmt, fullFmt;
+    var timeFmt, timeSecFmt, dateFmt, dateYearFmt, dayTimeFmt, dayTimeYearFmt, windowFmt, windowYearFmt, weekdayFmt, exactFmt, fullDateFmt, fullFmt;
     try {
         // hourCycle is one of the few component options allowed alongside
         // timeStyle; undefined leaves the locale default untouched.
@@ -53,6 +58,8 @@
         dateYearFmt = new Intl.DateTimeFormat(pinned, { month: "short", day: "numeric", year: "numeric" });
         dayTimeFmt = new Intl.DateTimeFormat(pinned, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hourCycle: hc });
         dayTimeYearFmt = new Intl.DateTimeFormat(pinned, { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hourCycle: hc });
+        windowFmt = new Intl.DateTimeFormat(pinned, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short", hourCycle: hc });
+        windowYearFmt = new Intl.DateTimeFormat(pinned, { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short", hourCycle: hc });
         weekdayFmt = new Intl.DateTimeFormat(pinned, { weekday: "short" });
         exactFmt = new Intl.DateTimeFormat(pinned, { dateStyle: "medium", timeStyle: "medium", hourCycle: hc });
         fullDateFmt = new Intl.DateTimeFormat(pinned, { dateStyle: "full" });
@@ -160,6 +167,8 @@
             el.textContent = mode === "exact" ? exactFmt.format(then)
                 : mode === "day-time" ? (then.getFullYear() === now.getFullYear()
                     ? dayTimeFmt.format(then) : dayTimeYearFmt.format(then))
+                : mode === "window" ? (then.getFullYear() === now.getFullYear()
+                    ? windowFmt.format(then) : windowYearFmt.format(then))
                 : mode === "at" ? atLabel(then, now)
                 : mode === "date" ? dayLabel(then, now)
                 : relativeLabel(then, now);

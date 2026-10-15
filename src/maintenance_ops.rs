@@ -1,20 +1,22 @@
-//! Schedule, edit and cancel maintenance windows under the same rules for the
-//! REST handlers and the MCP tools.
+//! Schedule, edit, cancel and post updates to maintenance windows under the
+//! same rules for the REST handlers and the MCP tools.
 
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 use crate::domain::{
-    MaintenanceWindow, MaintenanceWindowUpdate, NewMaintenanceWindow, OrgId, UserId, WindowPhase,
-    WriteSource,
+    MaintenanceUpdate, MaintenanceWindow, MaintenanceWindowUpdate, NewMaintenanceWindow, OrgId,
+    UserId, WindowPhase, WriteSource,
 };
 use crate::error::codes;
 use crate::error::validation;
 use crate::error::{AppError, Result};
 use crate::quotas::QuotaService;
-use crate::storage::MaintenanceStore;
+use crate::storage::{MaintenanceStore, PostedUpdate};
 
 const MAX_WINDOW_DAYS: i64 = 30;
+/// Bounds what one window adds to every public read of the page.
+pub const MAX_UPDATES_PER_WINDOW: i64 = 50;
 
 /// Borrowed view over the stores a maintenance write touches, taken from the
 /// app state per call.
@@ -133,6 +135,37 @@ impl MaintenanceOps<'_> {
                 "cannot cancel a completed maintenance window",
             )),
             WindowPhase::Upcoming | WindowPhase::Active => Ok(()),
+        }
+    }
+
+    /// Upcoming, running and finished windows all take updates: a finished
+    /// window keeps its own fields, and an update is how a closing note is added.
+    pub async fn post_update(
+        &self,
+        org: OrgId,
+        id: Uuid,
+        message: &str,
+        actor: Option<UserId>,
+    ) -> Result<MaintenanceUpdate> {
+        validation::validate_message(message, "message")?;
+        match self
+            .store
+            .post_update(org, id, message.trim(), MAX_UPDATES_PER_WINDOW, actor)
+            .await?
+        {
+            PostedUpdate::Posted(update) => Ok(update),
+            PostedUpdate::NotFound => Err(AppError::not_found(
+                codes::MAINTENANCE_NOT_FOUND,
+                "maintenance window not found",
+            )),
+            PostedUpdate::Cancelled => Err(AppError::unprocessable(
+                codes::MAINTENANCE_CANCELLED,
+                "a cancelled maintenance window is not public and takes no updates",
+            )),
+            PostedUpdate::Full => Err(AppError::unprocessable(
+                codes::MAINTENANCE_UPDATE_LIMIT,
+                format!("a maintenance window takes at most {MAX_UPDATES_PER_WINDOW} updates"),
+            )),
         }
     }
 

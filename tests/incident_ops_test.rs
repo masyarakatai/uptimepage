@@ -2790,3 +2790,121 @@ async fn default_public_lines_are_marked_generated_pg() {
         "the operator's own words"
     );
 }
+
+/// When it was closed by the database clock, and when its last `resolved`
+/// update was posted.
+async fn close_marks(
+    pool: &PgPool,
+    id: Uuid,
+) -> (
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+) {
+    sqlx::query_as(
+        "SELECT i.resolved_at,
+                (SELECT max(u.posted_at) FROM incident_updates u
+                 WHERE u.incident_id = i.id AND u.phase = 'resolved')
+         FROM incidents i WHERE i.id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn make_public(pool: &PgPool, id: Uuid) {
+    sqlx::query("UPDATE incidents SET visibility = 'public' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// A page that kept an incident after its monitor left reads `resolved_at` to
+/// tell the closing update from what was said before it, so every close must
+/// stamp it with its own update's time, and a reopen must clear it.
+#[tokio::test]
+#[ignore]
+async fn every_close_stamps_resolved_at_at_its_closing_update_pg() {
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    let ops = PgIncidentOpsStore::new(pool.clone());
+
+    let (org, user, by_hand) = seed(&pool, "incstamp").await;
+    make_public(&pool, by_hand).await;
+    ops.resolve(org, by_hand, Actor::User(user), None)
+        .await
+        .unwrap();
+    let (at, closing) = close_marks(&pool, by_hand).await;
+    assert!(at.is_some(), "resolve");
+    assert_eq!(at, closing, "resolve stamps its closing update's time");
+
+    let (org, _, auto) = seed(&pool, "incstamp").await;
+    make_public(&pool, auto).await;
+    ops.auto_resolve(org, auto).await.unwrap();
+    let (at, closing) = close_marks(&pool, auto).await;
+    assert!(at.is_some(), "auto resolve");
+    assert_eq!(at, closing);
+
+    let (org, _, recovered) = seed(&pool, "incstamp").await;
+    make_public(&pool, recovered).await;
+    use uptimepage::public_status::incident_writer::{IncidentStore, PgIncidentStore};
+    assert!(
+        PgIncidentStore::new(pool.clone())
+            .close(
+                org,
+                recovered,
+                chrono::Utc::now() - chrono::Duration::minutes(3)
+            )
+            .await
+            .unwrap()
+    );
+    let (at, closing) = close_marks(&pool, recovered).await;
+    assert!(at.is_some(), "the monitor recovering");
+    assert_eq!(at, closing, "the check's own time is ended_at, not this");
+
+    let (org, _, _) = seed(&pool, "incstamp").await;
+    let target: Uuid = sqlx::query_scalar(
+        r#"INSERT INTO targets (org_id, name, check_spec, interval_secs)
+           VALUES ($1, 'deleted', '{"type":"http","url":"https://example.com/"}'::jsonb, 30)
+           RETURNING id"#,
+    )
+    .bind(org.0)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let orphaned: Uuid = sqlx::query_scalar(
+        "INSERT INTO incidents (org_id, target_id, started_at, status_at_start) \
+         VALUES ($1, $2, now() - interval '5 minutes', 'down') RETURNING id",
+    )
+    .bind(org.0)
+    .bind(target)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    uptimepage::storage::TargetStore::delete(
+        &uptimepage::storage::PostgresTargetStore::from_pool(pool.clone(), None),
+        org,
+        target,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        close_marks(&pool, orphaned).await.0.is_some(),
+        "monitor delete"
+    );
+
+    let (org, user, reopened) = seed(&pool, "incstamp").await;
+    ops.resolve(org, reopened, Actor::User(user), None)
+        .await
+        .unwrap();
+    ops.reopen(org, reopened, Actor::User(user), None)
+        .await
+        .unwrap();
+    assert!(
+        close_marks(&pool, reopened).await.0.is_none(),
+        "an incident running again is not closed"
+    );
+}

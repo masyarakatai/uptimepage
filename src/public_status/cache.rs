@@ -28,15 +28,27 @@ use uuid::Uuid;
 use crate::config::PublicStatusConfig;
 use crate::domain::{Locale, PublicStatusPage, StatusPageId};
 
-/// 90-day incident reference used only by the HTML popover matcher.
-/// Slim by design — full-detail incidents live on `PublicStatusPage`.
+/// 90-day reference to an incident or a maintenance window, used only by the
+/// HTML popover matcher. Slim by design — full detail lives on
+/// `PublicStatusPage`. A window touching several components has one per
+/// component.
 #[derive(Debug, Clone)]
-pub struct HistoryIncidentMarker {
+pub struct HistoryMarker {
+    pub kind: MarkerKind,
     pub id: Uuid,
     pub component_id: Uuid,
     pub title: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// An incident has a page of its own; a window has a row in the archive,
+/// found by the window's start. A window's marker spans one stretch a
+/// monitor spent in it, which can start later than the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerKind {
+    Incident,
+    Maintenance { starts_at: DateTime<Utc> },
 }
 
 /// Cache value: page + history markers + the page's `target_id → public name`
@@ -46,7 +58,7 @@ pub struct HistoryIncidentMarker {
 #[derive(Debug, Clone)]
 pub struct PageData {
     pub page: Arc<PublicStatusPage>,
-    pub history_markers: Arc<Vec<HistoryIncidentMarker>>,
+    pub history_markers: Arc<Vec<HistoryMarker>>,
     pub component_names: Arc<HashMap<Uuid, String>>,
     pub settings: PageSettings,
 }
@@ -73,7 +85,7 @@ impl From<PublicStatusPage> for PageData {
 impl
     From<(
         PublicStatusPage,
-        Vec<HistoryIncidentMarker>,
+        Vec<HistoryMarker>,
         HashMap<Uuid, String>,
         PageSettings,
     )> for PageData
@@ -81,7 +93,7 @@ impl
     fn from(
         (page, markers, names, settings): (
             PublicStatusPage,
-            Vec<HistoryIncidentMarker>,
+            Vec<HistoryMarker>,
             HashMap<Uuid, String>,
             PageSettings,
         ),

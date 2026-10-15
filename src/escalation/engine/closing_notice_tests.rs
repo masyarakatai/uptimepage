@@ -480,6 +480,16 @@ impl crate::storage::MaintenanceStore for Interrupted {
         }
         self.inner.alerts_suppressed(org, target_id).await
     }
+    async fn post_update(
+        &self,
+        org: OrgId,
+        id: Uuid,
+        message: &str,
+        max: i64,
+        actor: Option<crate::domain::UserId>,
+    ) -> crate::error::Result<crate::storage::PostedUpdate> {
+        self.inner.post_update(org, id, message, max, actor).await
+    }
 }
 
 /// The step passed its claim check, then the incident was resolved and

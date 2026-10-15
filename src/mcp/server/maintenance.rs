@@ -1,4 +1,5 @@
-//! Maintenance window bodies: list and read, schedule, edit, cancel.
+//! Maintenance window bodies: list and read, schedule, edit, cancel, post an
+//! update.
 //!
 //! No audit here: the wrappers in [`super::tools_write`] record the outcome.
 
@@ -17,6 +18,7 @@ use crate::domain::{
     WindowPhase, WriteSource,
 };
 use crate::error::AppError;
+use crate::maintenance_ops::MAX_UPDATES_PER_WINDOW;
 use crate::quotas::ratelimit::RateLimitCategory;
 use crate::storage::MaintenanceListQuery;
 use crate::templates::format::humanize_duration;
@@ -27,8 +29,8 @@ use crate::mcp::cursor;
 use crate::mcp::error::{McpToolError, codes, config_error};
 use crate::mcp::schema::{
     CreateMaintenanceArgs, FieldChange, ListMaintenanceArgs, MaintenanceIdArg, MaintenanceList,
-    MaintenanceMonitor, MaintenanceStatus, MaintenanceUpdateResult, MaintenanceWindowView,
-    UpdateMaintenanceArgs,
+    MaintenanceMonitor, MaintenanceStatus, MaintenanceUpdateResult, MaintenanceUpdateView,
+    MaintenanceWindowView, PostMaintenanceUpdateArgs, UpdateMaintenanceArgs,
 };
 
 use super::McpServer;
@@ -255,6 +257,41 @@ impl McpServer {
         Ok(Json(window_view(&current, &names, Utc::now())))
     }
 
+    pub(super) async fn post_maintenance_update_inner(
+        &self,
+        ctx: &RequestContext<RoleServer>,
+        auth: &McpAuth,
+        args: &PostMaintenanceUpdateArgs,
+    ) -> Result<Json<MaintenanceWindowView>, McpToolError> {
+        auth.require(Scope::MaintenanceWrite)?;
+        self.enforce_rate_limit(auth.org, RateLimitCategory::ApiWrites)
+            .await?;
+
+        let window = self.load_window(auth.org, &args.id).await?;
+        crate::error::validation::validate_message(&args.message, "message")
+            .map_err(window_error)?;
+        if window.phase(Utc::now()) == WindowPhase::Cancelled {
+            return Err(McpToolError::invalid_argument(
+                "this window was cancelled, so it is not public and takes no updates",
+            ));
+        }
+        if window.updates.len() as i64 >= MAX_UPDATES_PER_WINDOW {
+            return Err(McpToolError::invalid_argument(format!(
+                "this window already has {MAX_UPDATES_PER_WINDOW} updates, the most it takes"
+            )));
+        }
+        require_confirmation(ctx, auth, update_prompt(&window, &args.message, Utc::now())).await?;
+
+        self.state
+            .maintenance_ops()
+            .post_update(auth.org, window.id, &args.message, Some(auth.user_id))
+            .await
+            .map_err(window_error)?;
+        let names = self.monitor_names(auth.org).await?;
+        let current = self.load_window(auth.org, &args.id).await?;
+        Ok(Json(window_view(&current, &names, Utc::now())))
+    }
+
     async fn vetted_patch(
         &self,
         org: OrgId,
@@ -342,6 +379,15 @@ pub(super) fn window_view(
         suppress_alerts: w.suppress_alerts,
         monitors,
         cancelled_at: w.deleted_at.map(|t| t.to_rfc3339()),
+        updates: w
+            .updates
+            .iter()
+            .map(|u| MaintenanceUpdateView {
+                posted_at: u.posted_at.to_rfc3339(),
+                phase: u.phase.as_str().to_string(),
+                message: sanitize_data(&u.message),
+            })
+            .collect(),
     }
 }
 
@@ -597,6 +643,19 @@ pub(super) fn cancel_prompt(
         when(w.starts_at),
         when(w.ends_at),
         monitor_list(&w.component_ids, names),
+    )
+}
+
+pub(super) fn update_prompt(w: &MaintenanceWindow, message: &str, now: DateTime<Utc>) -> String {
+    format!(
+        "Post this update to maintenance \"{}\" ({}, {} to {})?\n\n{}\n\nIt shows on your \
+         status pages and in their history, and goes to their email and webhook subscribers. \
+         Updates cannot be edited or removed.",
+        sanitize_prompt(&w.title),
+        w.phase(now).as_str(),
+        when(w.starts_at),
+        when(w.ends_at),
+        sanitize_prompt(message.trim()),
     )
 }
 

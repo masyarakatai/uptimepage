@@ -70,7 +70,7 @@ impl ServerHandler for McpServer {
              Read-only tools report on the org; the rest perform actions (create a monitor, pause/resume \
              one, retune how loudly one is watched, set a manual one's state, run a check, \
              schedule, edit or cancel a \
-             maintenance window, publish an incident, post an incident update, create or edit a \
+             maintenance window or post an update to one, publish an incident, post an incident update, create or edit a \
              status page and the components on it) and each \
              asks the user to confirm before it runs when the client can show a prompt; a \
              client that cannot relay one runs them on the token's scopes alone, and the audit \
@@ -86,7 +86,8 @@ impl ServerHandler for McpServer {
              is operator-facing. \
              For planned work, schedule a maintenance window with `create_maintenance` rather \
              than pausing monitors: checks keep running, the status page shows the work, and \
-             paging for the covered monitors is held until it ends. \
+             paging for the covered monitors is held until it ends. When the work runs late or \
+             finishes, `post_maintenance_update` tells the page's readers and subscribers. \
              A service only people can judge, such as a SIP trunk or a partner's back office, \
              is a `manual` monitor: nothing probes it, and `set_monitor_state` marks it up, \
              degraded or down, which opens and closes incidents like any other monitor. \

@@ -7,7 +7,7 @@ use super::args::{
 };
 use super::maintenance::{
     MaintenancePage, MonitorNames, build_window_patch, cancel_prompt, edit_prompt, monitor_set,
-    schedule_prompt, window_view,
+    schedule_prompt, update_prompt, window_view,
 };
 use super::support::deny_terraform;
 use super::text::{
@@ -2149,6 +2149,7 @@ fn stored_window(starts_in_mins: i64) -> MaintenanceWindow {
     let now = Utc::now();
     MaintenanceWindow {
         id: Uuid::nil(),
+        updates: Vec::new(),
         title: "DB upgrade".into(),
         description: None,
         starts_at: now + Duration::minutes(starts_in_mins),
@@ -2330,6 +2331,34 @@ fn a_window_reads_back_its_phase_and_names_its_monitors() {
     assert!(view.description.is_none());
     let names: Vec<&str> = view.monitors.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, vec!["api", "Database"]);
+}
+
+#[test]
+fn a_window_reads_back_its_updates_as_data() {
+    let now = Utc::now();
+    let mut window = stored_window(-90);
+    window.updates = vec![crate::domain::MaintenanceUpdate {
+        id: Uuid::nil(),
+        posted_at: now,
+        phase: crate::domain::MaintenanceUpdatePhase::Completed,
+        message: "Done at 23:24 UTC.".into(),
+        author: None,
+    }];
+    let view = window_view(&window, &monitor_names(), now);
+    assert_eq!(view.phase, "completed");
+    assert_eq!(view.updates.len(), 1);
+    assert_eq!(view.updates[0].phase, "completed");
+    assert_eq!(view.updates[0].message, "Done at 23:24 UTC.");
+}
+
+#[test]
+fn an_update_prompt_shows_the_message_and_who_will_read_it() {
+    let now = Utc::now();
+    let prompt = update_prompt(&stored_window(-10), "  Running late.  ", now);
+    assert!(prompt.starts_with("Post this update to maintenance \"DB upgrade\" (active,"));
+    assert!(prompt.contains("\n\nRunning late.\n\n"));
+    assert!(prompt.contains("subscribers"));
+    assert!(prompt.contains("cannot be edited or removed"));
 }
 
 #[test]

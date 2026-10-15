@@ -269,9 +269,10 @@ fn every_request_body_resolves_its_refs_without_the_doc() {
     use uptimepage::api::types::{BulkActionRequest, TestRequest};
     use uptimepage::domain::{
         IncidentNarrationUpdate, MaintenanceWindowUpdate, NewEscalationPolicy, NewIncidentUpdate,
-        NewMaintenanceWindow, NewManualIncident, NewMonitorShare, NewNotificationChannel,
-        NewOnCallOverride, NewOnCallSchedule, NewStatusPageComponent, NewTarget, NewVariable,
-        NotificationChannelUpdate, PostmortemUpsert, StatusPageComponentUpdate, TargetUpdate,
+        NewMaintenanceUpdate, NewMaintenanceWindow, NewManualIncident, NewMonitorShare,
+        NewNotificationChannel, NewOnCallOverride, NewOnCallSchedule, NewStatusPageComponent,
+        NewTarget, NewVariable, NotificationChannelUpdate, PostmortemUpsert,
+        StatusPageComponentUpdate, TargetUpdate,
     };
     use uptimepage::target_ops::SetManualState;
 
@@ -286,6 +287,7 @@ fn every_request_body_resolves_its_refs_without_the_doc() {
         body::<TestRequest>(),
         body::<NewMaintenanceWindow>(),
         body::<MaintenanceWindowUpdate>(),
+        body::<NewMaintenanceUpdate>(),
         body::<NewVariable>(),
         body::<variables::VariableValueUpdate>(),
         body::<NewNotificationChannel>(),

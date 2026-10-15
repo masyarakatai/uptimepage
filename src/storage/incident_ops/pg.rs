@@ -104,10 +104,14 @@ fn incident_audit_meta(mut meta: serde_json::Value, pages: &[Uuid]) -> serde_jso
     meta
 }
 
+/// A monitor's incident reaches pages through their components; a page that
+/// kept it after the monitor left is history, not a page it was published to.
 async fn status_pages_tx(conn: &mut sqlx::PgConnection, org: OrgId, id: Uuid) -> Result<Vec<Uuid>> {
     sqlx::query_scalar(
-        "SELECT status_page_id FROM incident_status_pages \
-         WHERE org_id = $1 AND incident_id = $2 ORDER BY status_page_id",
+        "SELECT isp.status_page_id FROM incident_status_pages isp \
+         JOIN incidents i ON i.id = isp.incident_id AND i.org_id = isp.org_id \
+         WHERE isp.org_id = $1 AND isp.incident_id = $2 AND i.target_id IS NULL \
+         ORDER BY isp.status_page_id",
     )
     .bind(org.0)
     .bind(id)
@@ -566,7 +570,7 @@ impl PgIncidentOpsStore {
                  duration_secs = COALESCE(duration_secs, GREATEST(0, EXTRACT(EPOCH FROM \
                      (COALESCE(ended_at, recovering_since, now()) - started_at))::int)), \
                  resolved_by = $3, next_escalation_at = NULL, recovering_since = NULL, \
-                 closing_notice_at = now(), updated_at = now() \
+                 closing_notice_at = now(), resolved_at = now(), updated_at = now() \
              WHERE id = $1 AND org_id = $2 RETURNING {OPS_COLS}"
         );
         let public_resolution = Some(resolved_public_message(note.as_deref()));
@@ -948,7 +952,7 @@ impl IncidentOpsStore for PgIncidentOpsStore {
                  duration_secs = COALESCE(duration_secs, GREATEST(0, EXTRACT(EPOCH FROM \
                      (COALESCE(ended_at, recovering_since, now()) - started_at))::int)), \
                  resolved_by = $3, next_escalation_at = NULL, recovering_since = NULL, \
-                 closing_notice_at = now(), updated_at = now() \
+                 closing_notice_at = now(), resolved_at = now(), updated_at = now() \
              WHERE id = $1 AND org_id = $2 RETURNING {OPS_COLS}"
         );
         self.transition(
@@ -986,7 +990,8 @@ impl IncidentOpsStore for PgIncidentOpsStore {
              SET state = 'triggered', ended_at = NULL, duration_secs = NULL, resolved_by = NULL, \
                  acknowledged_at = NULL, acknowledged_by = NULL, \
                  escalation_level = 0, escalation_round = 0, renotify_count = 0, \
-                 closing_notice_at = NULL, recovering_since = NULL, updated_at = now() \
+                 closing_notice_at = NULL, resolved_at = NULL, recovering_since = NULL, \
+                 updated_at = now() \
              WHERE id = $1 AND org_id = $2 AND ($3::uuid IS NULL OR true) RETURNING {OPS_COLS}"
         );
         self.transition(
@@ -1198,6 +1203,18 @@ impl IncidentOpsStore for PgIncidentOpsStore {
             .await
             .map_err(|e| anyhow::anyhow!("acquire: {e}"))?;
         status_pages_tx(&mut conn, org, id).await
+    }
+
+    async fn kept_on_pages(&self, org: OrgId, id: Uuid) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar(
+            "SELECT status_page_id FROM incident_status_pages \
+             WHERE org_id = $1 AND incident_id = $2 ORDER BY status_page_id",
+        )
+        .bind(org.0)
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("kept pages: {e}").into())
     }
 
     async fn closed_with_monitors(&self, org: OrgId, monitors: &[Uuid]) -> Result<Vec<Uuid>> {

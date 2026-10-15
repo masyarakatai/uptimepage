@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::domain::{
-    MaintenanceFilter, MaintenanceWindow, MaintenanceWindowUpdate, NewMaintenanceWindow,
+    MaintenanceFilter, MaintenanceUpdate, MaintenanceWindow, MaintenanceWindowUpdate,
+    NewMaintenanceUpdate, NewMaintenanceWindow,
 };
 use crate::error::ApiError;
 use crate::error::codes;
@@ -212,4 +213,46 @@ pub async fn delete_maintenance(
         .cancel(org, id, source, Some(actor))
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/maintenance/{id}/updates",
+    tag = "maintenance",
+    summary = "Post an update to a maintenance window",
+    description = "Adds an update to an upcoming, running or completed window, for example to \
+                   say the work is running late or how it went. The update shows on the status \
+                   page and in its history, and goes to the page's email and webhook \
+                   subscribers. Its `phase` is where the window stood when it was posted. A \
+                   completed window keeps its own fields read-only; an update is how to add a \
+                   closing note. A window takes at most 50 updates. Accepts an \
+                   `Idempotency-Key` header, so a retried post is not published twice.",
+    params(("id" = Uuid, Path)),
+    request_body(content = NewMaintenanceUpdate, example = json!({
+        "message": "The data copy is slower than planned. We now expect to finish by 23:30 UTC."
+    })),
+    responses(
+        (status = 201, body = MaintenanceUpdate),
+        (status = 400, body = ApiError, description = "Message empty or longer than 2000 characters"),
+        (status = 404, body = ApiError),
+        (status = 422, body = ApiError,
+            description = "The window was cancelled (`MAINTENANCE_CANCELLED`) or already has 50 \
+                           updates (`MAINTENANCE_UPDATE_LIMIT`)"),
+        (status = 409, body = ApiError,
+            description = "A request with the same Idempotency-Key is still running \
+                           (`IDEMPOTENCY_IN_PROGRESS`); retry once it answers"),
+        ),
+)]
+pub async fn post_maintenance_update(
+    State(state): State<AppState>,
+    Authorized(org, _): Authorized<MaintenanceWrite>,
+    CurrentUser(actor): CurrentUser,
+    Path(id): Path<Uuid>,
+    Json(new): Json<NewMaintenanceUpdate>,
+) -> Result<(StatusCode, Json<MaintenanceUpdate>)> {
+    let update = state
+        .maintenance_ops()
+        .post_update(org, id, &new.message, Some(actor))
+        .await?;
+    Ok((StatusCode::CREATED, Json(update)))
 }

@@ -571,3 +571,135 @@ async fn a_completed_window_cannot_be_edited() {
         "MAINTENANCE_COMPLETED"
     );
 }
+
+async fn post_update(app: &axum::Router, id: &str, message: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/maintenance/{id}/updates"),
+            json!({ "message": message }),
+        ))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_update_keeps_the_phase_its_window_was_in() {
+    let app = make_app();
+    let upcoming = create_window(&app, valid_window()).await;
+    let resp = post_update(&app, &upcoming, "  Moved to 23:00 UTC.  ").await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let posted = body_json(resp).await;
+    assert_eq!(posted["phase"], "scheduled");
+    assert_eq!(posted["message"], "Moved to 23:00 UTC.", "trimmed");
+
+    let running = create_window(&app, running_window()).await;
+    let resp = post_update(&app, &running, "Running late.").await;
+    assert_eq!(body_json(resp).await["phase"], "in_progress");
+    end_running_window(&app, &running).await;
+    let resp = post_update(&app, &running, "Finished at 23:24 UTC.").await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "a completed window still takes a closing note"
+    );
+    assert_eq!(body_json(resp).await["phase"], "completed");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/maintenance/{running}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let window = body_json(resp).await;
+    let said: Vec<&str> = window["updates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(said, ["Running late.", "Finished at 23:24 UTC."]);
+}
+
+#[tokio::test]
+async fn an_update_is_refused_when_empty_cancelled_unknown_or_over_the_cap() {
+    let app = make_app();
+    let id = create_window(&app, valid_window()).await;
+    let resp = post_update(&app, &id, "   ").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(resp).await["error"]["code"], "EMPTY_MESSAGE");
+
+    for n in 0..50 {
+        let resp = post_update(&app, &id, &format!("note {n}")).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+    let resp = post_update(&app, &id, "one too many").await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(resp).await["error"]["code"],
+        "MAINTENANCE_UPDATE_LIMIT"
+    );
+
+    let cancelled = create_window(&app, valid_window()).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/maintenance/{cancelled}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = post_update(&app, &cancelled, "too late").await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(resp).await["error"]["code"],
+        "MAINTENANCE_CANCELLED"
+    );
+
+    let resp = post_update(&app, &uuid::Uuid::now_v7().to_string(), "who?").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_retried_update_with_its_idempotency_key_is_published_once() {
+    let app = make_app();
+    let id = create_window(&app, valid_window()).await;
+    let post = |key: &'static str| {
+        let mut req = json_request(
+            "POST",
+            &format!("/api/v1/maintenance/{id}/updates"),
+            json!({ "message": "Moved to 23:00 UTC." }),
+        );
+        req.headers_mut()
+            .insert("idempotency-key", key.parse().unwrap());
+        app.clone().oneshot(req)
+    };
+    let first = body_json(post("update-1").await.unwrap()).await;
+    let retry = post("update-1").await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CREATED);
+    assert_eq!(body_json(retry).await, first, "the retry replays the first");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/maintenance/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(resp).await["updates"].as_array().unwrap().len(),
+        1,
+        "published once"
+    );
+}

@@ -339,9 +339,10 @@ pub async fn public_incidents_rss(
     tag = "public_status",
     summary = "Active and upcoming maintenance windows",
     description = "Returns active windows (now between starts_at and ends_at) \
-                   plus upcoming windows within the next 7 days, sorted by \
-                   starts_at ascending. Only includes windows that affect \
-                   at least one public component.",
+                   plus upcoming windows within the next 30 days, sorted by \
+                   starts_at ascending, each with the updates posted to it. \
+                   Only includes windows that affect at least one public \
+                   component.",
     security(),
     responses(
         (status = 200, body = PublicMaintenanceList),
@@ -372,8 +373,10 @@ pub struct PastMaintenanceQuery {
     summary = "Past maintenance windows (last 90 days, paginated)",
     description = "Lists maintenance windows that have ended and affected at \
                    least one component on the page, sorted by starts_at \
-                   descending. Cancelled windows are never listed. Capped at \
-                   90 days lookback; the cursor works like the incident list's.",
+                   descending, each with its updates. Cancelled windows are \
+                   never listed. Covers windows that ran in the last 90 days, \
+                   so one that began earlier and ended inside them is listed; \
+                   the cursor works like the incident list's.",
     security(),
     params(PastMaintenanceQuery),
     responses(

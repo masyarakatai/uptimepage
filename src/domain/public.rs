@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::CheckStatus;
+use super::{CheckStatus, MaintenanceUpdate, MaintenanceUpdatePhase};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -163,6 +163,11 @@ pub struct PublicComponent {
     /// strip; not part of the wire shape.
     #[serde(skip)]
     pub downtime: Vec<Downtime>,
+    /// Whether a check ran each day, aligned with `history`. A maintenance
+    /// day counts as a day with data only when one did; not part of the
+    /// wire shape.
+    #[serde(skip)]
+    pub checked: Vec<bool>,
     /// Confirmed-incident downtime over the time the component was probed
     /// within the history span, as a percentage; `null` until it is probed.
     #[serde(default)]
@@ -424,6 +429,27 @@ pub struct PublicMaintenance {
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
     pub affected_component_names: Vec<String>,
+    /// What was posted about the window, oldest first.
+    #[serde(default)]
+    pub updates: Vec<PublicMaintenanceUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PublicMaintenanceUpdate {
+    pub posted_at: DateTime<Utc>,
+    pub phase: MaintenanceUpdatePhase,
+    pub message: String,
+}
+
+/// The public view leaves out who posted it.
+impl From<MaintenanceUpdate> for PublicMaintenanceUpdate {
+    fn from(u: MaintenanceUpdate) -> Self {
+        Self {
+            posted_at: u.posted_at,
+            phase: u.phase,
+            message: u.message,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

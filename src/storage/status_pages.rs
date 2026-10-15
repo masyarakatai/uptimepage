@@ -646,11 +646,48 @@ impl StatusPageStore for PgStatusPageStore {
         actor: Option<UserId>,
     ) -> Result<bool> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let removed: Option<(Uuid,)> = sqlx::query_as(
-            "DELETE FROM status_page_components \
-             WHERE status_page_id = $1 AND target_id = $2 AND org_id = $3 \
-             RETURNING target_id",
-        )
+        // A monitor's deletion locks the monitor, then its incidents, then
+        // pins them to its pages; lock the monitor first, so the two queue
+        // instead of deadlocking over the pins.
+        sqlx::query("SELECT 1 FROM targets WHERE id = $1 AND org_id = $2 FOR KEY SHARE")
+            .bind(target_id)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // What the page already showed for this monitor stays in its history,
+        // under the name the page gave it: started windows, and incidents that
+        // were ever public.
+        let removed: Option<(Uuid,)> = sqlx::query_as(&format!(
+            r#"WITH removed AS (
+                   DELETE FROM status_page_components
+                   WHERE status_page_id = $1 AND target_id = $2 AND org_id = $3
+                   RETURNING status_page_id, target_id, public_name
+               ), leaving AS (
+                   SELECT r.status_page_id, r.target_id,
+                          COALESCE(NULLIF(r.public_name, ''), t.name) AS name
+                   FROM removed r
+                   JOIN targets t ON t.id = r.target_id AND t.org_id = $3
+               ), windows AS (
+                   {keep_windows}
+               ), incidents AS (
+                   INSERT INTO incident_status_pages
+                       (org_id, incident_id, status_page_id, component_name)
+                   SELECT $3, i.id, l.status_page_id, l.name
+                   FROM leaving l
+                   JOIN incidents i ON i.target_id = l.target_id AND i.org_id = $3
+                   WHERE {ever_public}
+                     AND i.started_at >= now() - make_interval(days => {kept_days})
+                   ON CONFLICT (incident_id, status_page_id) DO UPDATE
+                   SET component_name = COALESCE(incident_status_pages.component_name,
+                                                 EXCLUDED.component_name)
+               )
+               SELECT target_id FROM removed"#,
+            keep_windows =
+                crate::storage::maintenance::keep_started_windows_sql("leaving", "$3", None),
+            ever_public = crate::storage::incidents::ever_public_sql("i", "$3"),
+            kept_days = crate::storage::maintenance::PAGE_HISTORY_DAYS,
+        ))
         .bind(page.0)
         .bind(target_id)
         .bind(org.0)

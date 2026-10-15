@@ -165,3 +165,14 @@
   {% call chooser_card_static(selected == "resolved", "resolved", "closed out") %}{% endcall %}
 </div>
 {% endmacro %}
+
+{# Read-only, like the incident state: the action rail's buttons end or cancel
+   a window, and the clock moves it on. #}
+{% macro maintenance_phase_rail(selected) %}
+<div class="check-type-cards check-type-cards--rail mt-3" role="group" aria-label="Phase">
+  {% call chooser_card_static(selected == "upcoming", "scheduled", "announced, not started") %}{% endcall %}
+  {% call chooser_card_static(selected == "active", "in progress", "shown as maintenance now") %}{% endcall %}
+  {% call chooser_card_static(selected == "completed", "completed", "kept in the page history") %}{% endcall %}
+  {% call chooser_card_static(selected == "cancelled", "cancelled", "called off, never shown") %}{% endcall %}
+</div>
+{% endmacro %}

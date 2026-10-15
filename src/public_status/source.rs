@@ -25,7 +25,7 @@ use crate::pagination::cursor::HistoryCursor;
 use crate::pagination::page::CursorPage;
 
 use super::aggregator::{OrgAggregator, kept_component_name, on_page};
-use super::cache::{HistoryIncidentMarker, PageCache, PageCacheError, PageData};
+use super::cache::{HistoryMarker, PageCache, PageCacheError, PageData};
 use super::history::{WindowQuery, page_windows};
 use super::xml::xml_escape;
 use crate::domain::stored_incident_impact;
@@ -73,7 +73,7 @@ pub trait PublicSource: Send + Sync {
     async fn page_with_markers(
         &self,
         page: PageRef,
-    ) -> Result<(Arc<PublicStatusPage>, Arc<Vec<HistoryIncidentMarker>>), PublicAppError> {
+    ) -> Result<(Arc<PublicStatusPage>, Arc<Vec<HistoryMarker>>), PublicAppError> {
         let p = self.page(page).await?;
         Ok((p, Arc::new(Vec::new())))
     }
@@ -140,7 +140,7 @@ impl OrgPublicSource {
             aggregator,
             cache,
             pg,
-            rss_lookback_days: 90,
+            rss_lookback_days: crate::storage::maintenance::PAGE_HISTORY_DAYS as u32,
             rss_max_items: 50,
         }
     }
@@ -172,7 +172,7 @@ impl PublicSource for OrgPublicSource {
     async fn page_with_markers(
         &self,
         page: PageRef,
-    ) -> Result<(Arc<PublicStatusPage>, Arc<Vec<HistoryIncidentMarker>>), PublicAppError> {
+    ) -> Result<(Arc<PublicStatusPage>, Arc<Vec<HistoryMarker>>), PublicAppError> {
         let data = self.cached(page).await?;
         Ok((data.page.clone(), data.history_markers.clone()))
     }
@@ -280,11 +280,13 @@ impl PublicSource for OrgPublicSource {
         let mut windows = page_windows(
             &self.pg,
             page.org,
+            page.page.0,
             &components,
             &data.component_names,
             WindowQuery {
                 now,
                 since: now - ChronoDuration::days(self.rss_lookback_days as i64),
+                by_end: true,
                 ended_only: q.ended_only,
                 cursor: q.cursor,
                 limit: limit as i64 + 1,
@@ -457,7 +459,8 @@ impl OrgPublicSource {
                 let recovering = r.ended_at.is_none() && r.recovering_since.is_some();
                 PublicIncident {
                     id: r.id,
-                    component_id: r.target_id,
+                    // A monitor that left the page is not one of its components.
+                    component_id: r.target_id.filter(|t| names.contains_key(t)),
                     component_name,
                     title,
                     started_at: r.started_at,

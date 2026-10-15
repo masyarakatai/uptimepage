@@ -10,8 +10,9 @@ use crate::domain::{
     PublicIncident, PublicIncidentUpdate, PublicMaintenance, PublicStatusPage,
 };
 use crate::i18n::Tr;
-use crate::public_status::HistoryIncidentMarker;
+use crate::pagination::HistoryCursor;
 use crate::public_status::overall_status::{day_tone, overall_label_id};
+use crate::public_status::{HistoryMarker, MarkerKind};
 
 use super::incident_display::{UPDATE_PREVIEW_CHARS, impact_classes, phase_classes};
 use super::past::{HistoryTab, PastEvents, TabLink, build_past, mixed_within_caps, tab_links};
@@ -150,6 +151,13 @@ pub struct MaintenanceView {
     pub affects: String,
     /// `(in 2h)` for upcoming windows; `None` once started.
     pub starts_in: Option<String>,
+    /// The newest update posted to the window.
+    pub latest_update: Option<LatestUpdate>,
+}
+
+pub struct LatestUpdate {
+    pub posted_at: DateTime<Utc>,
+    pub message: String,
 }
 /// The archive on `tab`, from `cursor` on.
 pub(super) fn archive_path(tab: HistoryTab, cursor: Option<&str>) -> String {
@@ -176,7 +184,7 @@ pub struct HistoryRequest {
 
 pub(super) fn build_view(
     page: &PublicStatusPage,
-    history_markers: &[HistoryIncidentMarker],
+    history_markers: &[HistoryMarker],
     silenced: &std::collections::HashSet<Uuid>,
     history: HistoryRequest,
     tr: Tr,
@@ -395,7 +403,7 @@ pub(super) fn build_component(
         history: build_history(c, text),
         history_label: tr.t_args("day-strip-label", [("name", c.name.as_str().into())]),
         uptime_label,
-        history_summary: history_summary(&c.history, tr),
+        history_summary: history_summary(&c.history, &c.checked, tr),
         detail_url: c.detail_url.clone(),
         detail_label: tr.t_args(
             "component-uptime-history-sr",
@@ -446,19 +454,19 @@ fn downtime_at(component: &PublicComponent, idx: usize) -> Downtime {
 /// aggregator's `toStartOfDay`, so cell colour and popover state align.
 pub(super) fn build_day_strip_json(
     page: &PublicStatusPage,
-    history_markers: &[HistoryIncidentMarker],
+    history_markers: &[HistoryMarker],
     now: DateTime<Utc>,
     text: &DayText,
 ) -> String {
     let today_start = start_of_day(now);
     // Bucket markers once so the day loop scans only the component's own
     // incidents instead of every org-wide marker × every day.
-    let mut by_comp: std::collections::HashMap<Uuid, Vec<&HistoryIncidentMarker>> =
+    let mut by_comp: std::collections::HashMap<Uuid, Vec<&HistoryMarker>> =
         std::collections::HashMap::new();
     for m in history_markers {
         by_comp.entry(m.component_id).or_default().push(m);
     }
-    let empty: Vec<&HistoryIncidentMarker> = Vec::new();
+    let empty: Vec<&HistoryMarker> = Vec::new();
     let mut blob: std::collections::BTreeMap<String, DayStripComponent> =
         std::collections::BTreeMap::new();
     for group in &page.groups {
@@ -497,20 +505,40 @@ pub(super) fn build_day_strip_json(
         .replace('&', "\\u0026")
 }
 
-/// Links to the incidents overlapping `[day_start, day_end)`. Caller
-/// pre-filters to one component's markers. Open-ended incidents clamp to `now`.
+/// Links to the incidents and maintenance windows overlapping
+/// `[day_start, day_end)`, one per incident or window. Caller pre-filters to
+/// one component's markers.
+/// Open-ended incidents clamp to `now`. A window has no page of its own, so it
+/// links to its row in the archive, on the archive page that starts with it:
+/// the archive reads rows below its cursor, and the id just above the
+/// window's puts the window first.
 pub(super) fn day_related(
-    incidents: &[&HistoryIncidentMarker],
+    markers: &[&HistoryMarker],
     day_start: DateTime<Utc>,
     day_end: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Vec<DayRelated> {
-    incidents
+    let mut linked = std::collections::HashSet::new();
+    markers
         .iter()
-        .filter(|inc| inc.started_at < day_end && inc.ended_at.unwrap_or(now) > day_start)
-        .map(|inc| DayRelated {
-            title: inc.title.clone(),
-            url: format!("/status/incidents/{}", inc.id),
+        .filter(|m| m.started_at < day_end && m.ended_at.unwrap_or(now) > day_start)
+        .filter(|m| linked.insert(m.id))
+        .map(|m| DayRelated {
+            title: m.title.clone(),
+            url: match m.kind {
+                MarkerKind::Incident => format!("/status/incidents/{}", m.id),
+                MarkerKind::Maintenance { starts_at } => {
+                    let from = HistoryCursor {
+                        started_at: starts_at,
+                        id: Uuid::from_u128(m.id.as_u128().saturating_add(1)),
+                    };
+                    format!(
+                        "{}#past-{}",
+                        archive_path(HistoryTab::Maintenance, Some(&from.encode())),
+                        m.id
+                    )
+                }
+            },
         })
         .collect()
 }
@@ -518,13 +546,17 @@ pub(super) fn day_related(
 /// Day tally under the strip: how many days had checks, and how many of those
 /// were painted. The uptime figure beside it is time-based and comes from the
 /// aggregator, not from these counts.
-pub(super) fn history_summary(states: &[DayState], tr: Tr) -> String {
+/// `checked` says whether a check ran each day: a maintenance day counts as a
+/// day with data only then, since a window says nothing about health.
+pub(super) fn history_summary(states: &[DayState], checked: &[bool], tr: Tr) -> String {
     let mut with_data = 0usize;
     let mut bad = 0usize;
     let mut degraded = 0usize;
-    for s in states {
+    for (i, s) in states.iter().enumerate() {
         match s {
             DayState::NoData => {}
+            DayState::Maintenance if checked.get(i) == Some(&true) => with_data += 1,
+            DayState::Maintenance => {}
             DayState::MajorOutage | DayState::PartialOutage => {
                 with_data += 1;
                 bad += 1;
@@ -533,7 +565,7 @@ pub(super) fn history_summary(states: &[DayState], tr: Tr) -> String {
                 with_data += 1;
                 degraded += 1;
             }
-            DayState::Operational | DayState::Maintenance => with_data += 1,
+            DayState::Operational => with_data += 1,
         }
     }
     if with_data == 0 {
@@ -644,6 +676,10 @@ pub(super) fn build_maintenance(
         ends_at: m.ends_at,
         affects: m.affected_component_names.join(", "),
         starts_in,
+        latest_update: m.updates.last().map(|u| LatestUpdate {
+            posted_at: u.posted_at,
+            message: u.message.clone(),
+        }),
     }
 }
 

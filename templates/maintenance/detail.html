@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% import "_register.html" as reg %}
+{% block title %}{{ window.title }} · Maintenance · Uptimepage{% endblock %}
+{% block content %}
+<section class="mx-auto w-full max-w-7xl">
+
+  <div class="form-grid grid grid-cols-1 gap-6 lg:grid-cols-[17rem_1fr] lg:items-start lg:gap-8 xl:grid-cols-[17rem_1fr_15rem]">
+
+  <aside class="type-rail lg:sticky lg:top-6">
+    <span class="form-legend">where it stands</span>
+    {% call reg::maintenance_phase_rail(window.phase) %}{% endcall %}
+    {% if window.phase != "cancelled" %}
+    <p class="mt-2 font-mono text-xs text-quiet">
+      # {% if window.suppress_alerts %}paging held while it runs{% else %}monitors keep paging{% endif %}
+    </p>
+    {% endif %}
+  </aside>
+
+  <div class="space-y-6">
+
+  <header class="space-y-2">
+    <a href="/maintenance{% if window.phase == "completed" || window.phase == "cancelled" %}?view=past{% endif %}"
+       class="inline-block text-sm text-muted hover:text-body">← maintenance</a>
+    <div class="flex flex-wrap items-center gap-3">
+      <h1 class="page-title break-words"><span class="page-title__prefix" aria-hidden="true">$</span>{{ window.title }}</h1>
+      {% if let Some(m) = window.managed_by %}<span class="managed-chip" title="Managed by {{ m }}. Changes made here may be overwritten on the next apply">{{ m }}</span>{% endif %}
+    </div>
+    <p class="text-sm text-muted tabular-nums">
+      <time datetime="{{ window.starts_at|iso_ts }}" data-tz="exact">{{ window.starts_at|human_ts }}</time>
+      <span class="text-quiet">until</span>
+      <time datetime="{{ window.ends_at|iso_ts }}" data-tz="exact">{{ window.ends_at|human_ts }}</time>
+      <span class="cli-brackets ml-2">lasts:{{ window.duration_secs|humanize_dur }}</span>
+      {% if let Some(s) = window.eta_secs %}
+      <span class="cli-brackets">{% if window.phase == "active" %}ends{% else %}starts{% endif %} in {{ s|humanize_dur }}</span>
+      {% endif %}
+    </p>
+    {% if let Some(at) = window.cancelled_at %}
+    <p class="font-mono text-xs text-quiet"># cancelled <time datetime="{{ at|iso_ts }}" data-tz="exact">{{ at|human_ts }}</time>{% if let Some(who) = window.cancelled_by %} by {{ who }}{% endif %}, so it is not shown on any status page</p>
+    {% endif %}
+  </header>
+
+  <div id="maintenance-errors" role="alert" aria-live="polite"
+       class="hidden alert-card alert-card--error"></div>
+
+  <section class="sticker-card overflow-hidden">
+    <div class="border-b border-[color:var(--theme-line)] bg-[color:var(--theme-surface-sunk)] px-5 py-2.5">
+      <h2 class="panel-label">what it covers</h2>
+    </div>
+    <div class="space-y-3 p-5">
+      <div class="flex flex-wrap items-center gap-1">
+        {% for m in all_monitors %}<span class="dashboard-chip dashboard-chip--flat">{{ m }}</span>{% endfor %}
+        {% if all_monitors.is_empty() %}<span class="font-mono text-xs text-quiet"># no monitors</span>{% endif %}
+      </div>
+      {% if let Some(d) = window.description %}
+      <p class="whitespace-pre-line text-pretty text-sm text-body">{{ d }}</p>
+      {% else %}
+      <p class="font-mono text-xs text-quiet"># no description</p>
+      {% endif %}
+      {% if let Some(who) = created_by %}<p class="font-mono text-xs text-quiet"># scheduled by {{ who }}</p>{% endif %}
+    </div>
+  </section>
+
+  <section class="sticker-card overflow-hidden">
+    <div class="flex items-baseline justify-between px-5 pt-5 pb-3">
+      <h2 class="panel-label">status updates</h2>
+      <span class="cli-brackets font-mono text-xs text-quiet">{{ updates.len() }}/{{ max_updates }}</span>
+    </div>
+    {% if updates.is_empty() %}
+    <p class="px-5 pb-4 font-mono text-xs text-quiet"># nothing posted yet</p>
+    {% else %}
+    <ol class="divide-y divide-[color:var(--theme-line)] border-t border-[color:var(--theme-line)]">
+      {% for u in updates %}
+      <li class="flex flex-wrap items-baseline gap-2 px-5 py-3 text-sm">
+        <span class="status-badge status-badge--tag">{{ u.phase }}</span>
+        <span class="font-mono text-xs text-muted">{{ u.author }}</span>
+        <time class="ml-auto font-mono text-xs tabular-nums text-quiet" datetime="{{ u.posted_at|iso_ts }}" data-tz="exact">{{ u.posted_at|human_ts }}</time>
+        <p class="w-full whitespace-pre-line text-body">{{ u.message }}</p>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+
+    {% if can_post %}
+    <form data-maintenance-update-form data-id="{{ window.id }}"
+          class="space-y-4 border-t border-[color:var(--theme-line)] p-5">
+      <div>
+        <span class="mb-1.5 block text-xs text-muted">Post an update</span>
+        <textarea name="message" required rows="3" maxlength="2000"
+                  class="w-full field" placeholder="{% if window.phase == "completed" %}how it went, and when it really ended{% else %}what changed, in words a customer can read{% endif %}"></textarea>
+      </div>
+      <div class="flex flex-wrap items-end justify-between gap-3">
+        <p class="font-mono text-xs text-quiet"># shown on your status pages and sent to their subscribers; it cannot be edited</p>
+        <button type="submit"
+                class="sticker-btn sticker-btn--primary min-h-10 px-4 py-2 text-sm font-medium motion-safe:hover:-translate-y-0.5">post update</button>
+      </div>
+    </form>
+    {% else if window.phase != "cancelled" %}
+    <p class="border-t border-[color:var(--theme-line)] px-5 py-4 font-mono text-xs text-quiet"># this window has {{ max_updates }} updates, the most it takes</p>
+    {% endif %}
+  </section>
+
+  </div>
+
+  <aside class="action-rail xl:sticky xl:top-6">
+    <div class="flex flex-wrap items-center gap-3 xl:flex-col xl:items-stretch">
+      {% if window.phase == "upcoming" || window.phase == "active" %}
+      <a href="/maintenance/{{ window.id }}/edit"
+         class="sticker-btn sticker-btn--primary inline-flex min-h-10 items-center justify-center px-4 py-2 text-sm font-medium motion-safe:hover:-translate-y-0.5">edit</a>
+      {% endif %}
+      {% if window.phase == "active" %}
+      <button type="button" data-end-now data-id="{{ window.id }}" data-ok-href="/maintenance/{{ window.id }}"
+              data-confirm-modal
+              data-confirm-title="End maintenance now?"
+              data-confirm-body="{{ window.title }} ends now and moves to past. This ends the window's alert suppression; another overlapping window may still suppress alerts."
+              data-confirm-label="end now"
+              data-confirm-danger
+              class="sticker-btn sticker-btn--accent inline-flex min-h-10 items-center justify-center gap-1.5 px-4 py-2 text-sm font-medium"><span aria-hidden="true">■</span> end now</button>
+      {% endif %}
+      {% if window.phase == "upcoming" %}
+      <button type="button"
+              hx-delete="/api/v1/maintenance/{{ window.id }}"
+              hx-headers='{"X-Requested-With":"uptimepage"}'
+              data-on-ok-href="/maintenance/{{ window.id }}"
+              data-on-fail-into="#maintenance-errors"
+              data-on-fail-message="Cancel failed. The window may already be gone, so refresh and try again."
+              data-confirm-modal
+              data-confirm-title="Cancel maintenance?"
+              data-confirm-body="{{ window.title }} is cancelled and no longer shown on your status pages. It stays under past as a record. Subscribers who were already told about it are not sent a cancellation."
+              data-confirm-label="cancel maintenance"
+              data-confirm-danger
+              class="btn-ghost btn-ghost--danger inline-flex min-h-10 items-center justify-center px-4 py-2 text-sm">cancel</button>
+      {% endif %}
+      <a href="/maintenance/new" class="btn-ghost inline-flex min-h-10 items-center justify-center px-4 py-2 text-center text-sm">schedule another</a>
+    </div>
+  </aside>
+
+  </div>
+
+  <script defer src="{{ "js/ui/api_form.js"|asset }}"></script>
+  <script defer src="{{ "js/ui/maintenance_list.js"|asset }}"></script>
+  <script defer src="{{ "js/ui/idempotency.js"|asset }}"></script>
+  <script defer src="{{ "js/ui/maintenance_detail.js"|asset }}"></script>
+</section>
+{% endblock %}

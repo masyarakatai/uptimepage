@@ -81,6 +81,7 @@ pub use linked_apps::{InMemoryLinkedAppStore, LinkedAppStore, PgLinkedAppStore};
 pub use maintenance::suppressing_window_sql;
 pub use maintenance::{
     InMemoryMaintenanceStore, MaintenanceListQuery, MaintenanceStore, PgMaintenanceStore,
+    PostedUpdate,
 };
 pub use manual::{InMemoryManualStore, ManualChange, ManualStore, PgManualStore};
 pub use memory::{InMemorySink, InMemoryTargetStore};

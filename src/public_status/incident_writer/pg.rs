@@ -259,6 +259,7 @@ impl IncidentStore for PgIncidentStore {
                           next_escalation_at = NULL,
                           recovering_since = NULL,
                           closing_notice_at = now(),
+                          resolved_at = now(),
                           updated_at = now()
                     WHERE id = $1 AND org_id = $3 AND ended_at IS NULL
                    RETURNING id, org_id, visibility

@@ -8,16 +8,21 @@ use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::domain::{OrgId, PublicIncident, PublicMaintenance};
+use crate::domain::{OrgId, PublicIncident, PublicMaintenance, PublicMaintenanceUpdate};
 use crate::pagination::cursor::HistoryCursor;
 use crate::pagination::page::CursorPage;
+use crate::storage::maintenance::started_sql;
 
 /// Which started windows to read, newest start first.
 #[derive(Debug, Clone, Copy)]
 pub struct WindowQuery {
     pub now: DateTime<Utc>,
-    /// Only windows that started at or after this.
+    /// Only windows that started at or after this, or with `by_end` that
+    /// ended at or after it.
     pub since: DateTime<Utc>,
+    /// Bound `since` on the end, so a window that began before the span but
+    /// ran into it is listed, as the day strip it paints links to it.
+    pub by_end: bool,
     /// Leave out a window still running.
     pub ended_only: bool,
     pub cursor: Option<HistoryCursor>,
@@ -32,13 +37,18 @@ struct WindowRow {
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
     component_ids: Vec<Uuid>,
+    kept_targets: Vec<Uuid>,
+    kept_names: Vec<String>,
 }
 
-/// Windows that have started on any of `components`, cancelled ones left out.
-/// Each names only those components, in the order given.
+/// Windows that have started on any of `components`, or that ended and had
+/// one of them before dropping it or that `page` kept after their monitor
+/// left it, cancelled ones left out. Each names the components it touches on
+/// the page, in the order given, then the ones the page kept.
 pub(crate) async fn page_windows(
     pg: &PgPool,
     org: OrgId,
+    page: Uuid,
     components: &[Uuid],
     names: &HashMap<Uuid, String>,
     q: WindowQuery,
@@ -46,27 +56,46 @@ pub(crate) async fn page_windows(
     let (cursor_ts, cursor_id) = q
         .cursor
         .map_or((None, None), |c| (Some(c.started_at), Some(c.id)));
-    let rows: Vec<WindowRow> = sqlx::query_as::<_, WindowRow>(
+    let rows: Vec<WindowRow> = sqlx::query_as::<_, WindowRow>(&format!(
         r#"SELECT mw.id, mw.title, mw.description, mw.starts_at, mw.ends_at,
-                  ARRAY_AGG(mwc.target_id) AS component_ids
+                  COALESCE(ARRAY_AGG(mwc.target_id) FILTER (WHERE mwc.target_id IS NOT NULL),
+                           '{{}}'::uuid[])
+                      || COALESCE(departed.targets, '{{}}'::uuid[]) AS component_ids,
+                  COALESCE(kept.targets, '{{}}'::uuid[]) AS kept_targets,
+                  COALESCE(kept.names, '{{}}'::text[]) AS kept_names
            FROM maintenance_windows mw
-           JOIN maintenance_window_components mwc
+           LEFT JOIN maintenance_window_components mwc
              ON mwc.maintenance_id = mw.id
             AND mwc.org_id = mw.org_id
             AND mwc.target_id = ANY($2)
+           LEFT JOIN LATERAL (
+               SELECT ARRAY_AGG(k.target_ref ORDER BY k.component_name) AS targets,
+                      ARRAY_AGG(k.component_name ORDER BY k.component_name) AS names
+               FROM maintenance_status_pages k
+               WHERE k.maintenance_id = mw.id AND k.org_id = mw.org_id
+                 AND k.status_page_id = $9 AND mw.ends_at <= $3
+           ) kept ON true
+           LEFT JOIN LATERAL (
+               SELECT ARRAY_AGG(DISTINCT d.target_id) AS targets
+               FROM maintenance_window_departures d
+               WHERE d.maintenance_id = mw.id AND d.org_id = mw.org_id
+                 AND d.target_id = ANY($2) AND mw.ends_at <= $3
+           ) departed ON true
            WHERE mw.org_id = $1
-             AND mw.deleted_at IS NULL
-             AND mw.starts_at <= $3
-             AND mw.starts_at >= $4
+             AND {started}
+             AND (CASE WHEN $10 THEN mw.ends_at ELSE mw.starts_at END) >= $4
              AND ($5 = false OR mw.ends_at <= $3)
              AND (
                  $6::timestamptz IS NULL
                  OR (mw.starts_at, mw.id) < ($6::timestamptz, $7::uuid)
              )
-           GROUP BY mw.id
+             AND (mwc.target_id IS NOT NULL OR kept.targets IS NOT NULL
+                  OR departed.targets IS NOT NULL)
+           GROUP BY mw.id, kept.targets, kept.names, departed.targets
            ORDER BY mw.starts_at DESC, mw.id DESC
            LIMIT $8"#,
-    )
+        started = started_sql("mw.", "$3"),
+    ))
     .bind(org.0)
     .bind(components)
     .bind(q.now)
@@ -75,20 +104,53 @@ pub(crate) async fn page_windows(
     .bind(cursor_ts)
     .bind(cursor_id)
     .bind(q.limit)
+    .bind(page)
+    .bind(q.by_end)
     .fetch_all(pg)
     .await
     .context("load page maintenance history")?;
 
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let mut updates = public_updates(pg, org, &ids).await?;
     Ok(rows
         .into_iter()
-        .map(|r| PublicMaintenance {
-            affected_component_names: names_on_page(components, &r.component_ids, names),
-            id: r.id,
-            title: r.title,
-            description: r.description,
-            starts_at: r.starts_at,
-            ends_at: r.ends_at,
+        .map(|r| {
+            let mut affected = names_on_page(components, &r.component_ids, names);
+            affected.extend(
+                r.kept_targets
+                    .iter()
+                    .zip(r.kept_names)
+                    .filter(|(target, _)| !r.component_ids.contains(target))
+                    .map(|(_, name)| name),
+            );
+            PublicMaintenance {
+                affected_component_names: affected,
+                updates: updates.remove(&r.id).unwrap_or_default(),
+                id: r.id,
+                title: r.title,
+                description: r.description,
+                starts_at: r.starts_at,
+                ends_at: r.ends_at,
+            }
         })
+        .collect())
+}
+
+/// The updates posted to each of `windows`, oldest first.
+pub(crate) async fn public_updates(
+    pg: &PgPool,
+    org: OrgId,
+    windows: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<PublicMaintenanceUpdate>>> {
+    if windows.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let loaded = crate::storage::maintenance::load_updates(pg, windows, org.0)
+        .await
+        .map_err(|e| anyhow::anyhow!("load maintenance updates: {e}"))?;
+    Ok(loaded
+        .into_iter()
+        .map(|(id, updates)| (id, updates.into_iter().map(Into::into).collect()))
         .collect())
 }
 
@@ -211,6 +273,7 @@ mod tests {
 
     fn window(minute: i64, id: u128) -> PublicMaintenance {
         PublicMaintenance {
+            updates: Vec::new(),
             id: Uuid::from_u128(id),
             title: format!("window {id}"),
             description: None,

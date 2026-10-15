@@ -112,6 +112,8 @@ view-incident = View incident →
 maintenance-heading = Scheduled maintenance
 maintenance-in-progress = In progress
 maintenance-upcoming = Upcoming
+maintenance-completed = Completed
+maintenance-latest-update = Latest update
 maintenance-starts = Starts
 maintenance-ends = ends
 maintenance-affects = affects
@@ -187,6 +189,7 @@ past-incident-count =
 past-components-more = { $names } and { $count } more
 popover-no-downtime = No downtime recorded on this day.
 popover-related = Related
+popover-maintenance = Maintenance: { $title }
 
 ## Incidents
 
@@ -278,6 +281,7 @@ email-confirm-remove = Remove this address
 email-status-line = Status: { $phase }
 email-maintenance-scheduled = Scheduled maintenance
 email-maintenance-completed = Maintenance completed
+email-maintenance-update = Maintenance update
 email-maintenance-when = When: { $window }
 email-maintenance-window = Window
 email-maintenance-ran = Ran

@@ -56,6 +56,7 @@ impl PublicSource for PublishedSource {
             current_status: PublicComponentStatus::MajorOutage,
             history: vec![DayState::Operational; 90],
             downtime: Vec::new(),
+            checked: Vec::new(),
             uptime_pct: Some(99.9),
             detail_url: None,
         };
@@ -267,6 +268,7 @@ impl PublicSource for EmptyDataSource {
             current_status: PublicComponentStatus::Operational,
             history: vec![DayState::NoData; 90],
             downtime: Vec::new(),
+            checked: Vec::new(),
             uptime_pct: Some(99.9),
             detail_url: None,
         };
@@ -351,11 +353,13 @@ impl PublicSource for MaintenanceDominatesSource {
             current_status: PublicComponentStatus::Maintenance,
             history,
             downtime: Vec::new(),
+            checked: Vec::new(),
             uptime_pct: Some(99.9),
             detail_url: None,
         };
         let now = Utc::now();
         let maintenance = uptimepage::domain::PublicMaintenance {
+            updates: Vec::new(),
             id: Uuid::nil(),
             title: "Planned cutover".into(),
             description: None,

@@ -112,6 +112,8 @@ view-incident = Störung ansehen →
 maintenance-heading = Geplante Wartung
 maintenance-in-progress = Läuft
 maintenance-upcoming = Demnächst
+maintenance-completed = Abgeschlossen
+maintenance-latest-update = Neuestes Update
 maintenance-starts = Beginnt
 maintenance-ends = endet
 maintenance-affects = betrifft
@@ -203,6 +205,7 @@ past-incident-count =
 past-components-more = { $names } und { $count } weitere
 popover-no-downtime = An diesem Tag wurde keine Ausfallzeit erfasst.
 popover-related = Zugehörig
+popover-maintenance = Wartung: { $title }
 
 ## Incidents
 
@@ -294,6 +297,7 @@ email-confirm-remove = Diese Adresse entfernen
 email-status-line = Status: { $phase }
 email-maintenance-scheduled = Geplante Wartung
 email-maintenance-completed = Wartung abgeschlossen
+email-maintenance-update = Wartungs-Update
 email-maintenance-when = Zeitraum: { $window }
 email-maintenance-window = Zeitraum
 email-maintenance-ran = Durchgeführt

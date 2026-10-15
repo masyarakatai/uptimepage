@@ -13,10 +13,13 @@ use tokio_util::sync::CancellationToken;
 
 use uuid::Uuid;
 
+use crate::email::templates::subscriber_maintenance::MaintenanceNotice;
 use crate::email::{EmailAddress, EmailSender, EmailTemplate, TransactionalEmail};
 use crate::http_outbound::{OutboundHttpClient, post_bytes_with_headers};
-use crate::storage::subscriber_deliveries::{self, INCIDENT_UPDATE, MAINTENANCE};
-use crate::storage::subscriber_maintenance::{self, PendingMaintenance};
+use crate::storage::subscriber_deliveries::{
+    self, INCIDENT_UPDATE, MAINTENANCE, MAINTENANCE_UPDATE,
+};
+use crate::storage::subscriber_maintenance::{self, PendingMaintenance, PendingMaintenanceUpdate};
 use crate::storage::subscribers::{self, PendingUpdate};
 
 const SEND_CONCURRENCY: usize = 8;
@@ -74,6 +77,9 @@ impl SubscriberDispatcher {
                     if let Err(err) = self.tick_maintenance().await {
                         tracing::warn!(error = %err, "subscriber_dispatch maintenance tick failed");
                     }
+                    if let Err(err) = self.tick_maintenance_updates().await {
+                        tracing::warn!(error = %err, "subscriber_dispatch maintenance update tick failed");
+                    }
                 }
             }
         }
@@ -83,6 +89,7 @@ impl SubscriberDispatcher {
     pub async fn run_once(&self) -> anyhow::Result<()> {
         self.tick_incidents().await?;
         self.tick_maintenance().await?;
+        self.tick_maintenance_updates().await?;
         Ok(())
     }
 
@@ -169,6 +176,51 @@ impl SubscriberDispatcher {
         Ok(())
     }
 
+    async fn tick_maintenance_updates(&self) -> anyhow::Result<()> {
+        let pending =
+            subscriber_maintenance::list_pending_updates(&self.pool, self.cfg.batch_limit).await?;
+        let mut claimed = Vec::new();
+        for u in pending {
+            if subscriber_deliveries::claim(
+                &self.pool,
+                u.subscriber_id,
+                u.org_id,
+                MAINTENANCE_UPDATE,
+                u.update_id,
+                "",
+            )
+            .await?
+            {
+                claimed.push(u);
+            }
+        }
+        stream::iter(claimed)
+            .for_each_concurrent(SEND_CONCURRENCY, |u| async move {
+                let error = self
+                    .deliver_maintenance_update(&u)
+                    .await
+                    .err()
+                    .map(|e| e.to_string());
+                if let Some(err) = &error {
+                    tracing::warn!(error = %err, subscriber = %u.subscriber_id, "maintenance update delivery failed");
+                }
+                if let Err(err) = subscriber_deliveries::mark(
+                    &self.pool,
+                    u.subscriber_id,
+                    MAINTENANCE_UPDATE,
+                    u.update_id,
+                    "",
+                    error.as_deref(),
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "maintenance update mark failed");
+                }
+            })
+            .await;
+        Ok(())
+    }
+
     async fn deliver_incident(&self, p: &PendingUpdate) -> anyhow::Result<()> {
         let origin = self.origin(
             &p.slug,
@@ -248,10 +300,66 @@ impl SubscriberDispatcher {
                 locale: m.locale(),
                 page_name: m.page_name.clone(),
                 title: m.title.clone(),
-                description: description.map(str::to_owned),
-                phase: m.phase.clone(),
+                notice: if m.phase == "completed" {
+                    MaintenanceNotice::Completed {
+                        description: description.map(str::to_owned),
+                    }
+                } else {
+                    MaintenanceNotice::Scheduled {
+                        description: description.map(str::to_owned),
+                    }
+                },
                 starts_at: m.starts_at,
                 ends_at: m.ends_at,
+                page_url,
+                unsubscribe_url,
+            },
+        };
+        self.send(outgoing).await
+    }
+
+    async fn deliver_maintenance_update(&self, u: &PendingMaintenanceUpdate) -> anyhow::Result<()> {
+        let origin = self.origin(
+            &u.slug,
+            u.custom_domain.as_deref(),
+            u.custom_domain_published,
+        );
+        let unsubscribe_url = self.unsubscribe_url(&origin, u.subscriber_id);
+        let page_url = self.page_url(
+            &u.slug,
+            u.custom_domain.as_deref(),
+            u.custom_domain_published,
+        );
+        if u.channel == "webhook" {
+            let payload = serde_json::json!({
+                "type": "maintenance_update",
+                "maintenance": {
+                    "id": u.maintenance_id,
+                    "title": u.title,
+                    "starts_at": u.starts_at,
+                    "ends_at": u.ends_at,
+                },
+                "update": { "id": u.update_id, "phase": u.phase, "message": u.message },
+                "page": { "name": u.page_name, "url": page_url },
+                "unsubscribe_url": unsubscribe_url,
+            });
+            return self
+                .post_webhook(&u.target, &payload, u.signing_secret.as_deref())
+                .await;
+        }
+        let outgoing = TransactionalEmail {
+            from: EmailAddress::new(self.cfg.from_address.clone(), self.cfg.from_name.clone()),
+            to: EmailAddress::new(u.target.clone(), u.target.clone()),
+            template: EmailTemplate::SubscriberMaintenance {
+                locale: u.locale(),
+                page_name: u.page_name.clone(),
+                title: u.title.clone(),
+                notice: MaintenanceNotice::Update {
+                    message: u.message.clone(),
+                    ended: u.phase == "completed",
+                },
+                starts_at: u.starts_at,
+                ends_at: u.ends_at,
                 page_url,
                 unsubscribe_url,
             },

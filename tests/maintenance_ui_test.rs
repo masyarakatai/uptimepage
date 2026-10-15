@@ -148,14 +148,14 @@ async fn edit_form_prefills_and_targets_patch() {
 }
 
 #[tokio::test]
-async fn edit_form_for_a_completed_window_redirects_to_past() {
+async fn edit_form_for_a_completed_window_redirects_to_its_page() {
     let (app, store) = app_with_store();
     let id = seed_finished(&store, "finished-window").await;
 
     let (status, location, _) = get(&app, &format!("/maintenance/{id}/edit")).await;
 
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(location.as_deref(), Some("/maintenance?view=past"));
+    assert_eq!(location, Some(format!("/maintenance/{id}")));
 }
 
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn a_cancelled_window_moves_to_past_without_actions() {
 }
 
 #[tokio::test]
-async fn edit_form_for_a_cancelled_window_redirects_to_past() {
+async fn edit_form_for_a_cancelled_window_redirects_to_its_page() {
     let app = app();
     let id = schedule(&app, "called-off", 2, 3).await;
     cancel(&app, &id).await;
@@ -244,5 +244,48 @@ async fn edit_form_for_a_cancelled_window_redirects_to_past() {
     let (status, location, _) = get(&app, &format!("/maintenance/{id}/edit")).await;
 
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(location.as_deref(), Some("/maintenance?view=past"));
+    assert_eq!(location, Some(format!("/maintenance/{id}")));
+}
+
+#[tokio::test]
+async fn a_window_page_shows_its_updates_and_takes_one_until_cancelled() {
+    let (app, store) = app_with_store();
+    let finished = seed_finished(&store, "finished-window").await;
+    store
+        .post_update(
+            test_org_id(),
+            finished.parse().unwrap(),
+            "Done at 23:24 UTC.",
+            50,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (status, _, page) = get(&app, &format!("/maintenance/{finished}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("finished-window"));
+    assert!(page.contains("Done at 23:24 UTC."));
+    assert!(
+        page.contains("data-maintenance-update-form"),
+        "a closing note can still be posted"
+    );
+    assert!(
+        !page.contains(&format!("/maintenance/{finished}/edit")),
+        "but not an edit"
+    );
+
+    let (_, _, list) = get(&app, "/maintenance?view=past").await;
+    assert!(list.contains(&format!("href=\"/maintenance/{finished}\"")));
+    assert!(list.contains("# 1 update<"));
+
+    let app = self::app();
+    let called_off = schedule(&app, "called-off", 2, 3).await;
+    cancel(&app, &called_off).await;
+    let (status, _, page) = get(&app, &format!("/maintenance/{called_off}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!page.contains("data-maintenance-update-form"));
+
+    let (status, _, _) = get(&app, &format!("/maintenance/{}", uuid::Uuid::now_v7())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

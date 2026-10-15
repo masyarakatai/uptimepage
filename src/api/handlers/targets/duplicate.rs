@@ -66,7 +66,10 @@ pub struct DuplicateCopy {
         (status = 404, body = ApiError),
         (status = 413, description = "More than 100 copies", body = ApiError),
         (status = 422, description = "The plan has no room for this many monitors", body = ApiError),
-    ),
+        (status = 409, body = ApiError,
+            description = "A request with the same Idempotency-Key is still running \
+                           (`IDEMPOTENCY_IN_PROGRESS`); retry once it answers"),
+        ),
 )]
 pub async fn duplicate(
     State(state): State<AppState>,

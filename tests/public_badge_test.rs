@@ -48,6 +48,7 @@ impl PublicSource for BadgeSource {
             current_status: PublicComponentStatus::Degraded,
             history: vec![DayState::Operational; 90],
             downtime: Vec::new(),
+            checked: Vec::new(),
             uptime_pct: Some(99.9),
             detail_url: None,
         };

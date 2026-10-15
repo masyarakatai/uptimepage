@@ -96,14 +96,17 @@ pub fn overall_status(state: OverallState) -> OverallStatus {
 }
 
 /// Daily history cell: the worst confirmed-incident impact overlapping the
-/// day, or Operational. An incident is positive evidence and always paints —
+/// day outside maintenance, else Maintenance when a window covered part of the
+/// day, else Operational. An incident is positive evidence and always paints —
 /// even with zero recorded checks (paused mid-incident, manual incident on an
-/// unprobed component). `NoData` is reserved for genuinely silent days.
-pub fn day_state(has_checks: bool, worst: Option<IncidentImpact>) -> DayState {
+/// unprobed component); so is a window. `NoData` is reserved for genuinely
+/// silent days.
+pub fn day_state(has_checks: bool, worst: Option<IncidentImpact>, maintenance: bool) -> DayState {
     match worst {
         Some(IncidentImpact::MajorOutage) => DayState::MajorOutage,
         Some(IncidentImpact::PartialOutage) => DayState::PartialOutage,
         Some(IncidentImpact::Degraded) => DayState::Degraded,
+        None if maintenance => DayState::Maintenance,
         None if has_checks => DayState::Operational,
         None => DayState::NoData,
     }
@@ -335,33 +338,43 @@ mod tests {
     #[test]
     fn day_incident_paints_even_without_checks() {
         assert_eq!(
-            day_state(false, Some(IncidentImpact::MajorOutage)),
+            day_state(false, Some(IncidentImpact::MajorOutage), false),
             DayState::MajorOutage
         );
     }
 
     #[test]
     fn day_silent_without_incident_is_no_data() {
-        assert_eq!(day_state(false, None), DayState::NoData);
+        assert_eq!(day_state(false, None, false), DayState::NoData);
     }
 
     #[test]
     fn day_with_checks_and_no_incident_is_operational() {
-        assert_eq!(day_state(true, None), DayState::Operational);
+        assert_eq!(day_state(true, None, false), DayState::Operational);
+    }
+
+    #[test]
+    fn a_window_paints_maintenance_unless_an_outage_outside_it_paints_worse() {
+        assert_eq!(day_state(true, None, true), DayState::Maintenance);
+        assert_eq!(day_state(false, None, true), DayState::Maintenance);
+        assert_eq!(
+            day_state(true, Some(IncidentImpact::Degraded), true),
+            DayState::Degraded
+        );
     }
 
     #[test]
     fn day_maps_each_impact() {
         assert_eq!(
-            day_state(true, Some(IncidentImpact::Degraded)),
+            day_state(true, Some(IncidentImpact::Degraded), false),
             DayState::Degraded
         );
         assert_eq!(
-            day_state(true, Some(IncidentImpact::PartialOutage)),
+            day_state(true, Some(IncidentImpact::PartialOutage), false),
             DayState::PartialOutage
         );
         assert_eq!(
-            day_state(true, Some(IncidentImpact::MajorOutage)),
+            day_state(true, Some(IncidentImpact::MajorOutage), false),
             DayState::MajorOutage
         );
     }

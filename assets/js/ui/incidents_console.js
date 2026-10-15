@@ -21,18 +21,21 @@
     if (window.smToast) window.smToast({ message: msg, kind: "error" });
   }
 
-  async function post(url, body) {
-    return request("POST", url, body);
+  async function post(url, body, extraHeaders) {
+    return request("POST", url, body, extraHeaders);
   }
 
-  async function request(method, url, body) {
+  async function request(method, url, body, extraHeaders) {
     const r = await fetch(url, {
       method: method,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "X-Requested-With": "uptimepage",
-      },
+      headers: Object.assign(
+        {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "X-Requested-With": "uptimepage",
+        },
+        extraHeaders,
+      ),
       body: JSON.stringify(body || {}),
     });
     let json = null;
@@ -202,7 +205,29 @@
       message: (fd.get("message") || "").toString().trim(),
     };
     if (!body.message) return showError("message: cannot be empty");
-    const res = await post("/api/v1/incidents/" + encodeURIComponent(id) + "/updates", body);
+    // An update is published to subscribers and cannot be taken back: a
+    // second submit while one is in flight is dropped, and a retry of the same
+    // update after an error carries the same key, so it is not posted twice.
+    if (form.dataset.posting) return;
+    form.dataset.posting = "1";
+    const button = form.querySelector("button[type=submit]");
+    if (button) button.disabled = true;
+    let res = null;
+    try {
+      res = await post("/api/v1/incidents/" + encodeURIComponent(id) + "/updates", body, {
+        "Idempotency-Key": window.smIdempotencyKey(form, JSON.stringify(body)),
+      });
+    } catch (err) {
+      // It may have landed: posting the same text again reuses its key, so
+      // the retry replays it instead of publishing it twice.
+      showError("Network error: " + (err.message || err) + ". Post it again to retry safely.");
+    } finally {
+      if (!res || !res.ok) {
+        delete form.dataset.posting;
+        if (button) button.disabled = false;
+      }
+    }
+    if (!res) return;
     if (!res.ok) return showError(errMsg(res));
     if (window.smToast) window.smToast({ message: "Update posted", kind: "ok" });
     window.location.reload();

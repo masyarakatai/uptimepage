@@ -741,6 +741,17 @@ impl IncidentOpsStore for InMemoryIncidentOpsStore {
     }
 
     async fn status_pages(&self, _org: OrgId, id: Uuid) -> Result<Vec<Uuid>> {
+        let g = self.inner.lock();
+        if g.incidents
+            .iter()
+            .any(|i| i.id == id && i.target_id.is_some())
+        {
+            return Ok(Vec::new());
+        }
+        Ok(g.status_pages.get(&id).cloned().unwrap_or_default())
+    }
+
+    async fn kept_on_pages(&self, _org: OrgId, id: Uuid) -> Result<Vec<Uuid>> {
         Ok(self
             .inner
             .lock()

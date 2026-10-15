@@ -11,13 +11,14 @@ use uuid::Uuid;
 use crate::config::PublicStatusConfig;
 use crate::domain::OverallStatus;
 use crate::domain::{
-    DayState, Downtime, IncidentImpact, IncidentSeverity, IncidentStatusPhase, OverallState,
-    PublicComponent, PublicComponentGroup, PublicComponentStatus, PublicIncident,
-    PublicIncidentUpdate, PublicMaintenance, PublicOrgBranding, PublicStatusPage,
+    DayState, Downtime, IncidentImpact, IncidentSeverity, IncidentStatusPhase,
+    MaintenanceUpdatePhase, OverallState, PublicComponent, PublicComponentGroup,
+    PublicComponentStatus, PublicIncident, PublicIncidentUpdate, PublicMaintenance,
+    PublicMaintenanceUpdate, PublicOrgBranding, PublicStatusPage,
 };
 use crate::i18n::Tr;
-use crate::public_status::HistoryIncidentMarker;
 use crate::public_status::history::HistoryEntry;
+use crate::public_status::{HistoryMarker, MarkerKind};
 use crate::storage::orgs::OrgBranding;
 
 #[test]
@@ -56,6 +57,7 @@ fn sample_page() -> PublicStatusPage {
                 current_status: PublicComponentStatus::Operational,
                 history: vec![DayState::Operational; HISTORY_LEN],
                 downtime: vec![Downtime::default(); HISTORY_LEN],
+                checked: Vec::new(),
                 uptime_pct: Some(99.9),
                 detail_url: None,
             }],
@@ -167,7 +169,8 @@ fn day_strip_blob_links_overlapping_incident() {
         partial_secs: 5 * 60,
         degraded_secs: 0,
     };
-    let marker = HistoryIncidentMarker {
+    let marker = HistoryMarker {
+        kind: MarkerKind::Incident,
         id: Uuid::new_v4(),
         component_id: comp_id,
         title: "Edge nodes returning 502".into(),
@@ -223,7 +226,8 @@ fn day_strip_blob_html_safe() {
     // close the <script>, open a comment (`<!--`), or break CDATA.
     let p = sample_page();
     let comp_id = p.groups[0].components[0].id;
-    let marker = HistoryIncidentMarker {
+    let marker = HistoryMarker {
+        kind: MarkerKind::Incident,
         id: Uuid::new_v4(),
         component_id: comp_id,
         title: "evil </script><!--<img src=x>& bad".into(),
@@ -261,18 +265,19 @@ fn day_related_keeps_incidents_touching_the_day() {
         .map(|nd| DateTime::<Utc>::from_naive_utc_and_offset(nd, Utc))
         .unwrap();
     let day_end = day_start + ChronoDuration::days(1);
-    let inc = HistoryIncidentMarker {
+    let inc = HistoryMarker {
+        kind: MarkerKind::Incident,
         id: Uuid::new_v4(),
         component_id: comp_id,
         title: "spans midnight".into(),
         started_at: day_start - ChronoDuration::hours(3),
         ended_at: Some(day_start + ChronoDuration::hours(2)),
     };
-    let pool: Vec<&HistoryIncidentMarker> = vec![&inc];
+    let pool: Vec<&HistoryMarker> = vec![&inc];
     assert_eq!(day_related(&pool, day_start, day_end, now).len(), 1);
     let before = day_start - ChronoDuration::days(1);
     assert!(day_related(&pool, before - ChronoDuration::days(1), before, now).is_empty());
-    let empty: Vec<&HistoryIncidentMarker> = Vec::new();
+    let empty: Vec<&HistoryMarker> = Vec::new();
     assert!(day_related(&empty, day_start, day_end, now).is_empty());
 }
 
@@ -368,6 +373,18 @@ fn active_incident_banner_renders_when_present() {
 fn maintenance_card_renders_when_present() {
     let mut p = sample_page();
     p.active_maintenance.push(PublicMaintenance {
+        updates: vec![
+            PublicMaintenanceUpdate {
+                posted_at: Utc::now() - ChronoDuration::minutes(4),
+                phase: MaintenanceUpdatePhase::InProgress,
+                message: "Started on time.".into(),
+            },
+            PublicMaintenanceUpdate {
+                posted_at: Utc::now() - ChronoDuration::minutes(1),
+                phase: MaintenanceUpdatePhase::InProgress,
+                message: "Running late, done by 23:30 UTC.".into(),
+            },
+        ],
         id: Uuid::nil(),
         title: "DB upgrade".into(),
         description: Some("Brief".into()),
@@ -388,6 +405,65 @@ fn maintenance_card_renders_when_present() {
     assert!(html.contains("Scheduled maintenance"));
     assert!(html.contains("DB upgrade"));
     assert!(html.contains("Gateway"));
+    assert!(html.contains("Latest update"));
+    assert!(html.contains("Running late, done by 23:30 UTC."));
+    assert!(!html.contains("Started on time."), "only the newest update");
+    assert!(
+        html.contains(r#"data-tz="window""#),
+        "a window's times name their zone"
+    );
+}
+
+#[test]
+fn a_maintenance_day_links_to_the_window_in_the_archive() {
+    let mut p = sample_page();
+    p.generated_at = p
+        .generated_at
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_utc();
+    let comp_id = p.groups[0].components[0].id;
+    let last = p.groups[0].components[0].history.len() - 1;
+    p.groups[0].components[0].history[last] = DayState::Maintenance;
+    let id = Uuid::from_u128(7);
+    let started = p.generated_at - ChronoDuration::hours(4);
+    // The monitor left the window and came back: two stretches, one day.
+    let stretch = |from: i64, until: i64| HistoryMarker {
+        kind: MarkerKind::Maintenance { starts_at: started },
+        id,
+        component_id: comp_id,
+        title: "Maintenance: Database upgrade".into(),
+        started_at: p.generated_at - ChronoDuration::minutes(from),
+        ended_at: Some(p.generated_at - ChronoDuration::minutes(until)),
+    };
+    let markers = [stretch(150, 120), stretch(90, 60)];
+    let view = build_view(&p, &markers, &Default::default(), all_tab(), Tr::default());
+    assert_eq!(
+        view.groups[0].components[0].history[last].class,
+        "day-cell--mnt"
+    );
+    let blob: serde_json::Value = serde_json::from_str(&view.day_strip_json).unwrap();
+    let day = &blob[comp_id.to_string()]["days"][last]["related"];
+    assert_eq!(day.as_array().unwrap().len(), 1, "one link per window");
+    let related = &day[0];
+    assert_eq!(related["title"], "Maintenance: Database upgrade");
+    let url = related["url"].as_str().unwrap();
+    let (path, anchor) = url.split_once('#').unwrap();
+    assert_eq!(anchor, format!("past-{id}"));
+    let cursor = path
+        .strip_prefix("/status/incidents?show=maintenance&cursor=")
+        .unwrap();
+    let from = crate::pagination::HistoryCursor::decode(cursor).unwrap();
+    assert!(
+        (started, id) < (from.started_at, from.id),
+        "the archive page starts with the window"
+    );
+    let tied_after = Uuid::from_u128(id.as_u128() + 1);
+    assert!(
+        (started, tied_after) >= (from.started_at, from.id),
+        "a window that started with it and sorts above it is on an earlier page"
+    );
 }
 
 #[test]
@@ -496,11 +572,11 @@ fn german_summary_counts_days_and_outages_in_german() {
     let mut h = vec![DayState::Operational; 90];
     h[10] = DayState::MajorOutage;
     assert_eq!(
-        history_summary(&h, tr),
+        history_summary(&h, &[], tr),
         "90 Tage, 1 Ausfall, 0 beeinträchtigt"
     );
     assert_eq!(
-        history_summary(&[DayState::Operational], tr),
+        history_summary(&[DayState::Operational], &[], tr),
         "1 Tag, keine Störungen"
     );
 }
@@ -510,12 +586,35 @@ fn history_summary_tallies_painted_days() {
     let mut h = vec![DayState::Operational; 90];
     h[10] = DayState::MajorOutage;
     assert_eq!(
-        history_summary(&h, Tr::default()),
+        history_summary(&h, &[], Tr::default()),
         "90 days, 1 outage, 0 degraded"
     );
     assert_eq!(
-        history_summary(&[DayState::NoData; 90], Tr::default()),
+        history_summary(&[DayState::NoData; 90], &[], Tr::default()),
         "90 days, no data"
+    );
+    let mut planned = vec![DayState::NoData; 90];
+    planned[40] = DayState::Maintenance;
+    planned[41] = DayState::Maintenance;
+    assert_eq!(
+        history_summary(&planned, &[], Tr::default()),
+        "90 days, no data",
+        "a window is no evidence of health"
+    );
+    let mut checked = vec![false; 90];
+    checked[40] = true;
+    checked[41] = true;
+    assert_eq!(
+        history_summary(&planned, &checked, Tr::default()),
+        "2 days, no incidents",
+        "checked through the window, its days count"
+    );
+    checked[41] = false;
+    planned[50] = DayState::Operational;
+    assert_eq!(
+        history_summary(&planned, &checked, Tr::default()),
+        "2 days, no incidents",
+        "an unchecked maintenance day does not"
     );
 }
 
@@ -1073,6 +1172,7 @@ fn bucket_by_month_groups_consecutive_incidents() {
         .unwrap()
         .with_timezone(&Utc);
     let window = PublicMaintenance {
+        updates: Vec::new(),
         id: Uuid::now_v7(),
         title: "Database upgrade".into(),
         description: None,
@@ -1406,6 +1506,7 @@ fn a_tab_keeps_itself_through_the_refresh_and_into_the_archive() {
         "API degraded",
     )];
     p.recent_maintenance = vec![PublicMaintenance {
+        updates: Vec::new(),
         id: Uuid::from_u128(9),
         title: "Database upgrade".into(),
         description: Some("Primary moves to new hardware.".into()),
@@ -1454,6 +1555,7 @@ fn a_long_maintenance_description_opens_in_place_and_hides_its_preview() {
     let now = p.generated_at;
     let full = "Traffic moves to the standby links. ".repeat(12);
     p.recent_maintenance = vec![PublicMaintenance {
+        updates: Vec::new(),
         id: Uuid::from_u128(9),
         title: "Network maintenance".into(),
         description: Some(full.clone()),

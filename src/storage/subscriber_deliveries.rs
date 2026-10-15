@@ -87,3 +87,4 @@ pub async fn purge_old(pool: &PgPool) -> sqlx::Result<u64> {
 /// Event-kind discriminators stored in `status_page_subscriber_deliveries`.
 pub const INCIDENT_UPDATE: &str = "incident_update";
 pub const MAINTENANCE: &str = "maintenance";
+pub const MAINTENANCE_UPDATE: &str = "maintenance_update";

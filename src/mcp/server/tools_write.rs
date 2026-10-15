@@ -19,8 +19,9 @@ use crate::mcp::schema::{
     IncidentActionResult, IncidentIdArg, IncidentUpdatePosted, IncidentVisibilityResult,
     MaintenanceIdArg, MaintenanceUpdateResult, MaintenanceWindowView, ManualStateSet,
     MonitorCreated, MonitorIdArg, MonitorStateResult, MonitorUpdateResult, MonitorsCreated,
-    PostIncidentUpdateArgs, PublishIncidentArgs, SetMonitorStateArgs, StatusPageWritten,
-    UpdateComponentArgs, UpdateMaintenanceArgs, UpdateMonitorArgs, UpdateStatusPageArgs,
+    PostIncidentUpdateArgs, PostMaintenanceUpdateArgs, PublishIncidentArgs, SetMonitorStateArgs,
+    StatusPageWritten, UpdateComponentArgs, UpdateMaintenanceArgs, UpdateMonitorArgs,
+    UpdateStatusPageArgs,
 };
 
 use super::McpServer;
@@ -500,6 +501,28 @@ impl McpServer {
         let args_json = json!({ "id": args.id });
         let result = self.cancel_maintenance_inner(&ctx, &auth, &args).await;
         self.finish(pool, &auth, "cancel_maintenance", args_json, result)
+            .await
+    }
+
+    #[tool(
+        description = "Post an update to a maintenance window: say the work is running late, that it finished, or what changed. Works on an upcoming, running or completed window (a completed window is read-only otherwise, so this is how to add a closing note), not on a cancelled one. The update shows on the status pages that show the window and goes to their email and webhook subscribers; it cannot be edited or removed. Asks for confirmation where the client can show a prompt; otherwise runs on the token's scope. Not read-only.",
+        title = "Post maintenance update",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
+    async fn post_maintenance_update(
+        &self,
+        Parameters(args): Parameters<PostMaintenanceUpdateArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<Json<MaintenanceWindowView>, McpToolError> {
+        let auth = McpAuth::from_ctx(&ctx)?;
+        let pool = self.require_pool()?;
+        let args_json = json!({ "id": args.id, "length": args.message.chars().count() });
+        let result = self.post_maintenance_update_inner(&ctx, &auth, &args).await;
+        self.finish(pool, &auth, "post_maintenance_update", args_json, result)
             .await
     }
 }

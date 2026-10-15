@@ -929,6 +929,17 @@ impl IncidentNarrationStore for InMemoryIncidentNarrationStore {
     }
 }
 
+/// An incident that was public at some point, `incident` naming a relation
+/// with its `id` and `visibility`: public now, or published and taken down
+/// since. Its subscribers were told about it, and pages that showed it keep it.
+pub(crate) fn ever_public_sql(incident: &str, org: &str) -> String {
+    format!(
+        "({incident}.visibility = 'public' OR EXISTS (
+             SELECT 1 FROM incident_events e
+             WHERE e.incident_id = {incident}.id AND e.org_id = {org} AND e.kind = 'published'))"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

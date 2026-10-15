@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use thiserror::Error;
 
 use super::templates::incident_alert::IncidentAlert;
+use super::templates::subscriber_maintenance::MaintenanceNotice;
 use super::templates::{self, RenderedEmail};
 use crate::domain::{Landing, Locale};
 use crate::i18n::Tr;
@@ -157,14 +158,13 @@ pub enum EmailTemplate {
         last_error: Option<String>,
         channel_url: Option<String>,
     },
-    /// A maintenance-window announcement or completion for a confirmed
-    /// subscriber. `phase` is `scheduled` or `completed`.
+    /// A maintenance-window announcement, completion or posted update for a
+    /// confirmed subscriber.
     SubscriberMaintenance {
         locale: Locale,
         page_name: String,
         title: String,
-        description: Option<String>,
-        phase: String,
+        notice: MaintenanceNotice,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
         page_url: String,
@@ -384,8 +384,7 @@ impl EmailTemplate {
                 locale,
                 page_name,
                 title,
-                description,
-                phase,
+                notice,
                 starts_at,
                 ends_at,
                 page_url,
@@ -394,8 +393,7 @@ impl EmailTemplate {
                 Tr::new(*locale),
                 page_name,
                 title,
-                description.as_deref(),
-                phase,
+                notice,
                 *starts_at,
                 *ends_at,
                 page_url,

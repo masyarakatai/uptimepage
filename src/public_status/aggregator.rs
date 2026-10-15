@@ -33,10 +33,11 @@ use crate::error::Result;
 use crate::i18n::Tr;
 use crate::security::Cipher;
 use crate::storage::capability_token;
+use crate::storage::maintenance::started_sql;
 use crate::storage::status_pages::COMPONENT_ORDER;
 
-use super::cache::{HistoryIncidentMarker, PageSettings};
-use super::history::{WindowQuery, names_on_page, page_windows};
+use super::cache::{HistoryMarker, MarkerKind, PageSettings};
+use super::history::{WindowQuery, names_on_page, page_windows, public_updates};
 use super::overall_status::{
     IncidentImpact, component_status, day_state, overall_state, overall_status,
 };
@@ -57,10 +58,10 @@ pub struct AggregatorConfig {
 impl Default for AggregatorConfig {
     fn default() -> Self {
         Self {
-            history_days: 90,
+            history_days: crate::storage::maintenance::PAGE_HISTORY_DAYS as u32,
             recent_days: 30,
             max_recent: 50,
-            upcoming_maintenance_horizon: ChronoDuration::days(7),
+            upcoming_maintenance_horizon: ChronoDuration::days(30),
         }
     }
 }
@@ -70,19 +71,24 @@ impl Default for AggregatorConfig {
 const CH_HISTORY_MV: &str = "check_results_1h";
 
 /// Whether incident `i` shows on a page: through one of its components
-/// (`components`, a uuid array), or, with no monitor, through the pages it
-/// was published to (`page`).
+/// (`components`, a uuid array), or through the pages it is linked to
+/// (`page`): the pages a declared incident with no monitor was published to,
+/// and the pages that kept a monitor's incident after the monitor left them.
+/// A kept one shows only once it has ended, so the page's live view follows
+/// its live components and only its history keeps what it showed.
 pub(crate) fn on_page(components: &str, page: &str) -> String {
     format!(
-        "(i.target_id = ANY({components}) OR EXISTS (\
+        "(i.target_id = ANY({components}) OR ((i.target_id IS NULL OR i.ended_at IS NOT NULL) \
+             AND EXISTS (\
              SELECT 1 FROM incident_status_pages isp \
              WHERE isp.incident_id = i.id AND isp.org_id = i.org_id \
-               AND isp.status_page_id = {page}))"
+               AND isp.status_page_id = {page})))"
     )
 }
 
-/// The name `page` gave an incident's monitor before the monitor was deleted;
-/// NULL while the monitor exists and for a declared incident.
+/// The name `page` gave an incident's monitor when the monitor left the page,
+/// by removal or deletion; NULL while the monitor is on the page and for a
+/// declared incident.
 pub(crate) fn kept_component_name(page: &str) -> String {
     format!(
         "(SELECT isp.component_name FROM incident_status_pages isp \
@@ -135,7 +141,7 @@ impl OrgAggregator {
         org: OrgId,
     ) -> Result<(
         PublicStatusPage,
-        Vec<HistoryIncidentMarker>,
+        Vec<HistoryMarker>,
         HashMap<Uuid, String>,
         PageSettings,
     )> {
@@ -157,22 +163,25 @@ impl OrgAggregator {
             (recent_maintenance, recent_maintenance_has_more),
             marker_windows,
             paint_windows,
+            window_spans,
             day_presence,
         ) = tokio::try_join!(
             self.load_maintenance(org, now, &component_ids, &name_by_id),
             self.load_active_incidents(page, org, &component_ids, &name_by_id, tr),
             self.load_recent_incidents(page, org, now, &component_ids, &name_by_id, tr),
-            self.load_recent_maintenance(org, now, &component_ids, &name_by_id),
+            self.load_recent_maintenance(page, org, now, &component_ids, &name_by_id),
             self.load_marker_windows(org, now, &component_ids),
             self.load_paint_windows(org, now, &component_ids, days),
+            self.load_window_spans(org, now, &component_ids, days),
             self.load_day_presence(org, &component_ids, now, days),
         )?;
 
-        let history_markers: Vec<HistoryIncidentMarker> = marker_windows
+        let history_markers: Vec<HistoryMarker> = marker_windows
             .into_iter()
             .map(|w| {
                 let component_name = name_by_id.get(&w.target_id).cloned().unwrap_or_default();
-                HistoryIncidentMarker {
+                HistoryMarker {
+                    kind: MarkerKind::Incident,
                     id: w.id,
                     component_id: w.target_id,
                     title: truncate_title(w.public_title.unwrap_or_else(|| {
@@ -182,6 +191,18 @@ impl OrgAggregator {
                     ended_at: w.ended_at,
                 }
             })
+            .chain(popover_windows(&window_spans, now).map(|w| HistoryMarker {
+                kind: MarkerKind::Maintenance {
+                    starts_at: w.window_starts_at,
+                },
+                id: w.id,
+                component_id: w.target_id,
+                title: truncate_title(
+                    tr.t_args("popover-maintenance", [("title", w.title.as_str().into())]),
+                ),
+                started_at: w.starts_at,
+                ended_at: Some(w.ends_at),
+            }))
             .collect();
 
         let mut open_worst: HashMap<Uuid, IncidentImpact> = HashMap::new();
@@ -193,10 +214,21 @@ impl OrgAggregator {
                 .or_insert(impact);
         }
 
-        let mut strip_by_target =
-            paint_strips(&component_ids, &day_presence, &paint_windows, now, days);
+        // Planned work is not downtime on the public page: the strip and the
+        // uptime figure read the incidents with their maintenance cut out.
+        let unplanned = outside_maintenance(&paint_windows, &window_spans, now);
+        let disrupted: std::collections::HashSet<Uuid> =
+            paint_windows.iter().map(|w| w.target_id).collect();
+        let mut strip_by_target = paint_strips(
+            &component_ids,
+            &day_presence,
+            &unplanned,
+            &window_spans,
+            now,
+            days,
+        );
         let mut uptime_by_target =
-            component_uptime(&component_ids, &day_presence, &paint_windows, now, days);
+            component_uptime(&component_ids, &day_presence, &unplanned, now, days);
 
         let mut groups: Vec<PublicComponentGroup> = Vec::new();
         for c in &components {
@@ -204,13 +236,15 @@ impl OrgAggregator {
             let DayStrip {
                 states: history,
                 downtime,
+                checked,
             } = strip_by_target
                 .remove(&c.id)
                 .unwrap_or_else(|| DayStrip::silent(days as usize));
-            // Read the evidence off the strip the page is about to render,
-            // so the pill and the history under it cannot disagree.
-            let has_evidence = history.iter().any(|d| *d != DayState::NoData);
-            let current = component_status(open_worst.get(&c.id).copied(), maint, has_evidence);
+            // A check or a confirmed incident over the strip's span is
+            // evidence; a maintenance window is not, and planned work cut out
+            // of the strip still happened.
+            let evidence = checked.contains(&true) || disrupted.contains(&c.id);
+            let current = component_status(open_worst.get(&c.id).copied(), maint, evidence);
             let pc = PublicComponent {
                 id: c.id,
                 name: c.name.clone(),
@@ -218,6 +252,7 @@ impl OrgAggregator {
                 current_status: current,
                 history,
                 downtime,
+                checked,
                 uptime_pct: uptime_by_target.remove(&c.id).flatten(),
                 detail_url: c.detail_url.clone(),
             };
@@ -283,11 +318,13 @@ impl OrgAggregator {
         // Fetch only the requested span — this endpoint is uncached.
         let span = days.clamp(1, self.cfg.history_days);
         let ids = [id];
-        let (paint_windows, day_presence) = tokio::try_join!(
+        let (paint_windows, window_spans, day_presence) = tokio::try_join!(
             self.load_paint_windows(org, now, &ids, span),
+            self.load_window_spans(org, now, &ids, span),
             self.load_day_presence(org, &ids, now, span),
         )?;
-        let history = paint_strips(&ids, &day_presence, &paint_windows, now, span)
+        let unplanned = outside_maintenance(&paint_windows, &window_spans, now);
+        let history = paint_strips(&ids, &day_presence, &unplanned, &window_spans, now, span)
             .remove(&id)
             .unwrap_or_else(|| DayStrip::silent(span as usize))
             .states;
@@ -436,6 +473,7 @@ impl OrgAggregator {
                 description: row.description,
                 starts_at: row.starts_at,
                 ends_at: row.ends_at,
+                updates: Vec::new(),
             };
             if row.starts_at <= now && row.ends_at > now {
                 active_target_ids.extend(on_page_components);
@@ -443,6 +481,11 @@ impl OrgAggregator {
             } else if row.starts_at > now {
                 upcoming.push(pm);
             }
+        }
+        let shown: Vec<Uuid> = active.iter().chain(&upcoming).map(|m| m.id).collect();
+        let mut updates = public_updates(&self.pg, org, &shown).await?;
+        for m in active.iter_mut().chain(upcoming.iter_mut()) {
+            m.updates = updates.remove(&m.id).unwrap_or_default();
         }
         Ok((active, upcoming, active_target_ids))
     }
@@ -525,6 +568,7 @@ impl OrgAggregator {
     /// Windows that ended, over the span `load_recent_incidents` covers.
     async fn load_recent_maintenance(
         &self,
+        page: StatusPageId,
         org: OrgId,
         now: DateTime<Utc>,
         component_ids: &[Uuid],
@@ -534,11 +578,13 @@ impl OrgAggregator {
         let mut windows = page_windows(
             &self.pg,
             org,
+            page.0,
             component_ids,
             name_by_id,
             WindowQuery {
                 now,
                 since: now - ChronoDuration::days(self.cfg.recent_days as i64),
+                by_end: false,
                 ended_only: true,
                 cursor: None,
                 limit: max as i64 + 1,
@@ -626,6 +672,54 @@ impl OrgAggregator {
         Ok(rows.into_iter().flat_map(PaintWindowRow::split).collect())
     }
 
+    /// Each started, not cancelled window's hold on each of `component_ids`
+    /// over the span, for the strip's maintenance days, the downtime cut and
+    /// the popover: from when the monitor joined the window, or its start,
+    /// until the window ends or dropped the monitor, once per stretch the
+    /// monitor spent in it.
+    async fn load_window_spans(
+        &self,
+        org: OrgId,
+        now: DateTime<Utc>,
+        component_ids: &[Uuid],
+        span_days: u32,
+    ) -> Result<Vec<WindowSpanRow>> {
+        if component_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let since = now - ChronoDuration::days(span_days as i64);
+        let rows = sqlx::query_as::<_, WindowSpanRow>(&format!(
+            r#"SELECT mw.id, mw.title, held.target_id,
+                      GREATEST(mw.starts_at, held.joined_at) AS starts_at,
+                      LEAST(mw.ends_at, held.left_at) AS ends_at, held.departed,
+                      mw.starts_at AS window_starts_at, mw.ends_at AS window_ends_at
+               FROM maintenance_windows mw
+               JOIN (SELECT mwc.maintenance_id, mwc.target_id, mwc.joined_at,
+                            'infinity'::timestamptz AS left_at, false AS departed
+                     FROM maintenance_window_components mwc
+                     WHERE mwc.org_id = $1 AND mwc.target_id = ANY($2)
+                     UNION ALL
+                     SELECT d.maintenance_id, d.target_id, d.joined_at, d.left_at, true
+                     FROM maintenance_window_departures d
+                     WHERE d.org_id = $1 AND d.target_id = ANY($2)) held
+                 ON held.maintenance_id = mw.id
+               WHERE mw.org_id = $1
+                 AND {started}
+                 AND LEAST(mw.ends_at, held.left_at) >= $4
+                 AND GREATEST(mw.starts_at, held.joined_at) < LEAST(mw.ends_at, held.left_at)
+               ORDER BY 4"#,
+            started = started_sql("mw.", "$3"),
+        ))
+        .bind(org.0)
+        .bind(component_ids)
+        .bind(now)
+        .bind(since)
+        .fetch_all(&self.pg)
+        .await
+        .context("load maintenance spans")?;
+        Ok(rows)
+    }
+
     async fn hydrate_incidents(
         &self,
         org: OrgId,
@@ -679,7 +773,8 @@ impl OrgAggregator {
                 let recovering = r.ended_at.is_none() && r.recovering_since.is_some();
                 PublicIncident {
                     id: r.id,
-                    component_id: r.target_id,
+                    // A monitor that left the page is not one of its components.
+                    component_id: r.target_id.filter(|t| name_by_id.contains_key(t)),
                     component_name,
                     title,
                     started_at: r.started_at,
@@ -745,6 +840,8 @@ impl OrgAggregator {
 struct DayStrip {
     states: Vec<DayState>,
     downtime: Vec<Downtime>,
+    /// Whether a check ran each day.
+    checked: Vec<bool>,
 }
 
 impl DayStrip {
@@ -752,18 +849,21 @@ impl DayStrip {
         Self {
             states: vec![DayState::NoData; days],
             downtime: vec![Downtime::default(); days],
+            checked: vec![false; days],
         }
     }
 }
 
 /// Day-strip cells: data presence from the hour rollup (`NoData` detection),
 /// outage paint from confirmed incident windows — a raw check blip that never
-/// confirmed into an incident leaves the day green. Returns one strip of
-/// `span_days` slots per component.
+/// confirmed into an incident leaves the day green — and maintenance from the
+/// windows on the component. Returns one strip of `span_days` slots per
+/// component.
 fn paint_strips(
     component_ids: &[Uuid],
     presence: &[HistoryDayRow],
     windows: &[PaintWindowRow],
+    maintenance: &[WindowSpanRow],
     now: DateTime<Utc>,
     span_days: u32,
 ) -> HashMap<Uuid, DayStrip> {
@@ -806,6 +906,24 @@ fn paint_strips(
         }
     }
 
+    let mut planned: HashMap<Uuid, Vec<bool>> = HashMap::new();
+    for w in maintenance {
+        let slots = planned
+            .entry(w.target_id)
+            .or_insert_with(|| vec![false; days]);
+        let end = w.ends_at.min(now);
+        let mut d = w.starts_at.max(from).date_naive();
+        while day_start_utc(d) < end {
+            if let Some(i) = days_ago_index(d, now, span_days) {
+                slots[i] = true;
+            }
+            match d.succ_opt() {
+                Some(next) => d = next,
+                None => break,
+            }
+        }
+    }
+
     let today = now.date_naive();
     component_ids
         .iter()
@@ -813,8 +931,15 @@ fn paint_strips(
             let data = has_data.get(id);
             let impacts = worst.get(id);
             let day_spans = spans.get(id);
+            let windows = planned.get(id);
             let states = (0..days)
-                .map(|i| day_state(data.is_some_and(|v| v[i]), impacts.and_then(|v| v[i])))
+                .map(|i| {
+                    day_state(
+                        data.is_some_and(|v| v[i]),
+                        impacts.and_then(|v| v[i]),
+                        windows.is_some_and(|v| v[i]),
+                    )
+                })
                 .collect();
             let downtime = (0..days)
                 .map(|i| {
@@ -826,7 +951,14 @@ fn paint_strips(
                     Downtime::between(spans, start, (start + ChronoDuration::days(1)).min(now))
                 })
                 .collect();
-            (*id, DayStrip { states, downtime })
+            (
+                *id,
+                DayStrip {
+                    states,
+                    downtime,
+                    checked: data.cloned().unwrap_or_else(|| vec![false; days]),
+                },
+            )
         })
         .collect()
 }
@@ -869,6 +1001,82 @@ fn component_uptime(
             (*id, pct)
         })
         .collect()
+}
+
+/// The stretches a day's popover can link to, leaving out one of a monitor a
+/// running window dropped and has not taken back, which the archive lists
+/// only once the window ends.
+fn popover_windows(
+    spans: &[WindowSpanRow],
+    now: DateTime<Utc>,
+) -> impl Iterator<Item = &WindowSpanRow> {
+    spans.iter().filter(move |w| {
+        !w.departed
+            || w.window_ends_at <= now
+            || spans
+                .iter()
+                .any(|live| !live.departed && live.id == w.id && live.target_id == w.target_id)
+    })
+}
+
+/// A stretch of time, start included, end excluded.
+type Stretch = (DateTime<Utc>, DateTime<Utc>);
+
+/// The incident windows with every stretch inside a maintenance window on
+/// the same component cut out. An open incident is cut up to `now`.
+fn outside_maintenance(
+    windows: &[PaintWindowRow],
+    maintenance: &[WindowSpanRow],
+    now: DateTime<Utc>,
+) -> Vec<PaintWindowRow> {
+    let mut holes: HashMap<Uuid, Vec<Stretch>> = HashMap::new();
+    for m in maintenance {
+        holes
+            .entry(m.target_id)
+            .or_default()
+            .push((m.starts_at, m.ends_at));
+    }
+    for h in holes.values_mut() {
+        h.sort();
+    }
+    windows
+        .iter()
+        .flat_map(|w| {
+            let Some(h) = holes.get(&w.target_id) else {
+                return vec![w.clone()];
+            };
+            minus(w.started_at, w.ended_at.unwrap_or(now), h)
+                .into_iter()
+                .map(|(started_at, ended_at)| PaintWindowRow {
+                    started_at,
+                    ended_at: Some(ended_at),
+                    ..w.clone()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `[start, end)` without the `holes`, which are sorted by start and may overlap.
+fn minus(start: DateTime<Utc>, end: DateTime<Utc>, holes: &[Stretch]) -> Vec<Stretch> {
+    let mut parts = Vec::new();
+    let mut from = start;
+    for &(hole_start, hole_end) in holes {
+        if hole_start >= end {
+            break;
+        }
+        if hole_end <= from {
+            continue;
+        }
+        if hole_start > from {
+            parts.push((from, hole_start));
+        }
+        from = from.max(hole_end);
+    }
+    if from < end {
+        parts.push((from, end));
+    }
+    parts
 }
 
 // ── PG row types ────────────────────────────────────────────────────────────
@@ -961,6 +1169,20 @@ impl PaintWindowRow {
             self.regions_up.as_deref(),
         )
     }
+}
+
+#[derive(FromRow)]
+struct WindowSpanRow {
+    id: Uuid,
+    title: String,
+    target_id: Uuid,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    /// A stretch the monitor spent in the window before the window dropped it.
+    departed: bool,
+    /// The window's own times; `starts_at` and `ends_at` are the stretch's.
+    window_starts_at: DateTime<Utc>,
+    window_ends_at: DateTime<Utc>,
 }
 
 #[derive(FromRow)]
@@ -1151,6 +1373,117 @@ mod tests {
         assert_eq!(degraded.impact(), IncidentImpact::Degraded);
     }
 
+    fn span(target_id: Uuid, starts_at: DateTime<Utc>, ends_at: DateTime<Utc>) -> WindowSpanRow {
+        WindowSpanRow {
+            id: Uuid::now_v7(),
+            title: "Database upgrade".into(),
+            target_id,
+            starts_at,
+            ends_at,
+            departed: false,
+            window_starts_at: starts_at,
+            window_ends_at: ends_at,
+        }
+    }
+
+    #[test]
+    fn minus_cuts_overlapping_holes_out_of_a_stretch() {
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 9, 22, 0, 0).unwrap();
+        let m = |mins: i64| t0 + ChronoDuration::minutes(mins);
+        assert_eq!(minus(m(0), m(60), &[]), [(m(0), m(60))]);
+        assert_eq!(
+            minus(
+                m(0),
+                m(60),
+                &[(m(10), m(20)), (m(15), m(30)), (m(50), m(90))]
+            ),
+            [(m(0), m(10)), (m(30), m(50))]
+        );
+        assert!(minus(m(10), m(20), &[(m(0), m(60))]).is_empty());
+        assert_eq!(minus(m(0), m(60), &[(m(-30), m(5))]), [(m(5), m(60))]);
+    }
+
+    #[test]
+    fn an_outage_inside_a_window_paints_maintenance_and_costs_no_uptime() {
+        let t = Uuid::now_v7();
+        let other = Uuid::now_v7();
+        let now = Utc.with_ymd_and_hms(2026, 10, 15, 12, 0, 0).unwrap();
+        let starts = Utc.with_ymd_and_hms(2026, 10, 13, 21, 0, 0).unwrap();
+        let ends = starts + ChronoDuration::hours(1);
+        let inside = window(
+            t,
+            "monitor",
+            "major",
+            "down",
+            None,
+            starts + ChronoDuration::minutes(10),
+            Some(starts + ChronoDuration::minutes(25)),
+        );
+        let past_the_end = window(
+            other,
+            "monitor",
+            "major",
+            "down",
+            None,
+            ends - ChronoDuration::minutes(5),
+            Some(ends + ChronoDuration::minutes(10)),
+        );
+        let planned = [span(t, starts, ends), span(other, starts, ends)];
+        let presence = [
+            presence_row(t, starts),
+            presence_row(t, now),
+            presence_row(other, starts),
+            presence_row(other, now),
+        ];
+        let paint = [inside, past_the_end];
+        let unplanned = outside_maintenance(&paint, &planned, now);
+        let strips = paint_strips(&[t, other], &presence, &unplanned, &planned, now, 90);
+
+        assert_eq!(strips[&t].states[87], DayState::Maintenance);
+        assert_eq!(strips[&t].downtime[87], Downtime::default());
+        assert_eq!(strips[&t].states[89], DayState::Operational);
+        assert_eq!(
+            strips[&other].states[87],
+            DayState::MajorOutage,
+            "the ten minutes after the window still count"
+        );
+        assert_eq!(strips[&other].downtime[87].major_secs, 10 * 60);
+
+        let uptime = component_uptime(&[t, other], &presence, &unplanned, now, 90);
+        assert_eq!(uptime[&t], Some(100.0));
+        assert!(uptime[&other].is_some_and(|pct| pct < 100.0));
+    }
+
+    #[test]
+    fn a_window_is_no_evidence_of_health() {
+        let t = Uuid::now_v7();
+        let now = Utc.with_ymd_and_hms(2026, 10, 15, 12, 0, 0).unwrap();
+        let starts = Utc.with_ymd_and_hms(2026, 10, 9, 22, 0, 0).unwrap();
+        let planned = [span(t, starts, starts + ChronoDuration::hours(1))];
+        let strips = paint_strips(&[t], &[], &[], &planned, now, 90);
+        assert_eq!(strips[&t].states[83], DayState::Maintenance);
+        assert!(
+            !strips[&t].checked.contains(&true),
+            "never probed stays No data"
+        );
+        let probed = paint_strips(&[t], &[presence_row(t, now)], &[], &planned, now, 90);
+        assert!(probed[&t].checked[89]);
+    }
+
+    #[test]
+    fn a_window_paints_every_day_it_touched_and_no_other_component() {
+        let t = Uuid::now_v7();
+        let bystander = Uuid::now_v7();
+        let now = Utc.with_ymd_and_hms(2026, 10, 15, 12, 0, 0).unwrap();
+        let starts = Utc.with_ymd_and_hms(2026, 10, 9, 22, 0, 0).unwrap();
+        let planned = [span(t, starts, starts + ChronoDuration::hours(3))];
+        let strips = paint_strips(&[t, bystander], &[], &[], &planned, now, 90);
+        assert_eq!(strips[&t].states[83], DayState::Maintenance, "9 Oct");
+        assert_eq!(strips[&t].states[84], DayState::Maintenance, "10 Oct");
+        assert_eq!(strips[&t].states[85], DayState::NoData);
+        assert_eq!(strips[&bystander].states[83], DayState::NoData);
+    }
+
     #[test]
     fn paint_ends_exactly_at_midnight_excludes_that_day() {
         let t = Uuid::now_v7();
@@ -1169,7 +1502,7 @@ mod tests {
             presence_row(t, now),
             presence_row(t, midnight - ChronoDuration::hours(3)),
         ];
-        let strips = paint_strips(&[t], &presence, &[w], now, 90);
+        let strips = paint_strips(&[t], &presence, &[w], &[], now, 90);
         let strip = &strips[&t].states;
         // Yesterday (the incident's real day) painted, today untouched.
         assert_eq!(strip[88], DayState::MajorOutage);
@@ -1201,7 +1534,7 @@ mod tests {
             midnight - ChronoDuration::minutes(30),
             Some(midnight + ChronoDuration::minutes(90)),
         );
-        let strips = paint_strips(&[t], &[], &[blip, partial], now, 90);
+        let strips = paint_strips(&[t], &[], &[blip, partial], &[], now, 90);
         let strip = &strips[&t];
         assert_eq!(strip.downtime[88].major_secs, 240);
         assert_eq!(strip.downtime[88].partial_secs, 30 * 60);
@@ -1223,7 +1556,7 @@ mod tests {
             now - ChronoDuration::minutes(25),
             None,
         );
-        let strips = paint_strips(&[t], &[], &[open], now, 90);
+        let strips = paint_strips(&[t], &[], &[open], &[], now, 90);
         assert_eq!(strips[&t].downtime[89].major_secs, 25 * 60);
     }
 
@@ -1360,7 +1693,7 @@ mod tests {
             now - ChronoDuration::hours(1),
             None,
         );
-        let strips = paint_strips(&[t], &[], &[w], now, 90);
+        let strips = paint_strips(&[t], &[], &[w], &[], now, 90);
         let strip = &strips[&t].states;
         assert_eq!(
             strip[89],

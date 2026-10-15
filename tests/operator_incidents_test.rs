@@ -401,3 +401,38 @@ async fn a_declared_incident_leaves_uptime_alone_unless_it_asks_to_count() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(body_json(resp).await["counts_as_downtime"], true);
 }
+
+#[tokio::test]
+async fn a_retried_update_with_its_idempotency_key_is_published_once() {
+    let (app, store) = build_test_app_with_seedable_incidents(|_| {});
+    let inc = seed_incident();
+    let id = inc.id;
+    store.seed(inc);
+    let post = |key: &'static str| {
+        let mut req = json_request(
+            "POST",
+            &format!("/api/v1/incidents/{id}/updates"),
+            json!({ "phase": "identified", "message": "rolling back" }),
+        );
+        req.headers_mut()
+            .insert("idempotency-key", key.parse().unwrap());
+        app.clone().oneshot(req)
+    };
+    let first = body_json(post("update-1").await.unwrap()).await;
+    let retry = post("update-1").await.unwrap();
+    assert_eq!(retry.status(), StatusCode::CREATED);
+    assert_eq!(body_json(retry).await, first, "the retry replays the first");
+    use uptimepage::storage::IncidentNarrationStore;
+    let stored = |store: std::sync::Arc<uptimepage::storage::InMemoryIncidentNarrationStore>| async move {
+        store
+            .get(common::test_org_id(), id)
+            .await
+            .unwrap()
+            .unwrap()
+            .updates
+            .len()
+    };
+    assert_eq!(stored(store.clone()).await, 1, "published once");
+    post("update-2").await.unwrap();
+    assert_eq!(stored(store.clone()).await, 2, "a new key posts anew");
+}

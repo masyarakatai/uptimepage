@@ -5,7 +5,8 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
 use crate::domain::{
-    IncidentImpact, IncidentStatusPhase, PublicIncident, PublicMaintenance, outage_parts,
+    IncidentImpact, IncidentStatusPhase, MaintenanceUpdatePhase, PublicIncident, PublicMaintenance,
+    outage_parts,
 };
 use crate::i18n::Tr;
 use crate::public_status::history::HistoryEntry;
@@ -135,10 +136,22 @@ pub struct PastEntry {
     /// The latest update a person wrote, or a window's description, cut to
     /// the preview length.
     pub message: Option<String>,
-    /// A window's description when the preview cut it; the row opens to it.
+    /// Whether a window's row opens: its description is longer than the
+    /// preview, or updates were posted to it.
+    pub opens: bool,
+    /// What an open window row shows first: its whole description.
     pub full_message: Option<String>,
+    /// What an open window row shows after it: the updates, oldest first.
+    pub thread: Vec<PastUpdate>,
     /// The folded incidents, oldest first; empty for any other row.
     pub items: Vec<PastItem>,
+}
+
+/// One update posted to a maintenance window.
+pub struct PastUpdate {
+    pub phase_label: String,
+    pub posted_at: DateTime<Utc>,
+    pub message: String,
 }
 
 impl PastEntry {
@@ -306,8 +319,10 @@ fn fold(incidents: &[&PublicIncident], now: DateTime<Utc>, tr: Tr) -> Vec<PastEn
         .collect()
 }
 
-/// A maintenance window as a row. One that is still running says so, and a
-/// description longer than the preview opens to the whole of it.
+/// A maintenance window as a row. One that is still running says so. Its
+/// text is the latest update, else the description; a row with updates, or a
+/// description longer than the preview, opens to the description and every
+/// update.
 fn window(m: &PublicMaintenance, now: DateTime<Utc>, tr: Tr) -> PastEntry {
     let description = m
         .description
@@ -335,11 +350,33 @@ fn window(m: &PublicMaintenance, now: DateTime<Utc>, tr: Tr) -> PastEntry {
         started_at: m.starts_at,
         ended_at: (!running).then_some(m.ends_at),
         duration: tr.duration((m.ends_at.min(now) - m.starts_at).num_seconds().max(0)),
-        message: description.map(|d| crate::text::truncate_chars(d, UPDATE_PREVIEW_CHARS)),
-        full_message: description
-            .filter(|d| d.chars().count() > UPDATE_PREVIEW_CHARS)
-            .map(str::to_owned),
+        message: m
+            .updates
+            .last()
+            .map(|u| u.message.as_str())
+            .or(description)
+            .map(|text| crate::text::truncate_chars(text, UPDATE_PREVIEW_CHARS)),
+        opens: !m.updates.is_empty()
+            || description.is_some_and(|d| d.chars().count() > UPDATE_PREVIEW_CHARS),
+        full_message: description.map(str::to_owned),
+        thread: m
+            .updates
+            .iter()
+            .map(|u| PastUpdate {
+                phase_label: tr.t(update_phase_key(u.phase)),
+                posted_at: u.posted_at,
+                message: u.message.clone(),
+            })
+            .collect(),
         items: Vec::new(),
+    }
+}
+
+pub(super) fn update_phase_key(phase: MaintenanceUpdatePhase) -> &'static str {
+    match phase {
+        MaintenanceUpdatePhase::Scheduled => "maintenance-upcoming",
+        MaintenanceUpdatePhase::InProgress => "maintenance-in-progress",
+        MaintenanceUpdatePhase::Completed => "maintenance-completed",
     }
 }
 
@@ -402,7 +439,9 @@ fn single(inc: &PublicIncident, now: DateTime<Utc>, tr: Tr) -> PastEntry {
         ended_at: inc.ended_at,
         duration: tr.duration(lasted(inc, now)),
         message: narrated(inc),
+        opens: false,
         full_message: None,
+        thread: Vec::new(),
         items: Vec::new(),
     }
 }
@@ -439,7 +478,9 @@ fn folded(group: &[&PublicIncident], now: DateTime<Utc>, tr: Tr) -> PastEntry {
         ended_at: group.iter().filter_map(|i| i.ended_at).max(),
         duration: tr.duration(downtime(group, now)),
         message: None,
+        opens: false,
         full_message: None,
+        thread: Vec::new(),
         items: group
             .iter()
             .map(|inc| {
@@ -503,7 +544,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::domain::{IncidentSeverity, PublicIncidentUpdate};
+    use crate::domain::{IncidentSeverity, PublicIncidentUpdate, PublicMaintenanceUpdate};
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 8, 12, 0, 0).unwrap()
@@ -772,6 +813,7 @@ mod tests {
 
     fn maintenance(start: DateTime<Utc>, hours: i64, names: &[&str]) -> PublicMaintenance {
         PublicMaintenance {
+            updates: Vec::new(),
             id: Uuid::now_v7(),
             title: "Database upgrade".into(),
             description: Some("Primary moves to new hardware.".into()),
@@ -807,7 +849,10 @@ mod tests {
             window.message.as_deref(),
             Some("Primary moves to new hardware.")
         );
-        assert!(window.full_message.is_none());
+        assert!(
+            !window.opens,
+            "a short description with no updates stays one line"
+        );
         assert_eq!(past.recent[1].lead, "2 incidents", "the blips still fold");
         assert_eq!(past.recent[2].lead, "API, DB, Mail and 2 more");
     }
@@ -877,6 +922,46 @@ mod tests {
         assert_eq!(
             row.full_message.as_deref().map(str::len),
             Some(UPDATE_PREVIEW_CHARS + 1)
+        );
+    }
+
+    #[test]
+    fn a_window_with_updates_reads_as_its_latest_and_opens_to_all_of_them() {
+        let mut w = maintenance(at(7, 2, 0), 1, &["API"]);
+        w.updates = vec![
+            PublicMaintenanceUpdate {
+                posted_at: at(7, 2, 20),
+                phase: MaintenanceUpdatePhase::InProgress,
+                message: "Running late, done by 03:30 UTC.".into(),
+            },
+            PublicMaintenanceUpdate {
+                posted_at: at(7, 3, 40),
+                phase: MaintenanceUpdatePhase::Completed,
+                message: "Finished at 03:24 UTC.".into(),
+            },
+        ];
+        let past = build_past(&[], &[w], HistoryTab::All, now(), Tr::default());
+        let row = &past.recent[0];
+        assert_eq!(row.message.as_deref(), Some("Finished at 03:24 UTC."));
+        assert!(
+            row.opens,
+            "updates open the row even under a short description"
+        );
+        assert_eq!(
+            row.full_message.as_deref(),
+            Some("Primary moves to new hardware.")
+        );
+        let thread: Vec<(&str, &str)> = row
+            .thread
+            .iter()
+            .map(|u| (u.phase_label.as_str(), u.message.as_str()))
+            .collect();
+        assert_eq!(
+            thread,
+            [
+                ("In progress", "Running late, done by 03:30 UTC."),
+                ("Completed", "Finished at 03:24 UTC."),
+            ]
         );
     }
 

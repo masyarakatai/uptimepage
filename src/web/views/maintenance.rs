@@ -1,10 +1,11 @@
 //! Server-rendered maintenance pages under `/maintenance`: the windows that
 //! have not ended (active and upcoming), a paged history of completed ones,
-//! and a create/edit form.
+//! one window with its updates, and a create/edit form.
 //!
 //! Mutations run from the page against the JSON API (`/api/v1/maintenance`),
 //! so this module only renders chrome and prefills the form. A completed
-//! window is read-only history, matching the API's refusal to edit one.
+//! window is read-only history, matching the API's refusal to edit one; it
+//! still takes updates, which is how a closing note is added.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,8 +18,11 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::domain::{MaintenanceFilter, MaintenanceWindow, OrgId, UserId, WindowPhase};
+use crate::domain::{
+    MaintenanceFilter, MaintenanceUpdatePhase, MaintenanceWindow, OrgId, UserId, WindowPhase,
+};
 use crate::error::AppError;
+use crate::maintenance_ops::MAX_UPDATES_PER_WINDOW;
 use crate::request::CurrentOrg;
 use crate::storage::MaintenanceListQuery;
 use crate::templates::filters;
@@ -56,6 +60,7 @@ pub struct WindowRow {
     pub managed_by: Option<&'static str>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub cancelled_by: Option<String>,
+    pub updates: usize,
 }
 
 #[derive(Template, WebTemplate)]
@@ -68,6 +73,28 @@ pub struct MaintenancePage {
     pub page_sizes: Vec<PageSizeLink>,
     pub pager_prev: Option<PagerLink>,
     pub pager_next: Option<PagerLink>,
+}
+
+pub struct UpdateRow {
+    /// `scheduled`, `in progress` or `completed`: where the window stood.
+    pub phase: &'static str,
+    pub posted_at: DateTime<Utc>,
+    pub author: String,
+    pub message: String,
+}
+
+#[derive(Template, WebTemplate)]
+#[template(path = "maintenance/detail.html")]
+pub struct MaintenanceDetail {
+    pub active_tab: &'static str,
+    pub window: WindowRow,
+    /// Every monitor the window covers; the list row shows only the first few.
+    pub all_monitors: Vec<String>,
+    pub created_by: Option<String>,
+    pub updates: Vec<UpdateRow>,
+    /// Not cancelled and under the cap.
+    pub can_post: bool,
+    pub max_updates: i64,
 }
 
 pub struct MonitorOption {
@@ -136,6 +163,7 @@ fn window_row(
         managed_by: w.write_source.managed_label(),
         cancelled_at: w.deleted_at,
         cancelled_by: w.deleted_by.and_then(|u| members.get(&u).cloned()),
+        updates: w.updates.len(),
     }
 }
 
@@ -294,7 +322,7 @@ pub async fn edit_form(
             .into_response());
     };
     if window.phase(Utc::now()).is_closed() {
-        return Ok(Redirect::to("/maintenance?view=past").into_response());
+        return Ok(Redirect::to(&format!("/maintenance/{id}")).into_response());
     }
     let selected: HashSet<Uuid> = window.component_ids.iter().copied().collect();
     Ok(MaintenanceForm {
@@ -308,6 +336,71 @@ pub async fn edit_form(
         ends_at: Some(window.ends_at),
         suppress_alerts: window.suppress_alerts,
         monitors: monitor_options(&state, org, &selected).await?,
+    }
+    .into_response())
+}
+
+fn update_phase_label(phase: MaintenanceUpdatePhase) -> &'static str {
+    match phase {
+        MaintenanceUpdatePhase::Scheduled => "scheduled",
+        MaintenanceUpdatePhase::InProgress => "in progress",
+        MaintenanceUpdatePhase::Completed => "completed",
+    }
+}
+
+pub async fn detail(
+    State(state): State<AppState>,
+    org: Result<CurrentOrg, AppError>,
+    Path(id): Path<Uuid>,
+) -> WebResult<Response> {
+    let org = match resolve_org(org, &format!("/maintenance/{id}")) {
+        Ok(o) => o,
+        Err(resp) => return Ok(*resp),
+    };
+    let Some(window) = state.maintenance_store.get(org, id).await? else {
+        return Ok((
+            axum::http::StatusCode::NOT_FOUND,
+            NotFoundPage {
+                active_tab: TAB_MAINTENANCE,
+            },
+        )
+            .into_response());
+    };
+    let names = state.target_store.names(org).await?;
+    let members = members_map(&state, org).await?;
+    let now = Utc::now();
+    let mut all_monitors: Vec<String> = window
+        .component_ids
+        .iter()
+        .filter_map(|id| names.get(id).cloned())
+        .collect();
+    all_monitors.sort_by_key(|n| n.to_lowercase());
+    let updates: Vec<UpdateRow> = window
+        .updates
+        .iter()
+        .map(|u| UpdateRow {
+            phase: update_phase_label(u.phase),
+            posted_at: u.posted_at,
+            // Every token belongs to a user, so no name means the person
+            // who posted it has left the org.
+            author: u
+                .author
+                .and_then(|a| members.get(&a).cloned())
+                .unwrap_or_else(|| "removed user".to_owned()),
+            message: u.message.clone(),
+        })
+        .collect();
+    let can_post = window.phase(now) != WindowPhase::Cancelled
+        && (updates.len() as i64) < MAX_UPDATES_PER_WINDOW;
+    let created_by = window.created_by.and_then(|u| members.get(&u).cloned());
+    Ok(MaintenanceDetail {
+        active_tab: TAB_MAINTENANCE,
+        all_monitors,
+        created_by,
+        updates,
+        can_post,
+        max_updates: MAX_UPDATES_PER_WINDOW,
+        window: window_row(window, &names, &members, now),
     }
     .into_response())
 }

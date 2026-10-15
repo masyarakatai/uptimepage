@@ -441,6 +441,9 @@ pub trait IncidentOpsStore: Send + Sync {
     /// Pages a monitor-less incident was published to, empty for one with a
     /// monitor.
     async fn status_pages(&self, org: OrgId, id: Uuid) -> Result<Vec<Uuid>>;
+    /// Pages that kept a monitor's incident in their history after the
+    /// monitor left them; they show it too, so a change to it must reach them.
+    async fn kept_on_pages(&self, org: OrgId, id: Uuid) -> Result<Vec<Uuid>>;
     /// Incidents closed by deleting these monitors, whose responders are told
     /// it closed.
     async fn closed_with_monitors(&self, org: OrgId, monitors: &[Uuid]) -> Result<Vec<Uuid>>;

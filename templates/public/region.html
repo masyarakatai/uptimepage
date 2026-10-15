@@ -84,14 +84,20 @@
             <li class="text-sm">
                 <p class="break-words font-medium text-body">{{ m.title }}</p>
                 <p class="text-muted">
-                    <time datetime="{{ m.starts_at|iso_ts }}" data-tz="exact">{{ m.starts_at|human_ts }}</time>
+                    <time datetime="{{ m.starts_at|iso_ts }}" data-tz="window">{{ m.starts_at|human_ts }}</time>
                     –
-                    <time datetime="{{ m.ends_at|iso_ts }}" data-tz="exact">{{ m.ends_at|human_ts }}</time>
+                    <time datetime="{{ m.ends_at|iso_ts }}" data-tz="window">{{ m.ends_at|human_ts }}</time>
                     {% if !m.affects.is_empty() %} · {{ tr.t("maintenance-affects") }} {{ m.affects }}{% endif %}
                 </p>
                 {% match m.description %}
                     {% when Some with (d) %}<p class="text-pretty text-quiet">{{ d }}</p>{% when None %}
                 {% endmatch %}
+                {% if let Some(u) = m.latest_update %}
+                <div class="mt-1 border-l-2 border-[color:var(--theme-line)] pl-3">
+                    <p class="text-xs text-quiet">{{ tr.t("maintenance-latest-update") }} · <time datetime="{{ u.posted_at|iso_ts }}" data-tz="day-time">{{ u.posted_at|human_ts }}</time></p>
+                    <p class="whitespace-pre-line text-pretty text-body">{{ u.message }}</p>
+                </div>
+                {% endif %}
             </li>
             {% endfor %}
         </ul>
@@ -104,17 +110,23 @@
                 <p class="break-words font-medium text-body">{{ m.title }}</p>
                 <p class="text-muted">
                     {{ tr.t("maintenance-starts") }}
-                    <time datetime="{{ m.starts_at|iso_ts }}" data-tz="exact">{{ m.starts_at|human_ts }}</time>
+                    <time datetime="{{ m.starts_at|iso_ts }}" data-tz="window">{{ m.starts_at|human_ts }}</time>
                     {% match m.starts_in %}
                         {% when Some with (s) %} {{ s }}{% when None %}
                     {% endmatch %}
                     — {{ tr.t("maintenance-ends") }}
-                    <time datetime="{{ m.ends_at|iso_ts }}" data-tz="exact">{{ m.ends_at|human_ts }}</time>
+                    <time datetime="{{ m.ends_at|iso_ts }}" data-tz="window">{{ m.ends_at|human_ts }}</time>
                     {% if !m.affects.is_empty() %} · {{ tr.t("maintenance-affects") }} {{ m.affects }}{% endif %}
                 </p>
                 {% match m.description %}
                     {% when Some with (d) %}<p class="text-pretty text-quiet">{{ d }}</p>{% when None %}
                 {% endmatch %}
+                {% if let Some(u) = m.latest_update %}
+                <div class="mt-1 border-l-2 border-[color:var(--theme-line)] pl-3">
+                    <p class="text-xs text-quiet">{{ tr.t("maintenance-latest-update") }} · <time datetime="{{ u.posted_at|iso_ts }}" data-tz="day-time">{{ u.posted_at|human_ts }}</time></p>
+                    <p class="whitespace-pre-line text-pretty text-body">{{ u.message }}</p>
+                </div>
+                {% endif %}
             </li>
             {% endfor %}
         </ul>

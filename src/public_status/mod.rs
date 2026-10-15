@@ -20,7 +20,7 @@ pub mod urls;
 pub mod xml;
 
 pub use aggregator::{AggregatorConfig, OrgAggregator};
-pub use cache::{HistoryIncidentMarker, PageCache, PageCacheError};
+pub use cache::{HistoryMarker, MarkerKind, PageCache, PageCacheError};
 
 pub use incident_writer::{
     InMemoryIncidentStore, IncidentStore, IncidentWriter, IncidentWriterConfig, NewOpenIncident,

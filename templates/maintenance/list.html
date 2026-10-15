@@ -55,12 +55,8 @@
         {% for row in rows %}
         <tr class="border-t border-[color:var(--theme-line)] hover:bg-[color:var(--theme-surface-sunk)]">
           <td class="px-3 py-3 align-top">
-            {% if past %}
-            <span class="block max-w-[26rem] truncate text-sm font-medium text-body" title="{{ row.title }}">{{ row.title }}</span>
-            {% else %}
-            <a href="/maintenance/{{ row.id }}/edit" title="{{ row.title }}"
+            <a href="/maintenance/{{ row.id }}" title="{{ row.title }}"
                class="block max-w-[26rem] truncate text-sm font-medium text-body hover:underline">{{ row.title }}</a>
-            {% endif %}
             {% if let Some(d) = row.description %}
             <p class="mt-0.5 max-w-[26rem] truncate text-xs text-muted" title="{{ d }}">{{ d }}</p>
             {% endif %}
@@ -87,6 +83,9 @@
               {% endif %}
               {% if let Some(s) = row.eta_secs %}
               <span class="font-mono text-xs text-quiet"># {% if row.phase == "active" %}ends{% else %}starts{% endif %} in {{ s|humanize_dur }}</span>
+              {% endif %}
+              {% if row.updates > 0 %}
+              <a href="/maintenance/{{ row.id }}" class="font-mono text-xs text-quiet hover:text-body"># {{ row.updates }} update{% if row.updates != 1 %}s{% endif %}</a>
               {% endif %}
               {% if row.phase != "cancelled" %}
               {% if row.suppress_alerts %}

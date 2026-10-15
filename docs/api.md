@@ -90,6 +90,7 @@ These mutate the public surface; they live under the same auth boundary as
 | `GET` | `/api/v1/maintenance/{id}` | get one window |
 | `PATCH` | `/api/v1/maintenance/{id}` | edit title / description / time range / components / alert suppression (rejected after `ends_at` or once cancelled; `ends_at` must stay in the future, except that on a running window an `ends_at` at or before now ends it at the server's clock) |
 | `DELETE` | `/api/v1/maintenance/{id}` | cancel a window that has not ended (kept as history with `deleted_at` / `deleted_by`) |
+| `POST` | `/api/v1/maintenance/{id}/updates` | post a status update to an upcoming, running or completed window; it shows on the status page and goes to subscribers (`422 MAINTENANCE_CANCELLED` on a cancelled window, `422 MAINTENANCE_UPDATE_LIMIT` past 50) |
 | `PATCH` | `/api/v1/incidents/{id}` | update narration: `title`, `public_title`, `public_description`, `severity` (JSON `null` clears, omit to leave alone; a declared incident's `title` cannot be cleared), plus `counts_as_downtime` on a declared incident (`422` on a monitor-opened one) |
 | `POST` | `/api/v1/incidents/{id}/updates` | append a status update — `phase` ∈ `investigating`/`identified`/`monitoring`/`resolved`/`postmortem`, `message` ≤ 2 000 chars |
 
@@ -169,8 +170,8 @@ sensitive target fields (`url`, `headers`, `basic_auth`, `bearer_token`).
 | `GET` | `/api/public/v1/incidents` | recent public incidents (paginated) |
 | `GET` | `/api/public/v1/incidents/{id}` | one public incident with its update timeline |
 | `GET` | `/api/public/v1/incidents.rss` | RSS 2.0 feed of recent incidents |
-| `GET` | `/api/public/v1/maintenance` | active + upcoming maintenance windows |
-| `GET` | `/api/public/v1/maintenance/past` | maintenance windows that have ended, newest first (started in the last 90 days, paginated like the incident list) |
+| `GET` | `/api/public/v1/maintenance` | active + upcoming maintenance windows (the next 30 days), each with its `updates` |
+| `GET` | `/api/public/v1/maintenance/past` | maintenance windows that have ended, newest first, each with its `updates` (those that ran in the last 90 days, paginated like the incident list) |
 | `GET` | `/api/public/v1/badge.svg` | embeddable SVG status badge (overall, or `?component={id}`) |
 
 See [Public status page](public-status.md) for the operator workflow and
@@ -970,7 +971,7 @@ Returns every tag currently in use across the caller's targets (enabled or disab
 
 ## Idempotency
 
-`POST /api/v1/targets/bulk`, `POST /api/v1/targets/bulk-action` and `POST /api/v1/targets/{id}/duplicate` accept an optional `Idempotency-Key` header. The server stores a successful (`2xx`) response for 24 hours keyed by `(Authorization and Cookie headers, header value, method and path, body hash)`. A retry with the same credentials, key and body to the same path, sent after the first request has answered, returns the original response without re-executing. An error is not stored, so a retry after a `429`, a `5xx` or a refused request runs again. The same key with a different body, or sent to a different path, executes normally. The cache is in-process; entries are lost on restart.
+`POST /api/v1/targets/bulk`, `POST /api/v1/targets/bulk-action`, `POST /api/v1/targets/{id}/duplicate`, `POST /api/v1/incidents/{id}/updates` and `POST /api/v1/maintenance/{id}/updates` accept an optional `Idempotency-Key` header. Updates cannot be taken back and go to subscribers, so send one key per message. A key is 1 to 255 characters; anything else is `400 INVALID_IDEMPOTENCY_KEY`. The server stores a successful (`2xx`) response for 24 hours keyed by `(caller credential, header value, method and path, body hash)`, where the credential is the bearer token or, in a browser, the session cookie. A retry with the same credential, key and body to the same path, sent after the first request has answered, returns the original response, `Location` included, without re-executing. One sent while the first is still running gets `409 IDEMPOTENCY_IN_PROGRESS`; retry it once the first answers. An error is not stored, so a retry after a `429`, a `5xx` or a refused request runs again. The same key with a different body, or sent to a different path, executes normally. The cache is in-process; entries are lost on restart.
 
 ```http
 POST /api/v1/targets/bulk-action HTTP/1.1

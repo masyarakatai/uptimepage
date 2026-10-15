@@ -345,7 +345,12 @@ impl PendingUpdate {
 /// ever-published incident, posted since they subscribed and within the
 /// lookback. The incident→page link is `incident.target_id` ∈ the page's
 /// curated components, or for an incident with no monitor, the pages it was
-/// published to or, once its monitor was deleted, kept on. Updates flow while the incident is public; once
+/// published to or, once its monitor was deleted, kept on. A page that kept a
+/// monitor's incident after the monitor left it hears, once it closed, the
+/// closing update and what came after, such as the postmortem: what was
+/// posted at or after `resolved_at`, which the close writes in the same
+/// transaction as its update. What was said before, an early "resolved"
+/// included, stays in its history. Updates flow while the incident is public; once
 /// unpublished, only the `resolved` closer still fans out, so an incident taken
 /// off the page before it ends doesn't strand subscribers on its last update.
 pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingUpdate>> {
@@ -382,7 +387,9 @@ pub async fn list_pending(pool: &PgPool, limit: i64) -> Result<Vec<PendingUpdate
            -- about one would send readers to a page that shows neither the
            -- component nor the incident.
            AND ((t.id IS NOT NULL AND t.plan_hold_at IS NULL)
-                OR (i.target_id IS NULL AND EXISTS (
+                OR ((i.target_id IS NULL
+                     OR u.posted_at >= i.resolved_at)
+                    AND EXISTS (
                     SELECT 1 FROM incident_status_pages isp
                     WHERE isp.incident_id = i.id AND isp.org_id = i.org_id
                       AND isp.status_page_id = s.status_page_id)))

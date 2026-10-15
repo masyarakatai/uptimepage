@@ -71,8 +71,8 @@ pub use incident::{
 pub use linked_app::{ExternalId, Linked, LinkedApp, LinkedAppAccount};
 pub use locale::Locale;
 pub use maintenance::{
-    MaintenanceFilter, MaintenanceWindow, MaintenanceWindowUpdate, NewMaintenanceWindow,
-    WindowPhase,
+    MaintenanceFilter, MaintenanceUpdate, MaintenanceUpdatePhase, MaintenanceWindow,
+    MaintenanceWindowUpdate, NewMaintenanceUpdate, NewMaintenanceWindow, WindowPhase,
 };
 pub use manual::{MAX_MANUAL_NOTE_CHARS, ManualState, ManualStatus};
 pub use membership::{Membership, Role};
@@ -109,8 +109,8 @@ pub use public::{
     ComponentHistoryResponse, DayState, Downtime, ImpactSpan, IncidentImpact, IncidentSeverity,
     IncidentStatusPhase, OverallState, OverallStatus, PublicActionItem, PublicComponent,
     PublicComponentGroup, PublicComponentStatus, PublicIncident, PublicIncidentUpdate,
-    PublicMaintenance, PublicMaintenanceList, PublicPostmortem, PublicStatusPage, Recovered,
-    incident_impact, outage_parts, stored_incident_impact,
+    PublicMaintenance, PublicMaintenanceList, PublicMaintenanceUpdate, PublicPostmortem,
+    PublicStatusPage, Recovered, incident_impact, outage_parts, stored_incident_impact,
 };
 pub use quota::{Plan, PlanLimits, QuotaEvent};
 pub use reserved_slugs::is_reserved;

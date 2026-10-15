@@ -11,7 +11,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use uptimepage::domain::{NewSubscriber, SubscriberChannel};
-use uptimepage::storage::subscriber_deliveries::{self, INCIDENT_UPDATE, MAINTENANCE};
+use uptimepage::storage::subscriber_deliveries::{
+    self, INCIDENT_UPDATE, MAINTENANCE, MAINTENANCE_UPDATE,
+};
 use uptimepage::storage::subscriber_maintenance;
 use uptimepage::storage::subscribers::{self, ConfirmMint};
 
@@ -917,5 +919,354 @@ async fn webhook_subscriber_appears_in_pending() {
     assert_eq!(mine.channel, "webhook");
     assert_eq!(mine.target, "https://hook.example.com/x");
 
+    cleanup(&pool, org).await;
+}
+
+async fn post_maintenance_update(pool: &PgPool, org: Uuid, window: Uuid, message: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO maintenance_updates (org_id, maintenance_id, phase, message)
+         VALUES ($1, $2, 'in_progress', $3) RETURNING id",
+    )
+    .bind(org)
+    .bind(window)
+    .bind(message)
+    .fetch_one(pool)
+    .await
+    .expect("insert maintenance update")
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_late_update_reaches_a_page_whose_monitor_left_the_window_before_the_page_had_it() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let org = seed_org(&pool).await;
+    let target = seed_target(&pool, org).await;
+    let page = seed_page(&pool, org).await;
+    let sub_id = confirmed_subscriber(&pool, org, page, "left@example.com").await;
+    sqlx::query(
+        "UPDATE status_page_subscribers SET verified_at = now() - interval '3 hours' WHERE id = $1",
+    )
+    .bind(sub_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The window dropped the monitor before the page had it, and has ended.
+    let window = seed_maintenance(&pool, org, -2, -1).await;
+    sqlx::query(
+        "INSERT INTO maintenance_window_departures (org_id, maintenance_id, target_id, left_at)
+         VALUES ($1, $2, $3, now() - interval '90 minutes')",
+    )
+    .bind(org)
+    .bind(window)
+    .bind(target)
+    .execute(&pool)
+    .await
+    .unwrap();
+    add_component(&pool, org, page, target).await;
+    let late = post_maintenance_update(&pool, org, window, "How it went.").await;
+
+    let owed: Vec<Uuid> = subscriber_maintenance::list_pending_updates(&pool, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|u| u.subscriber_id == sub_id)
+        .map(|u| u.update_id)
+        .collect();
+    assert_eq!(
+        owed,
+        [late],
+        "the page shows the window, so it hears the update"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_maintenance_update_reaches_each_subscriber_once_and_keeps_reaching_a_page_that_kept_it()
+{
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let org = seed_org(&pool).await;
+    let target = seed_target(&pool, org).await;
+    let page = seed_page(&pool, org).await;
+    add_component(&pool, org, page, target).await;
+    let sub_id = confirmed_subscriber(&pool, org, page, "upd@example.com").await;
+    sqlx::query(
+        "UPDATE status_page_subscribers SET verified_at = now() - interval '3 hours' WHERE id = $1",
+    )
+    .bind(sub_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let window = seed_maintenance(&pool, org, -1, 1).await;
+    add_maintenance_component(&pool, org, window, target).await;
+    let update = post_maintenance_update(&pool, org, window, "Running late.").await;
+    let cancelled = seed_maintenance(&pool, org, -1, 1).await;
+    add_maintenance_component(&pool, org, cancelled, target).await;
+    let silent = post_maintenance_update(&pool, org, cancelled, "never sent").await;
+    sqlx::query("UPDATE maintenance_windows SET deleted_at = now() WHERE id = $1")
+        .bind(cancelled)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let owed = |pending: Vec<subscriber_maintenance::PendingMaintenanceUpdate>| -> Vec<Uuid> {
+        pending
+            .into_iter()
+            .filter(|u| u.subscriber_id == sub_id)
+            .map(|u| u.update_id)
+            .collect()
+    };
+    let mine = owed(
+        subscriber_maintenance::list_pending_updates(&pool, 100)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        mine,
+        [update],
+        "a cancelled window's update stays silent: {silent}"
+    );
+
+    // The monitor leaves the page; the page kept the window, so a later
+    // update still reaches its subscribers.
+    sqlx::query("DELETE FROM status_page_components WHERE status_page_id = $1 AND target_id = $2")
+        .bind(page)
+        .bind(target)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        owed(
+            subscriber_maintenance::list_pending_updates(&pool, 100)
+                .await
+                .unwrap()
+        )
+        .is_empty(),
+        "a page that never kept the window hears nothing"
+    );
+    sqlx::query(
+        "INSERT INTO maintenance_status_pages
+             (org_id, maintenance_id, status_page_id, target_ref, component_name)
+         VALUES ($1, $2, $3, $4, 'API')",
+    )
+    .bind(org)
+    .bind(window)
+    .bind(page)
+    .bind(target)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        owed(
+            subscriber_maintenance::list_pending_updates(&pool, 100)
+                .await
+                .unwrap()
+        )
+        .is_empty(),
+        "a kept window is history: nothing while it runs"
+    );
+    sqlx::query("UPDATE maintenance_windows SET ends_at = clock_timestamp() WHERE id = $1")
+        .bind(window)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let closing = post_maintenance_update(&pool, org, window, "Finished.").await;
+    assert_eq!(
+        owed(
+            subscriber_maintenance::list_pending_updates(&pool, 100)
+                .await
+                .unwrap()
+        ),
+        [closing],
+        "only what was said once it ended: {update} stays unsent"
+    );
+
+    let ended = seed_maintenance(&pool, org, -2, -1).await;
+    add_maintenance_component(&pool, org, ended, target).await;
+    sqlx::query(
+        "INSERT INTO maintenance_status_pages
+             (org_id, maintenance_id, status_page_id, target_ref, component_name)
+         VALUES ($1, $2, $3, $4, 'API')",
+    )
+    .bind(org)
+    .bind(ended)
+    .bind(page)
+    .bind(target)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let notices = subscriber_maintenance::list_pending(&pool, 100)
+        .await
+        .unwrap();
+    assert!(
+        notices.iter().any(|m| m.subscriber_id == sub_id
+            && m.maintenance_id == ended
+            && m.phase == "completed"),
+        "a page that kept the window is told it completed"
+    );
+
+    assert!(
+        subscriber_deliveries::claim(&pool, sub_id, org, MAINTENANCE_UPDATE, closing, "")
+            .await
+            .unwrap()
+    );
+    subscriber_deliveries::mark(&pool, sub_id, MAINTENANCE_UPDATE, closing, "", None)
+        .await
+        .unwrap();
+    assert!(
+        owed(
+            subscriber_maintenance::list_pending_updates(&pool, 100)
+                .await
+                .unwrap()
+        )
+        .is_empty(),
+        "sent once"
+    );
+    cleanup(&pool, org).await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_page_that_kept_an_incident_hears_how_it_ended() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let org = seed_org(&pool).await;
+    let target = seed_target(&pool, org).await;
+    let page = seed_page(&pool, org).await;
+    let sub_id = confirmed_subscriber(&pool, org, page, "kept@example.com").await;
+    let incident = seed_public_incident(&pool, org, target).await;
+    sqlx::query(
+        "INSERT INTO incident_status_pages (org_id, incident_id, status_page_id, component_name)
+         VALUES ($1, $2, $3, 'API')",
+    )
+    .bind(org)
+    .bind(incident)
+    .bind(page)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let meanwhile = add_update(&pool, org, incident, 0).await;
+    let advisory: Uuid = sqlx::query_scalar(
+        "INSERT INTO incident_updates (org_id, incident_id, phase, message)
+         VALUES ($1, $2, 'resolved', 'Looks fixed, still watching') RETURNING id",
+    )
+    .bind(org)
+    .bind(incident)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let owed = |pending: Vec<subscribers::PendingUpdate>| -> Vec<Uuid> {
+        pending
+            .into_iter()
+            .filter(|p| p.subscriber_id == sub_id)
+            .map(|p| p.update_id)
+            .collect()
+    };
+    assert!(
+        owed(subscribers::list_pending(&pool, 100).await.unwrap()).is_empty(),
+        "the monitor left the page, so the open incident is not its news, not even {advisory}"
+    );
+
+    sqlx::query("UPDATE incidents SET ended_at = now(), resolved_at = now(), state = 'resolved' WHERE id = $1")
+        .bind(incident)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resolved = add_resolved_update(&pool, org, incident).await;
+    let postmortem: Uuid = sqlx::query_scalar(
+        "INSERT INTO incident_updates (org_id, incident_id, phase, message, posted_at)
+         VALUES ($1, $2, 'postmortem', 'What happened', now() + interval '1 second')
+         RETURNING id",
+    )
+    .bind(org)
+    .bind(incident)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        owed(subscribers::list_pending(&pool, 100).await.unwrap()),
+        [resolved, postmortem],
+        "how it ended reaches the page that kept it, {meanwhile} and {advisory} do not"
+    );
+    cleanup(&pool, org).await;
+}
+
+/// The worker can run after several updates have piled up. A page that kept
+/// the incident must still get the closing update and what followed it, even
+/// when a later update carries the resolved label too.
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn a_later_resolved_update_does_not_hide_the_closing_one_from_a_kept_page() {
+    use uptimepage::storage::{Actor, IncidentOpsStore, PgIncidentOpsStore};
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let org = seed_org(&pool).await;
+    let target = seed_target(&pool, org).await;
+    let page = seed_page(&pool, org).await;
+    let sub_id = confirmed_subscriber(&pool, org, page, "late@example.com").await;
+    let incident = seed_public_incident(&pool, org, target).await;
+    sqlx::query(
+        "INSERT INTO incident_status_pages (org_id, incident_id, status_page_id, component_name)
+         VALUES ($1, $2, $3, 'API')",
+    )
+    .bind(org)
+    .bind(incident)
+    .bind(page)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    PgIncidentOpsStore::new(pool.clone())
+        .resolve(
+            uptimepage::domain::OrgId(org),
+            incident,
+            Actor::System,
+            Some("Fixed.".into()),
+        )
+        .await
+        .unwrap();
+    let closing: Uuid = sqlx::query_scalar(
+        "SELECT id FROM incident_updates WHERE incident_id = $1 AND phase = 'resolved'",
+    )
+    .bind(incident)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let later = |phase: &'static str, secs: i32| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO incident_updates (org_id, incident_id, phase, message, posted_at)
+                 VALUES ($1, $2, $3, 'more', now() + make_interval(secs => $4))
+                 RETURNING id",
+            )
+            .bind(org)
+            .bind(incident)
+            .bind(phase)
+            .bind(secs)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let postmortem = later("postmortem", 1).await;
+    let restated = later("resolved", 2).await;
+
+    let mine: Vec<Uuid> = subscribers::list_pending(&pool, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.subscriber_id == sub_id)
+        .map(|p| p.update_id)
+        .collect();
+    assert_eq!(mine, [closing, postmortem, restated]);
     cleanup(&pool, org).await;
 }

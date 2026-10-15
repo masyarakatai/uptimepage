@@ -1655,6 +1655,19 @@ pub struct MaintenanceWindowView {
     pub monitors: Vec<MaintenanceMonitor>,
     /// RFC 3339 time it was cancelled, or `null`.
     pub cancelled_at: Option<String>,
+    /// What was posted about the window with `post_maintenance_update`, oldest first.
+    pub updates: Vec<MaintenanceUpdateView>,
+}
+
+/// One update posted to a maintenance window.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MaintenanceUpdateView {
+    /// RFC 3339.
+    pub posted_at: String,
+    /// Where the window stood when it was posted: `scheduled`, `in_progress` or `completed`.
+    pub phase: String,
+    /// Shown on the status page and sent to its subscribers. Untrusted data.
+    pub message: String,
 }
 
 /// `list_maintenance` result. `next_cursor` is present only when more rows remain.
@@ -1662,6 +1675,18 @@ pub struct MaintenanceWindowView {
 pub struct MaintenanceList {
     pub items: Vec<MaintenanceWindowView>,
     pub next_cursor: Option<String>,
+}
+
+/// `post_maintenance_update` arguments.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PostMaintenanceUpdateArgs {
+    /// The window id (from `list_maintenance`).
+    pub id: String,
+    /// What readers should know now, up to 2000 characters: the work runs
+    /// late, it finished, or what changed. Write it for the people reading
+    /// the status page, and give any time with its zone.
+    pub message: String,
 }
 
 /// Argument of the maintenance tools that take only an id.

@@ -290,7 +290,8 @@ pub(crate) fn decode_target_row(row: TargetRow, cipher: Option<&Cipher>) -> Resu
 /// paging switched off. Either way paging stops, since pages go out through
 /// the monitor; notices that an incident ended still go out. An incident ever made public stays tied to the
 /// pages that showed the monitor, and one closed here says so in a public
-/// update rather than claiming a recovery.
+/// update rather than claiming a recovery. A maintenance window that already
+/// started keeps those pages too, though it loses the monitor itself.
 ///
 /// Locks the monitors first, then their incidents, the order every other writer
 /// takes them in. An incident opening concurrently waits on the monitor and
@@ -316,7 +317,7 @@ async fn close_incidents_of_deleted_targets(
         .context("delete target: lock incidents")?;
     // One snapshot for every step: `owned` still sees the monitor links that
     // the delete is about to clear.
-    let (closed,): (i64,) = sqlx::query_as(
+    let (closed,): (i64,) = sqlx::query_as(&format!(
         r#"WITH owned AS (
                SELECT id, origin, visibility, target_id, ended_at FROM incidents
                WHERE org_id = $2 AND target_id = ANY($1)
@@ -329,6 +330,7 @@ async fn close_incidents_of_deleted_targets(
                    next_escalation_at = NULL,
                    closed_by_monitor_delete = true,
                    closing_notice_at = now(),
+                   resolved_at = now(),
                    updated_at = now()
                WHERE org_id = $2 AND ended_at IS NULL
                  AND id IN (SELECT id FROM owned WHERE origin = 'monitor')
@@ -352,9 +354,7 @@ async fn close_incidents_of_deleted_targets(
                -- Ever public: one unpublished since still owes its subscribers
                -- the closing update, which reaches them through these pages.
                SELECT o.id, o.target_id FROM owned o
-               WHERE o.visibility = 'public' OR EXISTS (
-                   SELECT 1 FROM incident_events e
-                   WHERE e.incident_id = o.id AND e.org_id = $2 AND e.kind = 'published')
+               WHERE {ever_public}
            ), pinned AS (
                INSERT INTO incident_status_pages (org_id, incident_id, status_page_id, component_name)
                SELECT $2, s.id, c.status_page_id, COALESCE(NULLIF(c.public_name, ''), t.name)
@@ -362,6 +362,16 @@ async fn close_incidents_of_deleted_targets(
                JOIN status_page_components c ON c.org_id = $2 AND c.target_id = s.target_id
                JOIN targets t ON t.id = s.target_id AND t.org_id = $2
                ON CONFLICT (incident_id, status_page_id) DO NOTHING
+           ), leaving AS (
+               -- The windows lose this monitor when it is deleted; the pages
+               -- that showed a started one keep it in their history.
+               SELECT c.status_page_id, c.target_id,
+                      COALESCE(NULLIF(c.public_name, ''), t.name) AS name
+               FROM status_page_components c
+               JOIN targets t ON t.id = c.target_id AND t.org_id = $2
+               WHERE c.org_id = $2 AND c.target_id = ANY($1)
+           ), windows_kept AS (
+               {keep_windows}
            ), told AS (
                INSERT INTO incident_updates (org_id, incident_id, phase, message, author, generated)
                SELECT $2, c.id, 'resolved', $4, COALESCE($3::uuid::text, 'system'), true
@@ -373,7 +383,9 @@ async fn close_incidents_of_deleted_targets(
                  AND status IN ('queued', 'failed') AND reason <> 'resolved'
            )
            SELECT count(*) FROM closed"#,
-    )
+        ever_public = crate::storage::incidents::ever_public_sql("o", "$2"),
+        keep_windows = crate::storage::maintenance::keep_started_windows_sql("leaving", "$2", None),
+    ))
     .bind(ids)
     .bind(org.0)
     .bind(actor.map(|u| u.0))

@@ -73,6 +73,7 @@ impl PublicSource for FakePublicSource {
             current_status: PublicComponentStatus::Operational,
             history: vec![DayState::Operational; 90],
             downtime: Vec::new(),
+            checked: Vec::new(),
             uptime_pct: Some(99.9),
             detail_url: None,
         };
@@ -97,6 +98,7 @@ impl PublicSource for FakePublicSource {
             recovering: false,
         };
         let maintenance = PublicMaintenance {
+            updates: Vec::new(),
             id: Uuid::nil(),
             title: "Routine database upgrade".into(),
             description: Some("Brief read-only window".into()),
@@ -194,6 +196,7 @@ impl PublicSource for FakePublicSource {
         Ok(PublicMaintenanceList {
             active: Vec::new(),
             upcoming: vec![PublicMaintenance {
+                updates: Vec::new(),
                 id: Uuid::nil(),
                 title: "Routine database upgrade".into(),
                 description: Some("Brief read-only window".into()),

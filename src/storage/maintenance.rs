@@ -13,8 +13,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::{
-    MaintenanceFilter, MaintenanceWindow, MaintenanceWindowUpdate, NewMaintenanceWindow, OrgId,
-    UserId, WindowPhase, WriteSource,
+    MaintenanceFilter, MaintenanceUpdate, MaintenanceUpdatePhase, MaintenanceWindow,
+    MaintenanceWindowUpdate, NewMaintenanceWindow, OrgId, UserId, WindowPhase, WriteSource,
 };
 use crate::error::Result;
 
@@ -29,6 +29,17 @@ pub struct MaintenanceListQuery {
     pub filter: MaintenanceFilter,
     pub limit: u32,
     pub offset: u32,
+}
+
+/// What became of an update posted to a window.
+#[derive(Debug)]
+pub enum PostedUpdate {
+    Posted(MaintenanceUpdate),
+    NotFound,
+    /// A cancelled window is not public, so it takes no updates.
+    Cancelled,
+    /// The window already carries as many updates as it may.
+    Full,
 }
 
 /// Operator-facing maintenance repository. Every method takes the caller's
@@ -72,6 +83,16 @@ pub trait MaintenanceStore: Send + Sync {
     /// A window with `suppress_alerts` off never matches, so it stays a purely
     /// public announcement.
     async fn alerts_suppressed(&self, org: OrgId, target_id: Uuid) -> Result<bool>;
+    /// Posts an update while the window holds at most `max - 1`. Its phase is
+    /// where the window stands when it is written.
+    async fn post_update(
+        &self,
+        org: OrgId,
+        id: Uuid,
+        message: &str,
+        max: i64,
+        actor: Option<UserId>,
+    ) -> Result<PostedUpdate>;
 }
 
 // ── Postgres impl ────────────────────────────────────────────────────────
@@ -123,6 +144,7 @@ impl MaintenanceRow {
             deleted_by: self.deleted_by.map(UserId),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            updates: Vec::new(),
         }
     }
 }
@@ -146,6 +168,67 @@ async fn load_components(
         by_window.entry(maintenance_id).or_default().push(target_id);
     }
     Ok(by_window)
+}
+
+#[derive(sqlx::FromRow)]
+struct UpdateRow {
+    id: Uuid,
+    maintenance_id: Uuid,
+    posted_at: DateTime<Utc>,
+    phase: String,
+    message: String,
+    author: Option<Uuid>,
+}
+
+impl UpdateRow {
+    fn into_update(self) -> MaintenanceUpdate {
+        MaintenanceUpdate {
+            id: self.id,
+            posted_at: self.posted_at,
+            phase: MaintenanceUpdatePhase::from_db(&self.phase),
+            message: self.message,
+            author: self.author.map(UserId),
+        }
+    }
+}
+
+const UPDATE_COLUMNS: &str = "id, maintenance_id, posted_at, phase, message, author";
+
+/// The updates posted to each of `maintenance_ids`, oldest first.
+pub(crate) async fn load_updates(
+    pool: &PgPool,
+    maintenance_ids: &[Uuid],
+    org_id: Uuid,
+) -> Result<HashMap<Uuid, Vec<MaintenanceUpdate>>> {
+    let rows: Vec<UpdateRow> = sqlx::query_as(&format!(
+        r#"SELECT {UPDATE_COLUMNS} FROM maintenance_updates
+           WHERE maintenance_id = ANY($1::uuid[]) AND org_id = $2
+           ORDER BY posted_at, id"#,
+    ))
+    .bind(maintenance_ids)
+    .bind(org_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("load_updates: {e}"))?;
+    let mut by_window: HashMap<Uuid, Vec<MaintenanceUpdate>> = HashMap::new();
+    for row in rows {
+        by_window
+            .entry(row.maintenance_id)
+            .or_default()
+            .push(row.into_update());
+    }
+    Ok(by_window)
+}
+
+async fn load_updates_of(
+    pool: &PgPool,
+    maintenance_id: Uuid,
+    org_id: Uuid,
+) -> Result<Vec<MaintenanceUpdate>> {
+    Ok(load_updates(pool, &[maintenance_id], org_id)
+        .await?
+        .remove(&maintenance_id)
+        .unwrap_or_default())
 }
 
 async fn load_components_of(
@@ -239,12 +322,19 @@ impl MaintenanceStore for PgMaintenanceStore {
             return Ok(Vec::new());
         }
         let window_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-        let mut components = load_components(&self.pool, &window_ids, org.0).await?;
+        let (mut components, mut updates) = tokio::try_join!(
+            load_components(&self.pool, &window_ids, org.0),
+            load_updates(&self.pool, &window_ids, org.0),
+        )?;
         Ok(rows
             .into_iter()
             .map(|row| {
                 let targets = components.remove(&row.id).unwrap_or_default();
-                row.into_window(targets)
+                let posted = updates.remove(&row.id).unwrap_or_default();
+                MaintenanceWindow {
+                    updates: posted,
+                    ..row.into_window(targets)
+                }
             })
             .collect())
     }
@@ -260,8 +350,14 @@ impl MaintenanceStore for PgMaintenanceStore {
         .map_err(|e| anyhow::anyhow!("get maintenance: {e}"))?;
         match row {
             Some(r) => {
-                let components = load_components_of(&self.pool, r.id, org.0).await?;
-                Ok(Some(r.into_window(components)))
+                let (components, updates) = tokio::try_join!(
+                    load_components_of(&self.pool, r.id, org.0),
+                    load_updates_of(&self.pool, r.id, org.0),
+                )?;
+                Ok(Some(MaintenanceWindow {
+                    updates,
+                    ..r.into_window(components)
+                }))
             }
             None => Ok(None),
         }
@@ -280,6 +376,100 @@ impl MaintenanceStore for PgMaintenanceStore {
             .begin()
             .await
             .map_err(|e| anyhow::anyhow!("begin: {e}"))?;
+        if let Some(ids) = update.component_ids.as_ref() {
+            // Read before the edit, which may move the start. A window that
+            // had started covered the monitors it drops until now and showed
+            // them on their pages, which keep it in their history; a monitor
+            // it adds is covered from now.
+            //
+            // The window lock lets no other edit change its monitors, so the
+            // ones locked next are all it drops. A monitor's deletion needs
+            // only a key share on the window, which this lock allows, so it
+            // either finishes before the monitor is locked here or waits for
+            // this edit.
+            sqlx::query(
+                "SELECT 1 FROM maintenance_windows WHERE id = $1 AND org_id = $2
+                 FOR NO KEY UPDATE",
+            )
+            .bind(id)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("lock maintenance: {e}"))?;
+            sqlx::query(
+                "SELECT 1 FROM targets t
+                 JOIN maintenance_window_components mwc
+                   ON mwc.target_id = t.id AND mwc.org_id = t.org_id
+                 WHERE mwc.maintenance_id = $1 AND mwc.org_id = $2
+                   AND NOT mwc.target_id = ANY($3)
+                 FOR KEY SHARE OF t",
+            )
+            .bind(id)
+            .bind(org.0)
+            .bind(ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("lock dropped monitors: {e}"))?;
+            sqlx::query(&format!(
+                r#"WITH departed AS (
+                       INSERT INTO maintenance_window_departures
+                           (org_id, maintenance_id, target_id, joined_at)
+                       SELECT mwc.org_id, mwc.maintenance_id, mwc.target_id, mwc.joined_at
+                       FROM maintenance_window_components mwc
+                       JOIN maintenance_windows mw
+                         ON mw.id = mwc.maintenance_id AND mw.org_id = mwc.org_id
+                       WHERE mwc.maintenance_id = $1 AND mwc.org_id = $2
+                         AND NOT mwc.target_id = ANY($3) AND {started}
+                   ), leaving AS (
+                       SELECT c.status_page_id, c.target_id,
+                              COALESCE(NULLIF(c.public_name, ''), t.name) AS name
+                       FROM maintenance_window_components mwc
+                       JOIN status_page_components c
+                         ON c.target_id = mwc.target_id AND c.org_id = mwc.org_id
+                       JOIN targets t ON t.id = mwc.target_id AND t.org_id = mwc.org_id
+                       WHERE mwc.maintenance_id = $1 AND mwc.org_id = $2
+                         AND NOT mwc.target_id = ANY($3)
+                   )
+                   {keep}"#,
+                started = started_sql("mw.", "now()"),
+                keep = keep_started_windows_sql("leaving", "$2", Some("$1")),
+            ))
+            .bind(id)
+            .bind(org.0)
+            .bind(ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("keep dropped components: {e}"))?;
+            sqlx::query(
+                r#"DELETE FROM maintenance_window_components
+                   WHERE maintenance_id = $1 AND org_id = $2 AND NOT target_id = ANY($3)"#,
+            )
+            .bind(id)
+            .bind(org.0)
+            .bind(ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("delete components: {e}"))?;
+            // Drops any input UUID that doesn't belong to the same org as
+            // the parent window — see the matching comment in `create`.
+            sqlx::query(&format!(
+                r#"INSERT INTO maintenance_window_components
+                       (org_id, maintenance_id, target_id, joined_at)
+                   SELECT mw.org_id, mw.id, t.id, CASE WHEN {started} THEN now() END
+                   FROM maintenance_windows mw
+                   CROSS JOIN UNNEST($3::uuid[]) AS u(target_id)
+                   JOIN targets t ON t.id = u.target_id AND t.org_id = mw.org_id
+                   WHERE mw.id = $1 AND mw.org_id = $2
+                   ON CONFLICT (maintenance_id, target_id) DO NOTHING"#,
+                started = started_sql("mw.", "now()"),
+            ))
+            .bind(id)
+            .bind(org.0)
+            .bind(ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow::anyhow!("insert components: {e}"))?;
+        }
         // `description` uses single-Option semantics (per the addendum wire type):
         // `Some("…")` overwrites, `None` leaves the stored value untouched.
         // To distinguish leave-alone from clear-to-null, the field would have
@@ -314,34 +504,6 @@ impl MaintenanceStore for PgMaintenanceStore {
             tx.rollback().await.ok();
             return Ok(None);
         };
-        if let Some(ids) = update.component_ids.as_ref() {
-            sqlx::query(
-                r#"DELETE FROM maintenance_window_components
-                   WHERE maintenance_id = $1 AND org_id = $2"#,
-            )
-            .bind(row.id)
-            .bind(org.0)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| anyhow::anyhow!("delete components: {e}"))?;
-            if !ids.is_empty() {
-                // Drops any input UUID that doesn't belong to the same org as
-                // the parent window — see the matching comment in `create`.
-                sqlx::query(
-                    r#"INSERT INTO maintenance_window_components (org_id, maintenance_id, target_id)
-                       SELECT mw.org_id, mw.id, t.id
-                       FROM maintenance_windows mw
-                       CROSS JOIN UNNEST($2::uuid[]) AS u(target_id)
-                       JOIN targets t ON t.id = u.target_id AND t.org_id = mw.org_id
-                       WHERE mw.id = $1"#,
-                )
-                .bind(row.id)
-                .bind(ids)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| anyhow::anyhow!("insert components: {e}"))?;
-            }
-        }
         crate::storage::orgs::record_audit_tx(
             &mut tx,
             org,
@@ -357,8 +519,14 @@ impl MaintenanceStore for PgMaintenanceStore {
         tx.commit()
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
-        let components = load_components_of(&self.pool, row.id, org.0).await?;
-        Ok(Some(row.into_window(components)))
+        let (components, updates) = tokio::try_join!(
+            load_components_of(&self.pool, row.id, org.0),
+            load_updates_of(&self.pool, row.id, org.0),
+        )?;
+        Ok(Some(MaintenanceWindow {
+            updates,
+            ..row.into_window(components)
+        }))
     }
 
     async fn delete(
@@ -433,6 +601,78 @@ impl MaintenanceStore for PgMaintenanceStore {
             .map_err(|e| anyhow::anyhow!("alerts_suppressed: {e}"))?;
         Ok(suppressed)
     }
+
+    async fn post_update(
+        &self,
+        org: OrgId,
+        id: Uuid,
+        message: &str,
+        max: i64,
+        actor: Option<UserId>,
+    ) -> Result<PostedUpdate> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| anyhow::anyhow!("begin: {e}"))?;
+        // The row lock serialises posts to one window, so the cap holds.
+        let window: Option<(String, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "SELECT title, deleted_at FROM maintenance_windows \
+             WHERE id = $1 AND org_id = $2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(org.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("lock maintenance: {e}"))?;
+        let Some((title, deleted_at)) = window else {
+            return Ok(PostedUpdate::NotFound);
+        };
+        if deleted_at.is_some() {
+            return Ok(PostedUpdate::Cancelled);
+        }
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM maintenance_updates WHERE maintenance_id = $1 AND org_id = $2",
+        )
+        .bind(id)
+        .bind(org.0)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("count updates: {e}"))?;
+        if count >= max {
+            return Ok(PostedUpdate::Full);
+        }
+        let row: UpdateRow = sqlx::query_as(&format!(
+            r#"INSERT INTO maintenance_updates (org_id, maintenance_id, phase, message, author)
+               SELECT mw.org_id, mw.id,
+                      CASE WHEN mw.ends_at <= now() THEN 'completed'
+                           WHEN mw.starts_at <= now() THEN 'in_progress'
+                           ELSE 'scheduled' END,
+                      $3, $4
+               FROM maintenance_windows mw
+               WHERE mw.id = $1 AND mw.org_id = $2
+               RETURNING {UPDATE_COLUMNS}"#,
+        ))
+        .bind(id)
+        .bind(org.0)
+        .bind(message)
+        .bind(actor.map(|u| u.0))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| anyhow::anyhow!("insert maintenance update: {e}"))?;
+        crate::storage::orgs::record_audit_tx(
+            &mut tx,
+            org,
+            actor,
+            "maintenance.update_posted",
+            serde_json::json!({ "maintenance_id": id, "update_id": row.id, "title": title }),
+        )
+        .await?;
+        tx.commit()
+            .await
+            .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+        Ok(PostedUpdate::Posted(row.into_update()))
+    }
 }
 
 /// The phase boundaries as SQL, for a query whose `maintenance_windows` carries
@@ -442,6 +682,43 @@ impl MaintenanceStore for PgMaintenanceStore {
 /// fan-out filter on a range or a status rather than a phase.
 fn running_sql(alias: &str, now: &str) -> String {
     format!("{alias}deleted_at IS NULL AND {alias}starts_at <= {now} AND {alias}ends_at > {now}")
+}
+
+/// How far back a page's history reaches: its archive lists what ran in it,
+/// and a page that loses a monitor keeps what the monitor showed in it. A
+/// window counts by its end, as the archive lists one.
+pub(crate) const PAGE_HISTORY_DAYS: i64 = 90;
+
+/// A window that has started and was not cancelled: the ones a page showed.
+pub(crate) fn started_sql(alias: &str, now: &str) -> String {
+    format!("{alias}deleted_at IS NULL AND {alias}starts_at <= {now}")
+}
+
+/// Pins the started windows each monitor a page is losing is in, or was in
+/// before the window dropped it, to that page, so they stay in its history. `leaving` names a relation with
+/// `status_page_id`, `target_id` and the `name` the page gave the monitor;
+/// `only` narrows it to one window.
+pub(crate) fn keep_started_windows_sql(leaving: &str, org: &str, only: Option<&str>) -> String {
+    let only = only
+        .map(|w| format!(" AND mw.id = {w}"))
+        .unwrap_or_default();
+    format!(
+        "INSERT INTO maintenance_status_pages
+             (org_id, maintenance_id, status_page_id, target_ref, component_name)
+         SELECT {org}, mw.id, l.status_page_id, l.target_id, l.name
+         FROM {leaving} l
+         JOIN (SELECT maintenance_id, target_id FROM maintenance_window_components
+               WHERE org_id = {org}
+               UNION
+               SELECT maintenance_id, target_id FROM maintenance_window_departures
+               WHERE org_id = {org}) held
+           ON held.target_id = l.target_id
+         JOIN maintenance_windows mw ON mw.id = held.maintenance_id AND mw.org_id = {org}
+         WHERE {started}{only}
+           AND mw.ends_at >= now() - make_interval(days => {PAGE_HISTORY_DAYS})
+         ON CONFLICT (maintenance_id, status_page_id, target_ref) DO NOTHING",
+        started = started_sql("mw.", "now()"),
+    )
 }
 
 fn upcoming_sql(alias: &str, now: &str) -> String {
@@ -563,6 +840,7 @@ impl MaintenanceStore for InMemoryMaintenanceStore {
             deleted_by: None,
             created_at: now,
             updated_at: now,
+            updates: Vec::new(),
         };
         self.inner.lock().windows.push(mw.clone());
         Ok(mw)
@@ -685,6 +963,37 @@ impl MaintenanceStore for InMemoryMaintenanceStore {
                 && w.component_ids.contains(&target_id)
                 && w.phase(now) == WindowPhase::Active
         }))
+    }
+
+    async fn post_update(
+        &self,
+        _org: OrgId,
+        id: Uuid,
+        message: &str,
+        max: i64,
+        actor: Option<UserId>,
+    ) -> Result<PostedUpdate> {
+        let now = Utc::now();
+        let mut g = self.inner.lock();
+        let Some(w) = g.windows.iter_mut().find(|w| w.id == id) else {
+            return Ok(PostedUpdate::NotFound);
+        };
+        let phase = match w.phase(now) {
+            WindowPhase::Cancelled => return Ok(PostedUpdate::Cancelled),
+            _ if w.updates.len() as i64 >= max => return Ok(PostedUpdate::Full),
+            WindowPhase::Upcoming => MaintenanceUpdatePhase::Scheduled,
+            WindowPhase::Active => MaintenanceUpdatePhase::InProgress,
+            WindowPhase::Completed => MaintenanceUpdatePhase::Completed,
+        };
+        let update = MaintenanceUpdate {
+            id: Uuid::now_v7(),
+            posted_at: now,
+            phase,
+            message: message.to_owned(),
+            author: actor,
+        };
+        w.updates.push(update.clone());
+        Ok(PostedUpdate::Posted(update))
     }
 }
 

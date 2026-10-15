@@ -755,7 +755,10 @@ async fn note_if_emptied(state: &AppState, org: OrgId, deleted: usize) {
         })),
         (status = 413, description = "Payload exceeds 10 000 items", body = ApiError),
         (status = 503, body = ApiError),
-    ),
+        (status = 409, body = ApiError,
+            description = "A request with the same Idempotency-Key is still running \
+                           (`IDEMPOTENCY_IN_PROGRESS`); retry once it answers"),
+        ),
 )]
 pub async fn bulk_create(
     State(state): State<AppState>,
@@ -868,7 +871,10 @@ pub async fn bulk_create(
         (status = 400, description = "Malformed request (e.g., empty ids, unknown action)", body = ApiError),
         (status = 413, body = ApiError),
         (status = 422, description = "MIN_CHECK_INTERVAL: `set_interval` below the plan floor", body = ApiError),
-    ),
+        (status = 409, body = ApiError,
+            description = "A request with the same Idempotency-Key is still running \
+                           (`IDEMPOTENCY_IN_PROGRESS`); retry once it answers"),
+        ),
 )]
 pub async fn bulk_action(
     State(state): State<AppState>,

@@ -21,13 +21,19 @@ pub struct Publishing<'a> {
 }
 
 impl Publishing<'_> {
-    /// Bust the cached pages an incident shows on: those carrying its monitor,
-    /// or the ones it was published to when it has none.
+    /// Bust the cached pages an incident shows on: those carrying its monitor
+    /// and those that kept it after the monitor left, or the ones it was
+    /// published to when it has none.
     pub async fn invalidate_incident(&self, org: OrgId, incident: &OpsIncident) {
         if incident.target_id.is_some() {
-            return self
-                .invalidate_targets(org, incident.target_id.as_slice())
+            self.invalidate_targets(org, incident.target_id.as_slice())
                 .await;
+            return match self.incidents.kept_on_pages(org, incident.id).await {
+                Ok(pages) => self.invalidate_pages(&pages).await,
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not resolve pages for cache invalidation")
+                }
+            };
         }
         match self.incidents.status_pages(org, incident.id).await {
             Ok(pages) => self.invalidate_pages(&pages).await,

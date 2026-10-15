@@ -170,7 +170,8 @@ async fn log_amendment(
     description = "Appends an operator-authored entry to the incident's public update timeline. \
                    Setting `phase=resolved` does NOT end the incident automatically — that's \
                    driven by check-result transitions. Posting an update on an already-ended \
-                   incident is allowed (useful for postmortems).",
+                   incident is allowed (useful for postmortems). Accepts an `Idempotency-Key` \
+                   header, so a retried post is not published twice.",
     params(("id" = Uuid, Path)),
     request_body(content = NewIncidentUpdate, example = json!({
         "phase": "identified",
@@ -181,7 +182,10 @@ async fn log_amendment(
             headers(("Location" = String))),
         (status = 400, body = ApiError),
         (status = 404, body = ApiError),
-    ),
+        (status = 409, body = ApiError,
+            description = "A request with the same Idempotency-Key is still running \
+                           (`IDEMPOTENCY_IN_PROGRESS`); retry once it answers"),
+        ),
 )]
 pub async fn post_incident_update(
     State(state): State<AppState>,
