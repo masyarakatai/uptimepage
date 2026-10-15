@@ -782,6 +782,7 @@ mod tests {
         "wordpress-missed-schedule",
         "on-call-rotation-small-team",
         "monitor-dns-record-changes",
+        "scheduled-maintenance-status-page",
     ];
 
     #[test]
