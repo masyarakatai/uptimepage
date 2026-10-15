@@ -1,10 +1,11 @@
 @layer components {
     /* ── Floating menu surface ───────────────────────────────────────
        Shared base for every fixed-position popover/listbox (row menus,
-       combobox listbox). Variants below tweak z-index, min-width, and
-       layout (flex column vs ul). */
+       combobox listbox, date picker). Variants below tweak z-index,
+       min-width, and layout (flex column vs ul). */
     .monitors-popover,
-    .sm-combobox__panel {
+    .sm-combobox__panel,
+    .sm-datetime__panel {
         position: fixed;
         padding: 0.25rem;
         background: var(--theme-surface-elev);
@@ -13,7 +14,8 @@
         font-family: var(--font-mono);
     }
     .monitors-popover[hidden],
-    .sm-combobox__panel[hidden] { display: none; }
+    .sm-combobox__panel[hidden],
+    .sm-datetime__panel[hidden] { display: none; }
 
     .monitors-popover__item,
     .sm-combobox__option {

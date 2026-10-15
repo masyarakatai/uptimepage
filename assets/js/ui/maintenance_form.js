@@ -1,6 +1,8 @@
 // Maintenance window form: local-time pickers that submit UTC instants, a
 // length shortcut, a searchable monitor list, and a fetch submit against the
 // JSON API. Errors go through the shared api_form.js banner.
+import { attachDatetime } from "./_datetime.js";
+
 (() => {
     const form = document.getElementById("maintenance-form");
     if (!form) return;
@@ -48,18 +50,16 @@
     const first = nextQuarterHour();
     seed(startInput, first);
     seed(endInput, new Date(first.getTime() + 60 * MINUTE));
+    attachDatetime(startInput);
+    attachDatetime(endInput);
     form.querySelector("[data-tz-name]").textContent =
         Intl.DateTimeFormat().resolvedOptions().timeZone;
     syncPresets();
 
     presets.forEach((b) => b.addEventListener("click", () => {
-        let start = fromInput(startInput);
-        if (!validDate(start)) {
-            start = nextQuarterHour();
-            startInput.value = toInput(start);
-        }
+        const start = fromInput(startInput);
         endInput.value = toInput(new Date(start.getTime() + Number(b.dataset.minutes) * MINUTE));
-        syncPresets();
+        endInput.dispatchEvent(new Event("input", { bubbles: true }));
     }));
     startInput.addEventListener("input", syncPresets);
     endInput.addEventListener("input", syncPresets);

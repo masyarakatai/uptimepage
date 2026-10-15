@@ -5,6 +5,7 @@
 // names there. Shares the error-banner layer from api_form.js (loaded before
 // this).
 import { MAX_SECS, formatDuration, parseSpan } from "./_duration.js";
+import { attachDatetime } from "./_datetime.js";
 import { knowsZone, parseZoned, todayIn } from "./_zoned.js";
 
 (function () {
@@ -215,11 +216,16 @@ import { knowsZone, parseZoned, todayIn } from "./_zoned.js";
         row.querySelector("[data-windows-none]").hidden = row.querySelector("[data-window]") !== null;
     }
 
+    function zoneToday() {
+        const now = new Date();
+        const [y, mo, d] = knowsZone(zone()) ? todayIn(zone()) : [now.getFullYear(), now.getMonth(), now.getDate()];
+        return { y, mo, d };
+    }
+
     // Next Monday, 09:00 in the schedule's zone, as a datetime-local value.
     function nextMonday() {
-        const now = new Date();
-        const [y, m, d] = knowsZone(zone()) ? todayIn(zone()) : [now.getFullYear(), now.getMonth(), now.getDate()];
-        const date = new Date(Date.UTC(y, m, d));
+        const { y, mo, d } = zoneToday();
+        const date = new Date(Date.UTC(y, mo, d));
         date.setUTCDate(date.getUTCDate() + ((8 - date.getUTCDay()) % 7 || 7));
         return `${date.toISOString().slice(0, 10)}T09:00`;
     }
@@ -247,6 +253,7 @@ import { knowsZone, parseZoned, todayIn } from "./_zoned.js";
         syncWindows(row);
         const handoff = row.querySelector("[data-handoff]");
         if (!handoff.value) handoff.value = nextMonday();
+        attachDatetime(handoff, { today: zoneToday });
         row.querySelectorAll("[data-rotation-type]").forEach((r) => r.addEventListener("change", () => syncUnit(row)));
         const length = row.querySelector("[data-rotation-length]");
         length.addEventListener("input", () => {

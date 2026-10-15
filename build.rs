@@ -125,7 +125,7 @@ const TAILWIND_BUNDLES: [(&str, &str); 2] = [
 ];
 
 /// Every hand-written stylesheet under static/css that a bundle imports.
-const TAILWIND_SOURCES: [&str; 7] = [
+const TAILWIND_SOURCES: [&str; 8] = [
     "input.css",
     "marketing-input.css",
     "_marketing.css",
@@ -133,6 +133,7 @@ const TAILWIND_SOURCES: [&str; 7] = [
     "_shell.css",
     "_controls.css",
     "_combobox.css",
+    "_datetime.css",
 ];
 
 fn main() {
