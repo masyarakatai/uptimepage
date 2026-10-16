@@ -69,6 +69,7 @@ async fn probe(url: &str) -> CheckResult {
         verify_tls: true,
         basic_auth: None,
         bearer_token: None,
+        ip_version: uptimepage::domain::IpVersion::Any,
     };
     uptimepage::worker::execute_http_check(Uuid::now_v7(), Uuid::nil(), &check, &canary_client())
         .await

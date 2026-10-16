@@ -101,6 +101,7 @@ fn http_target(name: &str) -> NewTarget {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: uptimepage::domain::IpVersion::Any,
         }),
         interval: Duration::from_secs(30),
         enabled: true,

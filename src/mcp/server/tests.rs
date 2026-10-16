@@ -495,6 +495,7 @@ fn http_check() -> CheckSpec {
         verify_tls: true,
         basic_auth: Some(("u".into(), "p".into())),
         bearer_token: Some("t0ken".into()),
+        ip_version: crate::domain::IpVersion::Any,
     })
 }
 
@@ -895,6 +896,7 @@ fn http_with_headers(headers: &[(&str, &str)]) -> NewCheck {
                 .collect(),
         ),
         body: None,
+        ip_version: None,
     }
 }
 
@@ -1024,6 +1026,7 @@ fn a_new_check_carries_no_credential_slot() {
         verify_tls: None,
         headers: None,
         body: None,
+        ip_version: None,
     })
     .unwrap() else {
         panic!("expected http");
@@ -1112,6 +1115,16 @@ fn a_creation_prompt_states_every_setting_it_would_apply() {
     assert!(!lines.contains("tags:"));
     // Silence is the one state worth stating outright.
     assert!(lines.contains("alerts nobody unless a channel's tag rule covers its tags"));
+    assert!(
+        !lines.contains("dials"),
+        "any family is the default:\n{lines}"
+    );
+
+    if let CheckSpec::Http(http) = &mut new.check {
+        http.ip_version = crate::domain::IpVersion::Ipv6;
+    }
+    let lines = create_prompt_lines(&new, &regions, None, None).join("\n");
+    assert!(lines.contains("dials IPv6 only"), "{lines}");
 }
 
 #[test]
@@ -1126,6 +1139,7 @@ fn a_url_carrying_a_password_is_refused_rather_than_stored() {
         verify_tls: None,
         headers: None,
         body: None,
+        ip_version: None,
     })
     .unwrap_err();
     assert_eq!(err.code, codes::INVALID_ARGUMENT);
@@ -1187,6 +1201,7 @@ fn every_creatable_kind_converts_with_the_defaults_it_documents() {
         verify_tls: None,
         headers: None,
         body: None,
+        ip_version: None,
     }) else {
         panic!("expected http");
     };
@@ -1212,11 +1227,13 @@ fn every_creatable_kind_converts_with_the_defaults_it_documents() {
         host: "db.example.com".into(),
         port: 5432,
         timeout_ms: None,
+        ip_version: None,
     }) else {
         panic!("expected tcp");
     };
     assert_eq!((tcp.host.as_str(), tcp.port), ("db.example.com", 5432));
     assert_eq!(tcp.timeout, std::time::Duration::from_secs(5));
+    assert_eq!(tcp.ip_version, crate::domain::IpVersion::Any);
 
     let CheckSpec::Ping(ping) = spec(NewCheck::Ping {
         host: "example.com".into(),
@@ -1246,6 +1263,7 @@ fn every_creatable_kind_converts_with_the_defaults_it_documents() {
         warn_days: None,
         critical_days: None,
         timeout_ms: None,
+        ip_version: None,
     }) else {
         panic!("expected tls_cert");
     };
@@ -1264,6 +1282,36 @@ fn every_creatable_kind_converts_with_the_defaults_it_documents() {
 }
 
 #[test]
+fn a_pinned_family_is_created_shown_and_approved() {
+    let CheckSpec::TlsCert(tls) = new_check_spec(&NewCheck::TlsCert {
+        host: "example.com".into(),
+        port: None,
+        warn_days: None,
+        critical_days: None,
+        timeout_ms: None,
+        ip_version: Some("IPv6".into()),
+    })
+    .unwrap() else {
+        panic!("expected tls_cert");
+    };
+    assert_eq!(tls.ip_version, crate::domain::IpVersion::Ipv6);
+    let CheckConfig::TlsCert(shown) = check_config(&CheckSpec::TlsCert(tls)) else {
+        panic!("expected tls_cert");
+    };
+    assert_eq!(shown.ip_version, "ipv6");
+
+    let err = new_check_spec(&NewCheck::Tcp {
+        host: "db.example.com".into(),
+        port: 5432,
+        timeout_ms: None,
+        ip_version: Some("both".into()),
+    })
+    .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_ARGUMENT);
+    assert!(err.message.contains("ipv4, ipv6"), "{}", err.message);
+}
+
+#[test]
 fn an_unknown_method_or_record_type_names_the_choices() {
     let err = new_check_spec(&NewCheck::Http {
         url: "https://example.com/".into(),
@@ -1275,6 +1323,7 @@ fn an_unknown_method_or_record_type_names_the_choices() {
         verify_tls: None,
         headers: None,
         body: None,
+        ip_version: None,
     })
     .unwrap_err();
     assert_eq!(err.code, codes::INVALID_ARGUMENT);

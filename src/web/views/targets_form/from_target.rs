@@ -72,6 +72,7 @@ pub(super) fn form_from_target(t: Target) -> Result<FormModel, AppError> {
                 host: c.host,
                 port: c.port,
                 timeout_ms: c.timeout.as_millis() as u64,
+                ip_version: c.ip_version.as_str(),
             };
             "tcp"
         }
@@ -111,6 +112,7 @@ pub(super) fn form_from_target(t: Target) -> Result<FormModel, AppError> {
                 warn_days: c.warn_days,
                 critical_days: c.critical_days,
                 timeout_ms: c.timeout.as_millis() as u64,
+                ip_version: c.ip_version.as_str(),
             };
             "tls_cert"
         }
@@ -200,6 +202,7 @@ pub(crate) fn http_fields_from(h: crate::domain::HttpCheck) -> HttpFields {
         headers,
         body: h.body.unwrap_or_default(),
         verify_tls: h.verify_tls,
+        ip_version: h.ip_version.as_str(),
     }
 }
 

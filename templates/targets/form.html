@@ -124,7 +124,7 @@
         </button>
         <button type="button" data-collapse-toggle tabindex="-1" aria-hidden="true"
                 class="group mt-1 block w-full cursor-pointer border-0 bg-transparent p-0 text-left">
-          <span id="advanced-http-hint" data-collapse-hint class="text-xs text-muted group-hover:text-body">headers, body, auth, tls</span>
+          <span id="advanced-http-hint" data-collapse-hint class="text-xs text-muted group-hover:text-body">headers, body, auth, tls, ip version</span>
         </button>
         {% endif %}
         <div id="advanced-http-body" class="space-y-5{% if form.mode == "create" %} mt-3 hidden{% endif %}">
@@ -160,6 +160,7 @@
                 <span class="mt-1 block text-xs text-muted">follow-redirects chases 3xx to the final page; verify-tls fails the check on invalid or self-signed certificates — <span class="hl">switch it off only for internal endpoints</span>.</span>
               </div>
             </div>
+            {% call reg::ip_version_rail("http_ip_version", form.http.ip_version) %}{% endcall %}
           </div>
 
           <div class="space-y-2">
@@ -249,6 +250,7 @@
           <span class="field-outline__unit" aria-hidden="true">ms</span>
         </label>
       </div>
+      {% call reg::ip_version_rail("tcp_ip_version", form.tcp.ip_version) %}{% endcall %}
       </div>
     </fieldset>
 
@@ -417,6 +419,7 @@
         <input name="tls_server_name" type="text" value="{{ form.tls_cert.server_name }}"
                placeholder="vhost.example.com" autocomplete="off" spellcheck="false" class="w-full field font-mono">
       </label>
+      {% call reg::ip_version_rail("tls_ip_version", form.tls_cert.ip_version) %}{% endcall %}
       <fieldset class="space-y-2 rounded-sm border border-[color:var(--theme-line)] p-3">
         <legend class="px-1 text-xs text-muted">expiry thresholds</legend>
         <div class="grid grid-cols-3 gap-3">

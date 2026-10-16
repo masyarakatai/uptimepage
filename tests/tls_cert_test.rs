@@ -54,6 +54,7 @@ fn make_check(addr: SocketAddr, warn: u32, critical: u32) -> TlsCertCheck {
         warn_days: warn,
         critical_days: critical,
         timeout: Duration::from_secs(5),
+        ip_version: uptimepage::domain::IpVersion::Any,
     }
 }
 

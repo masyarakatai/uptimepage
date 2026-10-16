@@ -8,7 +8,7 @@ use crate::config::AppConfig;
 use crate::domain::REDACTED;
 use crate::domain::check::MANUAL_EVALUATION_SECS;
 use crate::domain::{
-    CheckSpec, NewTarget, RegionIncidentPolicy, TargetAlerts, min_interval_secs_for_kind,
+    CheckSpec, IpVersion, NewTarget, RegionIncidentPolicy, TargetAlerts, min_interval_secs_for_kind,
 };
 use crate::error::codes;
 use crate::error::{AppError, Result};
@@ -644,11 +644,39 @@ fn validate_expected_records(d: &crate::domain::DnsCheck) -> Result<()> {
     Ok(())
 }
 
+// A literal address already decides the family, so pinning the other one
+// could never connect.
+fn validate_ip_version(host: &str, family: IpVersion) -> Result<()> {
+    let Ok(ip) = crate::domain::check::unbracket(host).parse::<IpAddr>() else {
+        return Ok(());
+    };
+    if family.admits(ip) {
+        return Ok(());
+    }
+    let own = if ip.to_canonical().is_ipv4() {
+        IpVersion::Ipv4
+    } else {
+        IpVersion::Ipv6
+    };
+    Err(AppError::bad_request_field(
+        codes::INVALID_IP_VERSION,
+        format!(
+            "{ip} is an {} address; set ip_version to any or {}",
+            own.label(),
+            own.as_str()
+        ),
+        "check.ip_version",
+    ))
+}
+
 pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard) -> Result<()> {
     use crate::domain::CheckSpec;
     match check {
         CheckSpec::Http(http) => {
             validate_target_url(&http.url, guard, "check.url")?;
+            if let Some(host) = http.url.host_str() {
+                validate_ip_version(host, http.ip_version)?;
+            }
             let scheme = http.url.scheme();
             validate_timeout(http.timeout)?;
             if http.max_redirects > crate::domain::HttpCheck::MAX_REDIRECTS {
@@ -716,6 +744,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                 ));
             }
             validate_timeout(tcp.timeout)?;
+            validate_ip_version(&tcp.host, tcp.ip_version)?;
             let host = crate::domain::check::unbracket(&tcp.host);
             if let Ok(ip) = host.parse::<IpAddr>() {
                 check_ip(ip, guard, "check.host")?;
@@ -787,6 +816,7 @@ pub(crate) fn validate_check(check: &crate::domain::CheckSpec, guard: &SsrfGuard
                 cert.critical_days,
                 codes::INVALID_TLS_CERT_PARAMS,
             )?;
+            validate_ip_version(&cert.host, cert.ip_version)?;
             let host = crate::domain::check::unbracket(&cert.host);
             if let Ok(ip) = host.parse::<IpAddr>() {
                 check_ip(ip, guard, "check.host")?;

@@ -8,12 +8,12 @@ use hickory_resolver::config::{
 };
 use hickory_resolver::lookup_ip::LookupIp;
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
-use hickory_resolver::proto::rr::{Name, Record};
+use hickory_resolver::proto::rr::{Name, Record, RecordType};
 use hickory_resolver::{Resolver, TokioResolver};
 use metrics::{Histogram, histogram};
 
 use crate::config::DnsConfig;
-use crate::domain::DnsAnswer;
+use crate::domain::{DnsAnswer, IpVersion};
 use crate::error::Result;
 use crate::metric_names;
 
@@ -67,14 +67,49 @@ impl HickoryDnsResolver {
         })
     }
 
-    pub async fn resolve_addrs(&self, host: &str) -> anyhow::Result<Vec<IpAddr>> {
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            return Ok(vec![ip]);
+    /// A pinned family asks only for its own record type, so a failed AAAA
+    /// query is reported as such rather than hidden behind a good A answer.
+    pub async fn resolve_addrs(
+        &self,
+        host: &str,
+        family: IpVersion,
+    ) -> anyhow::Result<Vec<IpAddr>> {
+        let addrs = match host.parse::<IpAddr>() {
+            Ok(ip) => vec![ip],
+            Err(_) => {
+                let start = Instant::now();
+                let lookup: LookupIp = match family {
+                    IpVersion::Any => self.inner.lookup_ip(host).await?,
+                    IpVersion::Ipv4 => self.family_lookup(host, RecordType::A, family).await?,
+                    IpVersion::Ipv6 => self.family_lookup(host, RecordType::AAAA, family).await?,
+                };
+                self.dns_ms.record(start.elapsed().as_millis() as f64);
+                lookup.iter().collect()
+            }
+        };
+        if family == IpVersion::Any {
+            return Ok(addrs);
         }
-        let start = Instant::now();
-        let lookup: LookupIp = self.inner.lookup_ip(host).await?;
-        self.dns_ms.record(start.elapsed().as_millis() as f64);
-        Ok(lookup.iter().collect())
+        let admitted: Vec<IpAddr> = addrs.into_iter().filter(|ip| family.admits(*ip)).collect();
+        if admitted.is_empty() {
+            return Err(NoAddressInFamily(family).into());
+        }
+        Ok(admitted)
+    }
+
+    async fn family_lookup(
+        &self,
+        host: &str,
+        record_type: RecordType,
+        family: IpVersion,
+    ) -> anyhow::Result<LookupIp> {
+        match self.inner.lookup(host, record_type).await {
+            Ok(lookup) => Ok(LookupIp::from(lookup)),
+            Err(e) if e.is_no_records_found() && !e.is_nx_domain() => {
+                Err(NoAddressInFamily(family).into())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Asks the first configured server past this resolver's cache, which cuts
@@ -103,6 +138,28 @@ impl HickoryDnsResolver {
         &self.inner
     }
 }
+
+/// The host has no address in the family the check is pinned to.
+#[derive(Debug)]
+pub(crate) struct NoAddressInFamily(pub IpVersion);
+
+impl NoAddressInFamily {
+    pub(crate) fn reason(&self) -> &'static str {
+        match self.0 {
+            IpVersion::Ipv4 => "dns: no IPv4 address",
+            IpVersion::Ipv6 => "dns: no IPv6 address",
+            IpVersion::Any => "dns: no address records",
+        }
+    }
+}
+
+impl std::fmt::Display for NoAddressInFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
+impl std::error::Error for NoAddressInFamily {}
 
 /// Short enough that an unreachable resolver cannot hold a failed check for
 /// the rest of its timeout.
@@ -397,6 +454,53 @@ mod tests {
             fresh.upstream,
             "[2001:db8::53]:53".parse::<SocketAddr>().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn a_literal_outside_the_pinned_family_has_no_address_in_it() {
+        let resolver = HickoryDnsResolver::new(&DnsConfig {
+            cache_size: 1,
+            positive_ttl_secs: 1,
+            negative_ttl_secs: 1,
+            servers: vec!["127.0.0.1:9".into()],
+        })
+        .unwrap();
+        let v4: IpAddr = "192.0.2.1".parse().unwrap();
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        for (host, family, want) in [
+            ("192.0.2.1", IpVersion::Any, Some(v4)),
+            ("192.0.2.1", IpVersion::Ipv4, Some(v4)),
+            ("192.0.2.1", IpVersion::Ipv6, None),
+            ("2001:db8::1", IpVersion::Ipv6, Some(v6)),
+            ("2001:db8::1", IpVersion::Ipv4, None),
+        ] {
+            match resolver.resolve_addrs(host, family).await {
+                Ok(addrs) => assert_eq!(Some(addrs), want.map(|ip| vec![ip]), "{host} {family:?}"),
+                Err(e) => {
+                    assert!(want.is_none(), "{host} {family:?}: {e}");
+                    let missing = e.downcast_ref::<NoAddressInFamily>().expect("typed");
+                    assert_eq!(missing.0, family);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_missing_family_reason_classifies_as_no_record() {
+        use crate::domain::{ErrorClass, classify_check_error, humanize_check_error};
+        for family in [IpVersion::Ipv4, IpVersion::Ipv6] {
+            let reason = NoAddressInFamily(family).reason();
+            assert_eq!(
+                classify_check_error(reason),
+                ErrorClass::DnsNoRecord,
+                "{reason}"
+            );
+            assert_ne!(
+                humanize_check_error(reason),
+                reason,
+                "{reason} is shown raw"
+            );
+        }
     }
 
     #[test]

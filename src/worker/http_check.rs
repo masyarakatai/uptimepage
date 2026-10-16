@@ -194,7 +194,7 @@ async fn probe_hops(
 
         // Fresh connection per hop, each phase timed. DNS+connect+TLS are
         // bounded by the connect budget; the request+body by what's left.
-        let params = clients.connect_params(check.verify_tls);
+        let params = clients.connect_params(check.verify_tls, check.ip_version);
         let remaining = check.timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
             return early("connect timeout", None);
@@ -1211,6 +1211,7 @@ mod tests {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         }
     }
 

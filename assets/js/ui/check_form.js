@@ -609,6 +609,7 @@ import { parseDuration } from "./_duration.js";
                 headers,
                 body: blankToNull(data.get("http_body")),
                 verify_tls: data.get("http_verify_tls") === "on",
+                ip_version: data.get("http_ip_version") || "any",
             };
             return { check };
         }
@@ -623,6 +624,7 @@ import { parseDuration } from "./_duration.js";
                     host: data.get("tcp_host"),
                     port: port.value,
                     timeout: timeout.value,
+                    ip_version: data.get("tcp_ip_version") || "any",
                 },
             };
         }
@@ -712,6 +714,7 @@ import { parseDuration } from "./_duration.js";
                     warn_days: warn.value,
                     critical_days: crit.value,
                     timeout: timeout.value,
+                    ip_version: data.get("tls_ip_version") || "any",
                 },
             };
         }
@@ -1102,6 +1105,7 @@ import { parseDuration } from "./_duration.js";
         "check.critical_days": "_critical_days",
         "check.period": "_period_s",
         "check.grace": "_grace_s",
+        "check.ip_version": "_ip_version",
     };
 
     function fieldForApiPath(path) {

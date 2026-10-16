@@ -5,7 +5,7 @@ use chrono::Utc;
 use surge_ping::{Client, Config, ICMP, PingIdentifier, PingSequence};
 use uuid::Uuid;
 
-use crate::domain::{CheckResult, CheckStatus, PingCheck};
+use crate::domain::{CheckResult, CheckStatus, IpVersion, PingCheck};
 use crate::http_client::HttpClients;
 use crate::http_client::dial::allowed_addrs;
 
@@ -63,7 +63,7 @@ enum EchoError {
 /// splitting `total` across the attempts — a blackholed first family still
 /// leaves budget to reach the healthy one.
 async fn probe(host: &str, total: Duration, clients: &HttpClients) -> Result<Duration, EchoError> {
-    let addrs = allowed_addrs(host, clients)
+    let addrs = allowed_addrs(host, IpVersion::Any, clients)
         .await
         .map_err(|e| EchoError::Unreachable(e.to_string()))?;
     let first_v4 = addrs.iter().copied().find(IpAddr::is_ipv4);

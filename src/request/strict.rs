@@ -406,7 +406,7 @@ mod tests {
         assert_eq!(schema.unknown_keys(&typo), ["timeuot"]);
         assert_eq!(
             schema.describe(&typo).unwrap(),
-            "unknown field `timeuot`, expected one of `host`, `port`, `timeout`, `type`"
+            "unknown field `timeuot`, expected one of `host`, `ip_version`, `port`, `timeout`, `type`"
         );
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let bulk = json!([{ "name": "a", "interval": 60, "check": { "type": "tcp", "host": "h", "port": 1, "timeuot": 1 } }]);
         assert_eq!(
             schema.describe(&bulk).unwrap(),
-            "unknown field `[0].check.timeuot`, expected one of `host`, `port`, `timeout`, `type`"
+            "unknown field `[0].check.timeuot`, expected one of `host`, `ip_version`, `port`, `timeout`, `type`"
         );
     }
 }

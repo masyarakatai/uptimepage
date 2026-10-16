@@ -67,6 +67,7 @@ async fn sensitive_header_dropped_across_origin_plain_kept() {
         verify_tls: true,
         basic_auth: None,
         bearer_token: None,
+        ip_version: uptimepage::domain::IpVersion::Any,
     };
 
     let client = test_client();

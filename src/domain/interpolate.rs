@@ -585,6 +585,7 @@ mod tests {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         }
     }
 }

@@ -136,6 +136,7 @@ fn head_spec(body_match: Option<&str>) -> crate::domain::CheckSpec {
         verify_tls: true,
         basic_auth: None,
         bearer_token: None,
+        ip_version: crate::domain::IpVersion::Any,
     })
 }
 
@@ -254,6 +255,30 @@ fn validate_check_rejects_tls_cert_empty_port() {
     let err = validate_check(&spec, &SsrfGuard::strict())
         .expect_err("tls_cert check with empty port must reject");
     assert_bad_request_with_field(err, "check.port");
+}
+
+#[test]
+fn a_literal_host_refuses_the_family_it_is_not_in() {
+    use crate::security::ssrf::SsrfGuard;
+    let spec = |json: &str| -> crate::domain::CheckSpec { serde_json::from_str(json).unwrap() };
+    let refused = [
+        r#"{"type":"tcp","host":"1.1.1.1","port":53,"timeout":3000,"ip_version":"ipv6"}"#,
+        r#"{"type":"tls_cert","host":"2606:4700:4700::1111","port":443,"warn_days":14,"critical_days":3,"timeout":5000,"ip_version":"ipv4"}"#,
+        r#"{"type":"http","url":"https://[2606:4700:4700::1111]/","method":"GET","timeout":5000,"follow_redirects":false,"max_redirects":0,"expected_status":{"kind":"exact","value":200},"headers":{},"verify_tls":true,"ip_version":"ipv4"}"#,
+    ];
+    for json in refused {
+        let err = validate_check(&spec(json), &SsrfGuard::strict()).expect_err(json);
+        assert_eq!(code_of(err), codes::INVALID_IP_VERSION, "{json}");
+    }
+    let accepted = [
+        r#"{"type":"tcp","host":"1.1.1.1","port":53,"timeout":3000,"ip_version":"ipv4"}"#,
+        r#"{"type":"tcp","host":"1.1.1.1","port":53,"timeout":3000,"ip_version":"any"}"#,
+        r#"{"type":"tcp","host":"db.example.com","port":5432,"timeout":3000,"ip_version":"ipv6"}"#,
+        r#"{"type":"http","url":"https://[2606:4700:4700::1111]/","method":"GET","timeout":5000,"follow_redirects":false,"max_redirects":0,"expected_status":{"kind":"exact","value":200},"headers":{},"verify_tls":true,"ip_version":"ipv6"}"#,
+    ];
+    for json in accepted {
+        validate_check(&spec(json), &SsrfGuard::strict()).expect(json);
+    }
 }
 
 #[test]
@@ -444,6 +469,7 @@ fn http_auth(basic: Option<(&str, &str)>, bearer: Option<&str>) -> crate::domain
         verify_tls: true,
         basic_auth: basic.map(|(u, p)| (u.to_owned(), p.to_owned())),
         bearer_token: bearer.map(str::to_owned),
+        ip_version: crate::domain::IpVersion::Any,
     }
 }
 
@@ -495,6 +521,7 @@ fn canonicalize_check_idn_encodes_tcp_host() {
         host: "Bähn.DE.".into(),
         port: 443,
         timeout: Duration::from_secs(5),
+        ip_version: crate::domain::IpVersion::Any,
     });
     canonicalize_check(&mut spec).unwrap();
     match spec {
@@ -511,6 +538,7 @@ fn canonicalize_check_preserves_ipv6_brackets_stripped() {
         host: "[::1]".into(),
         port: 443,
         timeout: Duration::from_secs(5),
+        ip_version: crate::domain::IpVersion::Any,
     });
     canonicalize_check(&mut spec).unwrap();
     match spec {

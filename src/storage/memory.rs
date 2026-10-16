@@ -1333,6 +1333,7 @@ mod tests {
                 host: "example.com".into(),
                 port,
                 timeout: std::time::Duration::from_secs(3),
+                ip_version: crate::domain::IpVersion::Any,
             })
         };
         let id = store
@@ -1417,6 +1418,7 @@ mod tests {
                 host: "example.com".into(),
                 port: 443,
                 timeout: std::time::Duration::from_secs(3),
+                ip_version: crate::domain::IpVersion::Any,
             }),
             interval: std::time::Duration::from_secs(60),
             enabled: true,

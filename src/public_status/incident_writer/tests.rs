@@ -1728,6 +1728,7 @@ fn make_public_target(name: &str) -> Target {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         }),
         interval: StdDuration::from_secs(30),
         enabled: true,

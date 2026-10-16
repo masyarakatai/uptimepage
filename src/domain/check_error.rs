@@ -53,6 +53,8 @@ pub fn humanize_check_error(raw: &str) -> String {
         }
         "dns: domain not found" => "domain not found (DNS)".into(),
         "dns: no address records" => "no DNS address records".into(),
+        "dns: no IPv4 address" => "no IPv4 address (DNS A record)".into(),
+        "dns: no IPv6 address" => "no IPv6 address (DNS AAAA record)".into(),
         "dns: lookup timed out" => "DNS lookup timed out".into(),
         "dns: lookup failed" => "DNS lookup failed".into(),
         other => humanize_prefixed(other),
@@ -362,7 +364,10 @@ pub fn classify_check_error(raw: &str) -> ErrorClass {
         | "h2 enhance your calm" => return ErrorClass::Transport,
         "body timeout" => return ErrorClass::BodyTimeout,
         "body match failed" => return ErrorClass::BodyMatchFailed,
-        "dns: domain not found" | "dns: no address records" => {
+        "dns: domain not found"
+        | "dns: no address records"
+        | "dns: no IPv4 address"
+        | "dns: no IPv6 address" => {
             return ErrorClass::DnsNoRecord;
         }
         "server returned no certificate chain"
@@ -642,6 +647,8 @@ mod tests {
         ("rate-limited 503", ErrorClass::RateLimited),
         ("dns: domain not found", ErrorClass::DnsNoRecord),
         ("dns: no address records", ErrorClass::DnsNoRecord),
+        ("dns: no IPv4 address", ErrorClass::DnsNoRecord),
+        ("dns: no IPv6 address", ErrorClass::DnsNoRecord),
         // Interpolated by `worker::mod`, and by the connector's Display with a
         // literal `host`. Both must classify, so the sample carries a real host.
         (

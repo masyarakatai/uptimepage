@@ -176,3 +176,24 @@
   {% call chooser_card_static(selected == "cancelled", "cancelled", "called off, never shown") %}{% endcall %}
 </div>
 {% endmacro %}
+
+{# One owner of the address-family wording, shared by every kind that dials a
+   host. `name` stays per kind: radios sharing a name are one group across the
+   whole form. #}
+{% macro ip_version_rail(name, selected) %}
+<div>
+  <span class="mb-1.5 block text-xs text-muted">IP version</span>
+  <div class="sm-rail" role="radiogroup" aria-label="IP version">
+    <label class="sm-rail__seg">
+      <input type="radio" name="{{ name }}" value="any" class="sr-only"{% if selected == "any" %} checked{% endif %}>any
+    </label>
+    <label class="sm-rail__seg">
+      <input type="radio" name="{{ name }}" value="ipv4" class="sr-only"{% if selected == "ipv4" %} checked{% endif %}>IPv4 only
+    </label>
+    <label class="sm-rail__seg">
+      <input type="radio" name="{{ name }}" value="ipv6" class="sr-only"{% if selected == "ipv6" %} checked{% endif %}>IPv6 only
+    </label>
+  </div>
+  <span class="mt-1 block text-xs text-muted">any connects over whichever of IPv6 and IPv4 answers first, so a broken one goes unnoticed. Pin one to watch it; to watch both, make a monitor for each.</span>
+</div>
+{% endmacro %}

@@ -106,6 +106,7 @@ async fn main() {
                 verify_tls: true,
                 basic_auth: None,
                 bearer_token: None,
+                ip_version: uptimepage::domain::IpVersion::Any,
             })
         })
         .collect();

@@ -546,6 +546,7 @@ mod tests {
             verify_tls: true,
             basic_auth: Some(("u".into(), "p".into())),
             bearer_token: Some("bsecret".into()),
+            ip_version: crate::domain::IpVersion::Any,
         })
     }
 

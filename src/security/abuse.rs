@@ -458,6 +458,7 @@ mod tests {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         })
     }
 
@@ -579,6 +580,7 @@ mod tests {
             host: "ads.tracker.example".into(),
             port: 443,
             timeout: std::time::Duration::from_secs(5),
+            ip_version: crate::domain::IpVersion::Any,
         });
         assert!(g.inspect(&tcp).is_some());
     }

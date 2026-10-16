@@ -26,6 +26,8 @@ pub const INVALID_HEAD_BODY_MATCH: &str = "INVALID_HEAD_BODY_MATCH";
 pub const INVALID_TLS_CERT_PARAMS: &str = "INVALID_TLS_CERT_PARAMS";
 pub const INVALID_DOMAIN_PARAMS: &str = "INVALID_DOMAIN_PARAMS";
 pub const INVALID_DNS_PARAMS: &str = "INVALID_DNS_PARAMS";
+/// A check pinned to the address family its literal host is not in.
+pub const INVALID_IP_VERSION: &str = "INVALID_IP_VERSION";
 pub const INVALID_FLOW_PARAMS: &str = "INVALID_FLOW_PARAMS";
 pub const FLOW_CHECKS_DISABLED: &str = "FLOW_CHECKS_DISABLED";
 pub const SMS_ALERTS_DISABLED: &str = "SMS_ALERTS_DISABLED";

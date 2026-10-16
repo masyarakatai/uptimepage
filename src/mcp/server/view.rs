@@ -211,11 +211,13 @@ pub(super) fn check_config(check: &CheckSpec) -> CheckConfig {
             verify_tls: h.verify_tls,
             has_basic_auth: h.basic_auth.is_some(),
             has_bearer_token: h.bearer_token.is_some(),
+            ip_version: h.ip_version.as_str().to_string(),
         }),
         CheckSpec::Tcp(t) => CheckConfig::Tcp(TcpCheckConfig {
             host: sanitize_data(&t.host),
             port: t.port,
             timeout_ms: ms(&t.timeout),
+            ip_version: t.ip_version.as_str().to_string(),
         }),
         CheckSpec::Ping(p) => CheckConfig::Ping(PingCheckConfig {
             host: sanitize_data(&p.host),
@@ -245,6 +247,7 @@ pub(super) fn check_config(check: &CheckSpec) -> CheckConfig {
             warn_days: c.warn_days,
             critical_days: c.critical_days,
             timeout_ms: ms(&c.timeout),
+            ip_version: c.ip_version.as_str().to_string(),
         }),
         CheckSpec::DomainExpiry(d) => CheckConfig::DomainExpiry(DomainExpiryCheckConfig {
             domain: sanitize_data(&d.domain),

@@ -388,6 +388,7 @@ pub(super) fn new_check_spec(check: &NewCheck) -> Result<CheckSpec, McpToolError
             verify_tls,
             headers,
             body,
+            ip_version,
         } => {
             let url = url::Url::parse(url)
                 .map_err(|e| McpToolError::invalid_argument(format!("url: {e}")))?;
@@ -413,16 +414,19 @@ pub(super) fn new_check_spec(check: &NewCheck) -> Result<CheckSpec, McpToolError
                 verify_tls: verify_tls.unwrap_or(true),
                 basic_auth: None,
                 bearer_token: None,
+                ip_version: parse_ip_version(ip_version.as_deref())?,
             })
         }
         NewCheck::Tcp {
             host,
             port,
             timeout_ms,
+            ip_version,
         } => CheckSpec::Tcp(TcpCheck {
             host: host.clone(),
             port: *port,
             timeout: ms(*timeout_ms, 5_000),
+            ip_version: parse_ip_version(ip_version.as_deref())?,
         }),
         NewCheck::Ping { host, timeout_ms } => CheckSpec::Ping(PingCheck {
             host: host.clone(),
@@ -449,6 +453,7 @@ pub(super) fn new_check_spec(check: &NewCheck) -> Result<CheckSpec, McpToolError
             warn_days,
             critical_days,
             timeout_ms,
+            ip_version,
         } => CheckSpec::TlsCert(TlsCertCheck {
             host: host.clone(),
             port: port.unwrap_or(443),
@@ -456,6 +461,7 @@ pub(super) fn new_check_spec(check: &NewCheck) -> Result<CheckSpec, McpToolError
             warn_days: warn_days.unwrap_or(30),
             critical_days: critical_days.unwrap_or(7),
             timeout: ms(*timeout_ms, 10_000),
+            ip_version: parse_ip_version(ip_version.as_deref())?,
         }),
         NewCheck::DomainExpiry {
             domain,
@@ -501,6 +507,19 @@ pub(super) fn parse_http_method(
             }
         },
     )
+}
+
+pub(super) fn parse_ip_version(
+    version: Option<&str>,
+) -> Result<crate::domain::IpVersion, McpToolError> {
+    let Some(version) = version else {
+        return Ok(crate::domain::IpVersion::Any);
+    };
+    crate::domain::IpVersion::parse(version).ok_or_else(|| {
+        McpToolError::invalid_argument(format!(
+            "unknown ip_version `{version}`; expected one of any, ipv4, ipv6"
+        ))
+    })
 }
 
 pub(super) fn parse_record_type(

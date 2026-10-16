@@ -10,7 +10,7 @@ use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 use crate::config::CircuitBreakerConfig;
-use crate::domain::{CheckResult, CheckSpec, OrgId, Target};
+use crate::domain::{CheckResult, CheckSpec, IpVersion, OrgId, Target};
 use crate::http_client::HttpClients;
 use crate::metric_names;
 use crate::worker::circuit_breaker::{BreakerState, CIRCUIT_OPEN_REASON, CircuitBreaker};
@@ -55,10 +55,15 @@ impl CheckTask {
 /// same per-host breaker. Hosts are normalized (lowercased + trailing-dot
 /// stripped) — otherwise `Example.com` and `example.com` from two targets
 /// allocate two breakers + grow the map without bound under tenant-
-/// controlled casing.
+/// controlled casing. A check pinned to one address family keys apart, so a
+/// dead IPv6 path cannot open the breaker for the host's IPv4 monitor.
 pub fn host_for_spec(spec: &CheckSpec) -> String {
     if let Some((host, _)) = crate::worker::host_throttle::host_port_raw(spec) {
-        return crate::net::host::canonical_host(host);
+        let host = crate::net::host::canonical_host(host);
+        return match spec.ip_version() {
+            IpVersion::Any => host,
+            family => format!("{host}/{}", family.as_str()),
+        };
     }
     match spec {
         // Group circuit-breaker state by TLD so a flaky registry doesn't
@@ -455,4 +460,22 @@ fn get_or_init_breaker(
 fn record_metrics(result: &CheckResult) {
     counter!(metric_names::CHECKS_TOTAL, "status" => result.status.as_str()).increment(1);
     histogram!(metric_names::CHECK_DURATION_MS).record(result.duration_ms as f64);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pinned_family_gets_its_own_breaker() {
+        let tcp = |family: &str| -> CheckSpec {
+            serde_json::from_str(&format!(
+                r#"{{"type":"tcp","host":"DB.example.com.","port":5432,"timeout":3000,"ip_version":"{family}"}}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(host_for_spec(&tcp("any")), "db.example.com");
+        assert_eq!(host_for_spec(&tcp("ipv4")), "db.example.com/ipv4");
+        assert_eq!(host_for_spec(&tcp("ipv6")), "db.example.com/ipv6");
+    }
 }

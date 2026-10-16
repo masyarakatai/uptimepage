@@ -292,6 +292,14 @@ This is the picture worth watching. A login that still passes but whose redirect
 
 Durations are kept longer than the captured pages are — see [Quotas and limits](quotas.md).
 
+## IP version
+
+HTTP, TCP and TLS certificate monitors connect over IPv6 or IPv4, whichever answers first. That keeps a check green through a broken AAAA record, an IPv6 firewall rule or a load balancer listening on IPv4 alone, which is exactly what your IPv6 visitors run into.
+
+Set **IP version** to IPv4 only or IPv6 only to check one family on its own. The check then asks DNS for that family's records only and connects to nothing else, so a name without an AAAA record fails with "no IPv6 address" instead of passing over IPv4. An HTTP monitor keeps the family on every redirect it follows.
+
+To watch both, make two monitors, one per family: duplicate the first, then switch the copy's IP version. A monitor whose host is an IP address already has its family, so the setting can only match it. The other kinds have no IP version.
+
 ## Intervals
 
 Every kind has a floor, and your plan sets its own on top. The effective minimum is whichever is higher, except for a manual monitor, which probes nothing and always runs at exactly 60 seconds. The floor is what the API accepts; the suggestion is what the form opens at, and what most people should run.

@@ -15,7 +15,8 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
-use crate::http_client::dns::HickoryDnsResolver;
+use crate::domain::IpVersion;
+use crate::http_client::dns::{HickoryDnsResolver, NoAddressInFamily};
 use crate::http_client::{H1_MAX_HEADERS, H2_MAX_HEADER_LIST_SIZE};
 use crate::security::SsrfGuard;
 
@@ -61,6 +62,7 @@ pub(crate) struct ConnectParams<'a> {
     pub tls_ms: &'a Histogram,
     pub connect_timeout: Duration,
     pub tcp_keepalive: Option<Duration>,
+    pub ip_version: IpVersion,
 }
 
 /// Per-phase wall times (ms) for one connection establishment. `tls_ms` is
@@ -179,6 +181,9 @@ const DNS_TIMEOUT: &str = "dns: lookup timed out";
 /// Shared with the TCP and TLS-cert kinds through `dial::allowed_addrs`,
 /// which would otherwise hand the resolver's own Display to the customer.
 pub(crate) fn dns_reason(e: &anyhow::Error) -> &'static str {
+    if let Some(missing) = e.downcast_ref::<NoAddressInFamily>() {
+        return missing.reason();
+    }
     let Some(n) = e.downcast_ref::<hickory_resolver::net::NetError>() else {
         return "dns: lookup failed";
     };
@@ -281,7 +286,8 @@ pub(crate) async fn timed_connect(
     // would look up as a name and `ServerName` rejects.
     let host = crate::domain::check::unbracket(host);
     let dns_start = Instant::now();
-    let addrs: Vec<SocketAddr> = tokio::time::timeout_at(deadline, p.resolver.resolve_addrs(host))
+    let lookup = p.resolver.resolve_addrs(host, p.ip_version);
+    let addrs: Vec<SocketAddr> = tokio::time::timeout_at(deadline, lookup)
         .await
         .map_err(|_| ConnectError::Timeout {
             dns_ms: None,
@@ -786,6 +792,7 @@ mod tests {
             tls_ms: &noop,
             connect_timeout: Duration::from_secs(2),
             tcp_keepalive: None,
+            ip_version: IpVersion::Any,
         };
 
         for (san, leaf, want) in cases {
@@ -814,6 +821,12 @@ mod tests {
                 .map(|e| e.reason());
             assert_eq!(reason, want, "certificate for {san}");
         }
+    }
+
+    #[test]
+    fn a_missing_family_names_the_family() {
+        let missing = ConnectError::Dns(anyhow::Error::new(NoAddressInFamily(IpVersion::Ipv6)));
+        assert_eq!(missing.reason(), "dns: no IPv6 address");
     }
 
     #[test]

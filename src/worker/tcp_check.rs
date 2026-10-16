@@ -19,7 +19,13 @@ pub async fn execute_tcp_check(
 
     let outcome = timeout(
         check.timeout,
-        connect_via_guard(&check.host, check.port, clients, check.timeout),
+        connect_via_guard(
+            &check.host,
+            check.port,
+            check.ip_version,
+            clients,
+            check.timeout,
+        ),
     )
     .await;
     let duration_ms = start.elapsed().as_millis() as u32;

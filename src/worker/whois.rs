@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::domain::publishes_no_expiry;
+use crate::domain::{IpVersion, publishes_no_expiry};
 use crate::error::{AppError, Result};
 use crate::http_client::HttpClients;
 use crate::http_client::dial::connect_via_guard;
@@ -123,9 +123,15 @@ async fn query(
     registrable: &str,
     clients: &HttpClients,
 ) -> Result<String> {
-    let mut stream: TcpStream = connect_via_guard(server, port, clients, clients.connect_timeout())
-        .await
-        .with_context(|| format!("connecting to WHOIS server {server}"))?;
+    let mut stream: TcpStream = connect_via_guard(
+        server,
+        port,
+        IpVersion::Any,
+        clients,
+        clients.connect_timeout(),
+    )
+    .await
+    .with_context(|| format!("connecting to WHOIS server {server}"))?;
 
     let request = format!("{registrable}\r\n");
     timeout(READ_TIMEOUT, stream.write_all(request.as_bytes()))

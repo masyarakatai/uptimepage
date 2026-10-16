@@ -157,6 +157,9 @@ pub struct HttpCheckConfig {
     pub has_basic_auth: bool,
     /// A bearer token is configured. The value is withheld.
     pub has_bearer_token: bool,
+    /// Address family the probe dials: `any`, `ipv4` or `ipv6`. With `any`
+    /// it takes whichever connects first, so a broken family stays hidden.
+    pub ip_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -164,6 +167,9 @@ pub struct TcpCheckConfig {
     pub host: String,
     pub port: u16,
     pub timeout_ms: u64,
+    /// Address family the probe dials: `any`, `ipv4` or `ipv6`. With `any`
+    /// it takes whichever connects first, so a broken family stays hidden.
+    pub ip_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -214,6 +220,9 @@ pub struct TlsCertCheckConfig {
     pub warn_days: u32,
     pub critical_days: u32,
     pub timeout_ms: u64,
+    /// Address family the probe dials: `any`, `ipv4` or `ipv6`. With `any`
+    /// it takes whichever connects first, so a broken family stays hidden.
+    pub ip_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -581,12 +590,19 @@ pub enum NewCheck {
         /// Request body, sent as given. `{{ key }}` references are resolved at
         /// probe time, so a body may carry a secret by reference.
         body: Option<String>,
+        /// `any` (default), `ipv4` or `ipv6`. See `ip_version` on `Tcp`.
+        ip_version: Option<String>,
     },
     /// A TCP port accepting connections.
     Tcp {
         host: String,
         port: u16,
         timeout_ms: Option<u64>,
+        /// `any` (default) dials whichever of IPv6 and IPv4 connects first,
+        /// so a broken AAAA record or IPv6 firewall stays hidden. `ipv4` or
+        /// `ipv6` checks only that family and fails when the host has no
+        /// address in it. To watch both, create one monitor per family.
+        ip_version: Option<String>,
     },
     /// ICMP reachability.
     Ping {
@@ -622,6 +638,8 @@ pub enum NewCheck {
         /// Days of remaining validity that fail it. Default 7.
         critical_days: Option<u32>,
         timeout_ms: Option<u64>,
+        /// `any` (default), `ipv4` or `ipv6`. See `ip_version` on `Tcp`.
+        ip_version: Option<String>,
     },
     /// A domain registration's remaining validity.
     DomainExpiry {

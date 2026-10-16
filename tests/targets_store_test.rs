@@ -73,6 +73,7 @@ async fn kind_filter_and_counts_are_org_wide() {
             host: "db.example.com".into(),
             port: 5432,
             timeout: Duration::from_secs(3),
+            ip_version: uptimepage::domain::IpVersion::Any,
         })
     };
     seed(&store, org.id, "a", http(), None).await;
@@ -359,6 +360,7 @@ async fn the_recovery_period_round_trips_through_every_write() {
             host: "db.example.com".into(),
             port: 5432,
             timeout: Duration::from_secs(1),
+            ip_version: uptimepage::domain::IpVersion::Any,
         }),
         interval: Duration::from_secs(60),
         enabled: true,
@@ -584,6 +586,7 @@ async fn a_bulk_interval_skips_the_named_kinds() {
         host: "db.example.com".into(),
         port: 5432,
         timeout: Duration::from_secs(3),
+        ip_version: uptimepage::domain::IpVersion::Any,
     });
     let web = seed(&store, org.id, "web", http(), None).await;
     let db_port = seed(&store, org.id, "db", tcp, None).await;

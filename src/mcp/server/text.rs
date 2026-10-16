@@ -5,7 +5,7 @@ use rmcp::handler::server::wrapper::Json;
 
 use crate::domain::target::{NewTarget, RegionIncidentPolicy};
 use crate::domain::text::is_invisible;
-use crate::domain::{CheckSpec, humanize_check_error};
+use crate::domain::{CheckSpec, IpVersion, humanize_check_error};
 
 use crate::mcp::error::McpToolError;
 use crate::mcp::schema::{FieldChange, IncidentActionResult, ProbeOutcome};
@@ -56,6 +56,10 @@ pub(super) fn create_prompt_lines(
     // Part of what the check watches, so it is approved rather than discovered.
     if !new.check.is_passive() {
         lines.push(format!("probed from: {}", regions.join(", ")));
+    }
+    let family = new.check.ip_version();
+    if family != IpVersion::Any {
+        lines.push(format!("dials {} only", family.label()));
     }
     lines.push(match probe {
         // Named: the trial answers from one region, the monitor may hold several.

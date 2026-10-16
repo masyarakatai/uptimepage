@@ -1292,6 +1292,7 @@ pub fn default_http_check(url: Url, expected: ExpectedStatus) -> HttpCheck {
         verify_tls: true,
         basic_auth: None,
         bearer_token: None,
+        ip_version: uptimepage::domain::IpVersion::Any,
     }
 }
 

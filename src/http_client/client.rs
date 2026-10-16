@@ -17,6 +17,7 @@ use x509_parser::oid_registry::OID_PKIX_ACCESS_DESCRIPTOR_CA_ISSUERS;
 use x509_parser::prelude::FromDer;
 
 use crate::config::{CheckerConfig, DnsConfig, HttpClientConfig, SecurityConfig};
+use crate::domain::IpVersion;
 use crate::error::{AppError, Result};
 use crate::http_client::connector::{ChainFault, ConnectParams};
 use crate::http_client::dns::HickoryDnsResolver;
@@ -44,7 +45,11 @@ pub struct HttpClients {
 }
 
 impl HttpClients {
-    pub(crate) fn connect_params(&self, verify_tls: bool) -> ConnectParams<'_> {
+    pub(crate) fn connect_params(
+        &self,
+        verify_tls: bool,
+        ip_version: IpVersion,
+    ) -> ConnectParams<'_> {
         ConnectParams {
             resolver: &self.resolver,
             ssrf_guard: self.ssrf_guard,
@@ -57,6 +62,7 @@ impl HttpClients {
             tls_ms: &self.tls_ms,
             connect_timeout: self.connect_timeout,
             tcp_keepalive: self.tcp_keepalive,
+            ip_version,
         }
     }
 

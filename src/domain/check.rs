@@ -142,6 +142,71 @@ impl CheckSpec {
             CheckSpec::Heartbeat(_) | CheckSpec::Manual(_) => None,
         }
     }
+
+    /// The address family the check dials. `Any` for the kinds that have no
+    /// choice to make.
+    pub fn ip_version(&self) -> IpVersion {
+        match self {
+            CheckSpec::Http(c) => c.ip_version,
+            CheckSpec::Tcp(c) => c.ip_version,
+            CheckSpec::TlsCert(c) => c.ip_version,
+            CheckSpec::Ping(_)
+            | CheckSpec::Heartbeat(_)
+            | CheckSpec::Manual(_)
+            | CheckSpec::DomainExpiry(_)
+            | CheckSpec::Dns(_)
+            | CheckSpec::Flow(_) => IpVersion::Any,
+        }
+    }
+}
+
+/// Which address family a connection check dials. `any` races IPv6 against
+/// IPv4 and keeps whichever connects, so one broken family stays hidden behind
+/// the other. `ipv4` or `ipv6` dials only that family, and a host with no
+/// address in it fails the check.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IpVersion {
+    #[default]
+    Any,
+    Ipv4,
+    Ipv6,
+}
+
+impl IpVersion {
+    pub const ALL: [IpVersion; 3] = [IpVersion::Any, IpVersion::Ipv4, IpVersion::Ipv6];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IpVersion::Any => "any",
+            IpVersion::Ipv4 => "ipv4",
+            IpVersion::Ipv6 => "ipv6",
+        }
+    }
+
+    /// The family as people write it.
+    pub fn label(self) -> &'static str {
+        match self {
+            IpVersion::Any => "any",
+            IpVersion::Ipv4 => "IPv4",
+            IpVersion::Ipv6 => "IPv6",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|v| v.as_str().eq_ignore_ascii_case(s.trim()))
+    }
+
+    /// An IPv4-mapped IPv6 address travels as IPv4, so it counts as one.
+    pub fn admits(self, ip: std::net::IpAddr) -> bool {
+        match self {
+            IpVersion::Any => true,
+            IpVersion::Ipv4 => ip.to_canonical().is_ipv4(),
+            IpVersion::Ipv6 => ip.to_canonical().is_ipv6(),
+        }
+    }
 }
 
 /// Per-kind check-interval floor. Expiry state moves slowly, so certificates
@@ -276,6 +341,11 @@ pub struct HttpCheck {
     /// On read, returns `"***"` if set. On write, send real value or omit the field.
     #[schema(nullable = true)]
     pub bearer_token: Option<String>,
+    /// Address family to dial: `any` takes whichever of IPv6 and IPv4
+    /// connects first; `ipv4` or `ipv6` dials only that family, on every
+    /// redirect hop, and fails when the host has no address in it.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 impl HttpCheck {
@@ -294,6 +364,11 @@ pub struct TcpCheck {
     #[serde(with = "duration_ms")]
     #[schema(value_type = u64, minimum = 100, maximum = 60000, example = 3000)]
     pub timeout: Duration,
+    /// Address family to dial: `any` takes whichever of IPv6 and IPv4
+    /// connects first; `ipv4` or `ipv6` dials only that family and fails when
+    /// the host has no address in it.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -386,6 +461,11 @@ pub struct TlsCertCheck {
     #[serde(with = "duration_ms")]
     #[schema(value_type = u64)]
     pub timeout: Duration,
+    /// Address family to dial: `any` takes whichever of IPv6 and IPv4
+    /// connects first; `ipv4` or `ipv6` dials only that family and fails when
+    /// the host has no address in it.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -719,7 +799,47 @@ mod tests {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: IpVersion::Any,
         })
+    }
+
+    #[test]
+    fn a_check_stored_before_ip_version_existed_dials_any_family() {
+        let tcp: CheckSpec = serde_json::from_str(
+            r#"{"type":"tcp","host":"db.example.com","port":5432,"timeout":3000}"#,
+        )
+        .unwrap();
+        assert_eq!(tcp.ip_version(), IpVersion::Any);
+        let tls: CheckSpec = serde_json::from_str(
+            r#"{"type":"tls_cert","host":"example.com","port":443,"warn_days":30,"critical_days":7,"timeout":5000,"ip_version":"ipv6"}"#,
+        )
+        .unwrap();
+        assert_eq!(tls.ip_version(), IpVersion::Ipv6);
+        assert_eq!(
+            serde_json::to_value(&tls).unwrap()["ip_version"],
+            serde_json::json!("ipv6")
+        );
+    }
+
+    #[test]
+    fn ip_version_names_round_trip_and_admit_only_their_family() {
+        for v in IpVersion::ALL {
+            assert_eq!(IpVersion::parse(v.as_str()), Some(v));
+            assert_eq!(
+                serde_json::to_value(v).unwrap(),
+                serde_json::json!(v.as_str())
+            );
+        }
+        assert_eq!(IpVersion::parse(" IPv6 "), Some(IpVersion::Ipv6));
+        assert_eq!(IpVersion::parse("both"), None);
+
+        let v4: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        let mapped: std::net::IpAddr = "::ffff:192.0.2.1".parse().unwrap();
+        assert!(IpVersion::Any.admits(v4) && IpVersion::Any.admits(v6));
+        assert!(IpVersion::Ipv4.admits(v4) && !IpVersion::Ipv4.admits(v6));
+        assert!(IpVersion::Ipv6.admits(v6) && !IpVersion::Ipv6.admits(v4));
+        assert!(IpVersion::Ipv4.admits(mapped) && !IpVersion::Ipv6.admits(mapped));
     }
 
     #[test]

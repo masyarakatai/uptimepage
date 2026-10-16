@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::api::handlers::targets::{DUPLICATE_MAX, may_bind_policy};
 use crate::app::AppState;
-use crate::domain::{CheckSpec, OrgId, Plan, RegionIncidentPolicy, Target, UserId};
+use crate::domain::{CheckSpec, IpVersion, OrgId, Plan, RegionIncidentPolicy, Target, UserId};
 use crate::duration::exact_duration;
 use crate::error::AppError;
 use crate::request::{AuthedBrowser, CurrentOrg, CurrentUser, TokenScopes};
@@ -195,6 +195,20 @@ async fn carried(
 
 /// Request settings by name only: values and credentials stay server-side.
 fn check_detail(check: &CheckSpec) -> String {
+    let detail = kind_detail(check);
+    let family = check.ip_version();
+    if family == IpVersion::Any {
+        return detail;
+    }
+    let pinned = format!("{} only", family.label());
+    if detail.is_empty() {
+        pinned
+    } else {
+        format!("{detail} · {pinned}")
+    }
+}
+
+fn kind_detail(check: &CheckSpec) -> String {
     match check {
         CheckSpec::Http(h) => {
             let fields = http_fields_from(h.clone());
@@ -295,6 +309,21 @@ mod tests {
             r#"data-action="/api/v1/targets/00000000-0000-0000-0000-000000000000/duplicate""#
         ));
         assert!(html.contains("3 monitors left on your plan"));
+    }
+
+    #[test]
+    fn a_pinned_family_is_named_with_what_the_copies_carry() {
+        assert!(!check_detail(&http()).contains("only"));
+        let tcp: CheckSpec = serde_json::from_str(
+            r#"{"type":"tcp","host":"db.example.com","port":5432,"timeout":3000,"ip_version":"ipv6"}"#,
+        )
+        .unwrap();
+        assert_eq!(check_detail(&tcp), "IPv6 only");
+        let CheckSpec::Http(mut h) = http() else {
+            unreachable!()
+        };
+        h.ip_version = IpVersion::Ipv4;
+        assert!(check_detail(&CheckSpec::Http(h)).ends_with(" · IPv4 only"));
     }
 
     #[test]

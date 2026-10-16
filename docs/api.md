@@ -214,6 +214,10 @@ An upgrade applies at once and is prorated by the provider; a downgrade or a can
 
 Tagged enum, `type` discriminator.
 
+### IP version
+
+`http`, `tcp` and `tls_cert` checks take `ip_version`: `any` (the default), `ipv4` or `ipv6`. With `any` the probe races IPv6 against IPv4 and keeps whichever connects first, so a broken AAAA record or an IPv6 firewall stays invisible while IPv4 works. `ipv4` asks DNS for A records only and `ipv6` for AAAA records only, and the check dials nothing else; an HTTP check keeps the family on every redirect hop. A name with no address in the chosen family fails the check with `dns: no IPv4 address` or `dns: no IPv6 address` rather than falling back to the other one. To watch both families, create one monitor for each. A host written as an IP address already decides the family, so pinning it to the other one is `400 INVALID_IP_VERSION`. Ping, DNS, domain expiry and flow checks take no `ip_version`.
+
 ### HTTP
 
 ```jsonc
@@ -230,7 +234,8 @@ Tagged enum, `type` discriminator.
   "body": null,
   "verify_tls": true,
   "basic_auth": null,                           // ["user", "pass"] or null
-  "bearer_token": null
+  "bearer_token": null,
+  "ip_version": "any"                           // any, ipv4 or ipv6
 }
 ```
 
@@ -261,7 +266,7 @@ The worker side caps the number of concurrent checks one tenant can fan at the s
 ### TCP
 
 ```jsonc
-{ "type": "tcp", "host": "db.internal", "port": 5432, "timeout": 2000 }
+{ "type": "tcp", "host": "db.internal", "port": 5432, "timeout": 2000, "ip_version": "any" }
 ```
 
 ### Ping (ICMP)
@@ -389,7 +394,8 @@ A set that changes something writes its result at once, so `down` or `degraded` 
   "server_name": null,         // optional SNI override; defaults to `host`
   "warn_days": 14,
   "critical_days": 7,
-  "timeout": 10000
+  "timeout": 10000,
+  "ip_version": "any"          // any, ipv4 or ipv6
 }
 ```
 
@@ -571,6 +577,7 @@ after it is created.
 - **SSRF guard** — `target address ... is in a blocked range`. Triggered when the URL or TCP host is an IP literal that resolves to loopback / private / link-local / reserved space (see [Configuration → `security.allow_private_targets`](configuration.md)). Hostname literals are checked again at connect time after DNS resolution, so DNS rebinding cannot bypass the guard.
 - **Redaction sentinel** — `basic_auth contains redaction sentinel — re-supply the real credential` or the equivalent for `bearer_token`. Rejected to prevent a `GET` → `PATCH` round-trip from silently overwriting the stored credential with `"***"`.
 - **Kind change** (`PATCH` only) — `a monitor's check type is fixed after creation; create a new monitor to watch something else` (`CHECK_KIND_IMMUTABLE`). The stored `check.type` is the only one a `PATCH` may send.
+- **IP version** — `2001:db8::1 is an IPv6 address; set ip_version to any or ipv6` (`INVALID_IP_VERSION`). A host written as an IP address can only be reached over its own family.
 - **TLS verification + credentials** — `verify_tls = false cannot be combined with basic_auth or bearer_token over https`. When verification is disabled any host presenting a forged certificate can collect the stored credential on every check interval. Set `verify_tls = true` (recommended) or remove the credential from the target.
 
 ## Notification channels
@@ -750,7 +757,7 @@ Every 4xx and 5xx response uses one wire shape:
 - `details` carries optional structured context (e.g., `{ "range": "127.0.0.0/8" }` for SSRF rejections).
 - `trace_id` is the W3C `traceparent` when tracing is enabled.
 
-Common codes: `INVALID_URL_SCHEME`, `INVALID_URL_FORMAT`, `INVALID_ADDRESS`, `SSRF_BLOCKED`, `INVALID_INTERVAL`, `INVALID_TIMEOUT`, `INVALID_TCP_PORT`, `INVALID_TCP_HOST`, `INVALID_PING_HOST`, `INVALID_HEARTBEAT_PARAMS`, `HEARTBEAT_NOT_PROBEABLE`, `INVALID_MANUAL_STATE`, `MANUAL_NOT_CONFIGURED`, `INVALID_STATUS_RANGE`, `INVALID_TLS_CERT_PARAMS`, `INVALID_DOMAIN_PARAMS`, `INVALID_FLOW_PARAMS`, `FLOW_CHECKS_DISABLED`, `NO_FLOW_CAPABLE_AGENT`, `SMS_ALERTS_DISABLED`, `INVALID_TLS_CRED_COMBO`, `INVALID_ALERT_CONFIG`, `REDACTION_SENTINEL`, `CHECK_KIND_IMMUTABLE`, `BULK_EMPTY`, `BULK_TOO_LARGE`, `BAD_TIME_RANGE`, `TARGET_NOT_FOUND`, `CHANNEL_NOT_FOUND`, `CHANNEL_NAME_TAKEN`, `CHANNEL_NAME_INVALID`, `CHANNEL_QUOTA_EXCEEDED`, `INVALID_CHANNEL_CONFIG`, `CHANNEL_TEST_FAILED`, `CIRCUIT_OPEN`, `DEPENDENCY_DOWN`, `INTERNAL`.
+Common codes: `INVALID_URL_SCHEME`, `INVALID_URL_FORMAT`, `INVALID_ADDRESS`, `SSRF_BLOCKED`, `INVALID_INTERVAL`, `INVALID_TIMEOUT`, `INVALID_TCP_PORT`, `INVALID_TCP_HOST`, `INVALID_PING_HOST`, `INVALID_HEARTBEAT_PARAMS`, `HEARTBEAT_NOT_PROBEABLE`, `INVALID_MANUAL_STATE`, `MANUAL_NOT_CONFIGURED`, `INVALID_STATUS_RANGE`, `INVALID_TLS_CERT_PARAMS`, `INVALID_DOMAIN_PARAMS`, `INVALID_IP_VERSION`, `INVALID_FLOW_PARAMS`, `FLOW_CHECKS_DISABLED`, `NO_FLOW_CAPABLE_AGENT`, `SMS_ALERTS_DISABLED`, `INVALID_TLS_CRED_COMBO`, `INVALID_ALERT_CONFIG`, `REDACTION_SENTINEL`, `CHECK_KIND_IMMUTABLE`, `BULK_EMPTY`, `BULK_TOO_LARGE`, `BAD_TIME_RANGE`, `TARGET_NOT_FOUND`, `CHANNEL_NOT_FOUND`, `CHANNEL_NAME_TAKEN`, `CHANNEL_NAME_INVALID`, `CHANNEL_QUOTA_EXCEEDED`, `INVALID_CHANNEL_CONFIG`, `CHANNEL_TEST_FAILED`, `CIRCUIT_OPEN`, `DEPENDENCY_DOWN`, `INTERNAL`.
 
 ### Quota, rate-limit and abuse codes
 

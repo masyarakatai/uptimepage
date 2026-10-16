@@ -1,6 +1,7 @@
 //! Per-check-kind field groups: what the form renders for an http, tcp, ping,
 //! heartbeat, dns, tls_cert, domain_expiry or flow monitor.
 
+use crate::domain::IpVersion;
 use crate::duration::exact_duration;
 
 /// Starting budget for the kinds that open a connection and wait on a third
@@ -28,6 +29,7 @@ pub struct HttpFields {
     pub headers: Vec<HeaderPair>,
     pub body: String,
     pub verify_tls: bool,
+    pub ip_version: &'static str,
 }
 
 impl Default for HttpFields {
@@ -49,6 +51,7 @@ impl Default for HttpFields {
             headers: Vec::new(),
             body: String::new(),
             verify_tls: true,
+            ip_version: IpVersion::Any.as_str(),
         }
     }
 }
@@ -57,6 +60,7 @@ pub struct TcpFields {
     pub host: String,
     pub port: u16,
     pub timeout_ms: u64,
+    pub ip_version: &'static str,
 }
 
 impl Default for TcpFields {
@@ -65,6 +69,7 @@ impl Default for TcpFields {
             host: String::new(),
             port: 0,
             timeout_ms: 3_000,
+            ip_version: IpVersion::Any.as_str(),
         }
     }
 }
@@ -194,6 +199,7 @@ pub struct TlsCertFields {
     pub warn_days: u32,
     pub critical_days: u32,
     pub timeout_ms: u64,
+    pub ip_version: &'static str,
 }
 
 impl Default for TlsCertFields {
@@ -205,6 +211,7 @@ impl Default for TlsCertFields {
             warn_days: 30,
             critical_days: 7,
             timeout_ms: ROUND_TRIP_TIMEOUT_MS,
+            ip_version: IpVersion::Any.as_str(),
         }
     }
 }

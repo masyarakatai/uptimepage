@@ -1400,6 +1400,7 @@ mod tests {
                 host: "db.example.test".into(),
                 port: 5432,
                 timeout: std::time::Duration::from_secs(3),
+                ip_version: crate::domain::IpVersion::Any,
             }),
             interval: std::time::Duration::from_secs(60),
             enabled: true,

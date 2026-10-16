@@ -75,6 +75,7 @@ pub(super) fn target_with_channel_recovery(channel_id: Uuid, notify_recovery: bo
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         }),
         interval: StdDuration::from_secs(30),
         enabled: true,

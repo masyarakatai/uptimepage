@@ -5,23 +5,29 @@ use tokio::net::TcpStream;
 
 use super::HttpClients;
 use super::connector::{dns_reason, tcp_reason};
+use crate::domain::IpVersion;
 use crate::net::happy_eyeballs;
 
-/// Resolves `host` and keeps only addresses the shared SSRF guard allows.
-/// Errors when resolution fails or nothing survives the filter, so callers
-/// always receive at least one address.
+/// Resolves `host` in `family` and keeps only addresses the shared SSRF guard
+/// allows. Errors when resolution fails or nothing survives the filter, so
+/// callers always receive at least one address.
 pub(crate) async fn allowed_addrs(
     host: &str,
+    family: IpVersion,
     clients: &HttpClients,
 ) -> anyhow::Result<Vec<IpAddr>> {
     let guard = clients.ssrf_guard();
     // The resolver's own Display names the query it failed, brace-printed
     // struct and all. No error class can name that, so it would reach the
     // customer verbatim and land in `ErrorClass::Other`.
-    let resolved = clients.resolver().resolve_addrs(host).await.map_err(|e| {
-        let reason = dns_reason(&e);
-        e.context(reason)
-    })?;
+    let resolved = clients
+        .resolver()
+        .resolve_addrs(host, family)
+        .await
+        .map_err(|e| {
+            let reason = dns_reason(&e);
+            e.context(reason)
+        })?;
     let addrs: Vec<IpAddr> = resolved.into_iter().filter(|ip| guard.allow(*ip)).collect();
     if addrs.is_empty() {
         anyhow::bail!("no allowed addresses for {host}");
@@ -29,15 +35,16 @@ pub(crate) async fn allowed_addrs(
     Ok(addrs)
 }
 
-/// Races a TCP connection to the allowed addresses of `host`, v6 and v4
-/// interleaved, giving up after `budget`.
+/// Races a TCP connection to the allowed addresses of `host` in `family`, v6
+/// and v4 interleaved, giving up after `budget`.
 pub(crate) async fn connect_via_guard(
     host: &str,
     port: u16,
+    family: IpVersion,
     clients: &HttpClients,
     budget: Duration,
 ) -> anyhow::Result<TcpStream> {
-    let addrs = allowed_addrs(host, clients)
+    let addrs = allowed_addrs(host, family, clients)
         .await?
         .into_iter()
         .map(|ip| SocketAddr::new(ip, port))

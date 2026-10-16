@@ -117,6 +117,7 @@ fn default_check(addr: SocketAddr) -> HttpCheck {
         verify_tls: false,
         basic_auth: None,
         bearer_token: None,
+        ip_version: uptimepage::domain::IpVersion::Any,
     }
 }
 

@@ -170,6 +170,40 @@ fn tcp_target(name: &str) -> Value {
 }
 
 #[tokio::test]
+async fn a_pinned_family_is_stored_and_read_back() {
+    let app = app();
+    let created = post_and_body(app.clone(), tcp_target("db")).await;
+    assert_eq!(created["check"]["ip_version"], "any");
+
+    let mut pinned = tcp_target("db v6");
+    pinned["check"]["ip_version"] = json!("ipv6");
+    let created = post_and_body(app.clone(), pinned).await;
+    let id = created["id"].as_str().unwrap();
+    let (status, read) = common::send_json(
+        app.clone(),
+        "GET",
+        &format!("/api/v1/targets/{id}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["check"]["ip_version"], "ipv6");
+
+    let mut literal = tcp_target("dns v6");
+    literal["check"]["host"] = json!("1.1.1.1");
+    literal["check"]["ip_version"] = json!("ipv6");
+    let (status, body) = common::send_json(app.clone(), "POST", "/api/v1/targets", literal).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "INVALID_IP_VERSION");
+    assert_eq!(body["error"]["field"], "check.ip_version");
+
+    let mut both = tcp_target("db both");
+    both["check"]["ip_version"] = json!("both");
+    let (status, body) = common::send_json(app, "POST", "/api/v1/targets", both).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+#[tokio::test]
 async fn create_without_owner_is_owned_by_the_caller() {
     let created = post_and_body(app(), tcp_target("db")).await;
     assert_eq!(

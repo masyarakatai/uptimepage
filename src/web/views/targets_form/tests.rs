@@ -219,6 +219,7 @@ fn smart_expected_status_round_trips_all_three_shapes() {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         };
         assert_eq!(http_fields_from(h).expected_status_input, want);
     }
@@ -249,6 +250,7 @@ fn headers_render_as_row_inputs() {
             verify_tls: true,
             basic_auth: None,
             bearer_token: None,
+            ip_version: crate::domain::IpVersion::Any,
         }),
         interval: Duration::from_secs(60),
         enabled: true,
@@ -541,6 +543,7 @@ fn edit_form_renders_target_with_sealed_auth() {
             verify_tls: true,
             basic_auth: Some((REDACTED.into(), REDACTED.into())),
             bearer_token: Some(REDACTED.into()),
+            ip_version: crate::domain::IpVersion::Any,
         }),
         interval: Duration::from_secs(60),
         enabled: true,
@@ -579,6 +582,7 @@ fn edit_form_maps_tcp_target_fields() {
             host: "db.example.com".into(),
             port: 5432,
             timeout: Duration::from_millis(2_500),
+            ip_version: crate::domain::IpVersion::Any,
         }),
         interval: Duration::from_secs(30),
         enabled: false,
@@ -621,6 +625,7 @@ fn edit_form_maps_tls_cert_target_fields() {
             warn_days: 14,
             critical_days: 3,
             timeout: Duration::from_millis(4_500),
+            ip_version: crate::domain::IpVersion::Ipv6,
         }),
         interval: Duration::from_secs(3_600),
         enabled: true,
@@ -646,6 +651,17 @@ fn edit_form_maps_tls_cert_target_fields() {
     assert_eq!(form.tls_cert.warn_days, 14);
     assert_eq!(form.tls_cert.critical_days, 3);
     assert_eq!(form.tls_cert.timeout_ms, 4_500);
+    assert_eq!(form.tls_cert.ip_version, "ipv6");
+    let html = FormPage {
+        active_tab: "targets",
+        form,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains(r#"name="tls_ip_version" value="ipv6" class="sr-only" checked"#));
+    // Each kind's rail is its own radio group, and only the stored one is pinned.
+    assert!(html.contains(r#"name="tcp_ip_version" value="any" class="sr-only" checked"#));
+    assert!(!html.contains(r#"name="tls_ip_version" value="any" class="sr-only" checked"#));
 }
 
 #[test]
