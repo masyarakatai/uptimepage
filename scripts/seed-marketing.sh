@@ -467,51 +467,53 @@ echo "==> Postgres: 10 notification channels"
 # created_at is set per row: the column defaults to now(), so a bulk insert
 # stamps all ten with an identical second and the CREATED column photographs as
 # a fixture import. Each channel instead dates from when a team would have added
-# it — chat first, paging once on-call existed, ntfy last.
+# it — chat first, paging once on-call existed, ntfy last. Each row also carries
+# its own minutes and seconds: whole-hour offsets would give every row the
+# seed's minute and second.
 pg <<SQL
 INSERT INTO notification_channels
   (org_id, name, kind, config, external_ref, enabled, disabled_reason, verified_at,
    created_at, updated_at) VALUES
   ('${ORG}'::uuid, 'Engineering Slack', 'slack',
    '{"type":"slack","webhook_url":"https://hooks.slack.com/services/T0000/B0000/XXXXXXXXXXXXXXXXXXXXXXXX"}'::jsonb,
-   NULL, true, NULL, now() - interval '58 days 3 hours',
-   now() - interval '58 days 4 hours', now() - interval '58 days 3 hours'),
+   NULL, true, NULL, now() - interval '58 days 3 hours 17 minutes 42 seconds',
+   now() - interval '58 days 4 hours 17 minutes 42 seconds', now() - interval '58 days 3 hours 17 minutes 42 seconds'),
   ('${ORG}'::uuid, 'Ops email', 'email',
    '{"type":"email","to":"ops@uptimepage.dev"}'::jsonb,
-   NULL, true, NULL, now() - interval '57 days 6 hours',
-   now() - interval '57 days 7 hours', now() - interval '57 days 6 hours'),
+   NULL, true, NULL, now() - interval '57 days 6 hours 41 minutes 9 seconds',
+   now() - interval '57 days 7 hours 41 minutes 9 seconds', now() - interval '57 days 6 hours 41 minutes 9 seconds'),
   ('${ORG}'::uuid, 'On-call PagerDuty', 'pagerduty',
    '{"type":"pagerduty","routing_key":"00000000000000000000000000000000"}'::jsonb,
-   NULL, true, NULL, now() - interval '52 days 2 hours',
-   now() - interval '52 days 3 hours', now() - interval '52 days 2 hours'),
+   NULL, true, NULL, now() - interval '52 days 2 hours 8 minutes 55 seconds',
+   now() - interval '52 days 3 hours 8 minutes 55 seconds', now() - interval '52 days 2 hours 8 minutes 55 seconds'),
   ('${ORG}'::uuid, 'On-call SMS', 'sms',
    '{"type":"sms","provider":"twilio","to":"+358401234567","from":"+14155550142","account_sid":"ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","auth_token":"fixture-twilio-auth-token"}'::jsonb,
-   NULL, true, NULL, now() - interval '51 days 5 hours',
-   now() - interval '51 days 6 hours', now() - interval '51 days 5 hours'),
+   NULL, true, NULL, now() - interval '51 days 5 hours 33 minutes 27 seconds',
+   now() - interval '51 days 6 hours 33 minutes 27 seconds', now() - interval '51 days 5 hours 33 minutes 27 seconds'),
   ('${ORG}'::uuid, 'Runbook automation', 'webhook',
    '{"type":"webhook","url":"https://hooks.internal.uptimepage.dev/uptime","headers":{"X-Source":"uptimepage"},"secret":"fixture-webhook-signing-secret"}'::jsonb,
-   NULL, true, NULL, now() - interval '44 days 1 hour',
-   now() - interval '44 days 2 hours', now() - interval '44 days 1 hour'),
+   NULL, true, NULL, now() - interval '44 days 1 hour 52 minutes 14 seconds',
+   now() - interval '44 days 2 hours 52 minutes 14 seconds', now() - interval '44 days 1 hour 52 minutes 14 seconds'),
   ('${ORG}'::uuid, 'Community Discord', 'discord',
    '{"type":"discord","webhook_url":"https://discord.com/api/webhooks/000000000000000000/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"}'::jsonb,
-   NULL, true, NULL, now() - interval '39 days 8 hours',
-   now() - interval '39 days 9 hours', now() - interval '39 days 8 hours'),
+   NULL, true, NULL, now() - interval '39 days 8 hours 26 minutes 3 seconds',
+   now() - interval '39 days 9 hours 26 minutes 3 seconds', now() - interval '39 days 8 hours 26 minutes 3 seconds'),
   ('${ORG}'::uuid, 'Platform Teams', 'msteams',
    '{"type":"msteams","webhook_url":"https://uptimepage.webhook.office.com/webhookb2/00000000-0000-0000-0000-000000000000@00000/IncomingWebhook/0000000000000000/00000000-0000-0000-0000-000000000000"}'::jsonb,
-   NULL, true, NULL, now() - interval '22 days 4 hours',
-   now() - interval '22 days 5 hours', now() - interval '22 days 4 hours'),
+   NULL, true, NULL, now() - interval '22 days 4 hours 4 minutes 38 seconds',
+   now() - interval '22 days 5 hours 4 minutes 38 seconds', now() - interval '22 days 4 hours 4 minutes 38 seconds'),
   ('${ORG}'::uuid, 'Status bot', 'telegram_app',
    '{"type":"telegram_app","chat_id":"-1002104857392","chat_title":"Uptimepage Ops"}'::jsonb,
    '-1002104857392', true, NULL, NULL,
-   now() - interval '19 days 2 hours', now() - interval '19 days 2 hours'),
+   now() - interval '19 days 2 hours 47 minutes 51 seconds', now() - interval '19 days 2 hours 47 minutes 51 seconds'),
   ('${ORG}'::uuid, 'Ops phone', 'pushover',
    '{"type":"pushover","token":"fixture-pushover-app-token","user":"fixture-pushover-user-key","emergency":true}'::jsonb,
-   NULL, true, NULL, now() - interval '17 days 7 hours',
-   now() - interval '17 days 8 hours', now() - interval '17 days 7 hours'),
+   NULL, true, NULL, now() - interval '17 days 7 hours 11 minutes 19 seconds',
+   now() - interval '17 days 8 hours 11 minutes 19 seconds', now() - interval '17 days 7 hours 11 minutes 19 seconds'),
   ('${ORG}'::uuid, 'Self-hosted ntfy', 'ntfy',
    '{"type":"ntfy","server_url":"https://ntfy.uptimepage.dev","topic":"uptime-alerts","access_token":"tk_fixture-ntfy-token"}'::jsonb,
-   NULL, true, NULL, now() - interval '9 days 3 hours',
-   now() - interval '9 days 4 hours', now() - interval '9 days 3 hours');
+   NULL, true, NULL, now() - interval '9 days 3 hours 38 minutes 46 seconds',
+   now() - interval '9 days 4 hours 38 minutes 46 seconds', now() - interval '9 days 3 hours 38 minutes 46 seconds');
 SQL
 
 echo "==> Postgres: route monitors to channels"
