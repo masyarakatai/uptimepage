@@ -215,9 +215,7 @@
   <section class="sticker-card overflow-hidden" data-incident-id="{{ id }}">
     <div class="flex items-baseline justify-between px-5 pt-5 pb-3">
       <h2 class="panel-label">status updates</h2>
-      <span class="cli-brackets font-mono text-xs text-quiet">
-        {% if visibility == "public" %}live{% else %}draft{% endif %}
-      </span>
+      <span class="cli-brackets font-mono text-xs text-quiet">{% if visibility == "public" %}live{% else %}draft{% endif %}</span>
     </div>
     {% if public_updates.is_empty() %}
     <p class="px-5 pb-4 font-mono text-xs text-quiet"># nothing posted yet</p>

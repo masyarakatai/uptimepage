@@ -2696,9 +2696,10 @@
        numerics (`.usage-row__nums`) — same surface (muted text), same
        intensity. The colored-CTA bracket on `.sticker-btn--*` (0.7) and
        the explicit-color brand bracket on `.nav-brand__mark` stay
-       inline; see feedback_bracket_pseudo_dont_generalize memory. */
-    .cli-brackets::before { content: "[ "; opacity: 0.55; }
-    .cli-brackets::after  { content: " ]"; opacity: 0.55; }
+       inline; see feedback_bracket_pseudo_dont_generalize memory.
+       No-break spaces keep each bracket on its label's line. */
+    .cli-brackets::before { content: "[\00a0"; opacity: 0.55; }
+    .cli-brackets::after  { content: "\00a0]"; opacity: 0.55; }
 
     /* Collapsible `--help` block: one quiet prompt line until expanded. */
     .sm-help-summary { list-style: none; }
