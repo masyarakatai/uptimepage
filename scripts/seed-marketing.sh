@@ -500,12 +500,10 @@ INSERT INTO notification_channels
    '{"type":"msteams","webhook_url":"https://uptimepage.webhook.office.com/webhookb2/00000000-0000-0000-0000-000000000000@00000/IncomingWebhook/0000000000000000/00000000-0000-0000-0000-000000000000"}'::jsonb,
    NULL, true, NULL, now() - interval '22 days 4 hours',
    now() - interval '22 days 5 hours', now() - interval '22 days 4 hours'),
-  -- Disabled with a reason: the operator UI renders the state + why. updated_at
-  -- is recent because unlinking is what last touched it.
   ('${ORG}'::uuid, 'Status bot', 'telegram_app',
    '{"type":"telegram_app","chat_id":"-1002104857392","chat_title":"Uptimepage Ops"}'::jsonb,
-   '-1002104857392', false, 'unlinked from the Telegram side', NULL,
-   now() - interval '19 days 2 hours', now() - interval '6 days 3 hours'),
+   '-1002104857392', true, NULL, NULL,
+   now() - interval '19 days 2 hours', now() - interval '19 days 2 hours'),
   ('${ORG}'::uuid, 'Ops phone', 'pushover',
    '{"type":"pushover","token":"fixture-pushover-app-token","user":"fixture-pushover-user-key","emergency":true}'::jsonb,
    NULL, true, NULL, now() - interval '17 days 7 hours',
@@ -536,7 +534,7 @@ UPDATE targets t SET
          OR t.tags @> ARRAY['domain'] THEN ARRAY['Ops email','Engineering Slack']
        WHEN t.tags @> ARRAY['db']     THEN ARRAY['Engineering Slack','Runbook automation','Ops phone']
        WHEN t.tags @> ARRAY['email']  THEN ARRAY['Engineering Slack','Ops email']
-       WHEN t.tags @> ARRAY['ops']    THEN ARRAY['Self-hosted ntfy','Engineering Slack']
+       WHEN t.tags @> ARRAY['ops']    THEN ARRAY['Self-hosted ntfy','Engineering Slack','Status bot']
        WHEN t.group_name = 'Edge'         THEN ARRAY['Engineering Slack','Community Discord']
        WHEN t.group_name = 'Integrations' THEN ARRAY['Engineering Slack','Platform Teams']
        WHEN t.group_name = 'Infrastructure' THEN ARRAY['Engineering Slack','Runbook automation']

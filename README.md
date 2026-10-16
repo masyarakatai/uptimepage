@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="static/marketing/og.png" alt="uptimepage" width="640">
+<img src="static/marketing/blog-maintenance-day.webp" alt="A status page component with 90 days of uptime and the tooltip for one day." width="760">
 
 # uptimepage
 
@@ -126,8 +126,8 @@ Transport secrets are sealed at rest and never echoed back.
 
 <div align="center">
 
-<img src="static/marketing/notification-channels-slack-pagerduty-sms.webp" alt="The notification channels list: Slack, PagerDuty, SMS, email, webhook, Discord, Teams, Pushover, ntfy, and Telegram, each enabled or disabled." width="900">
-<br><sub>Alerting — Slack, PagerDuty, SMS, webhook, and seven more</sub>
+<img src="static/marketing/notification-channels-slack-pagerduty-sms.webp" alt="The notification channels list: Slack, PagerDuty, SMS, email, webhook, Discord, Teams, Pushover, ntfy, and Telegram, all enabled." width="900">
+<br><sub>Alerting — Slack, PagerDuty, SMS, webhook, and six more</sub>
 
 </div>
 

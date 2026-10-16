@@ -24,8 +24,8 @@ pub const SHOTS: &[Shot] = &[
               and total checks, above a list of monitors with live status and \
               latency sparklines.",
         caption: "Dashboard — uptime, response time, and every monitor at a glance",
-        width: 2014,
-        height: 1611,
+        width: 2096,
+        height: 1677,
     },
     Shot {
         id: "shot-monitors",
@@ -33,8 +33,8 @@ pub const SHOTS: &[Shot] = &[
         alt: "The monitors list: checks grouped by environment, each with live \
               status, type, tags, last check time, and 30-day uptime.",
         caption: "Monitors — grouped by environment, filterable by type, tag, or owner",
-        width: 2014,
-        height: 1611,
+        width: 2096,
+        height: 1677,
     },
     Shot {
         id: "shot-monitor-detail",
@@ -42,18 +42,18 @@ pub const SHOTS: &[Shot] = &[
         alt: "One monitor in detail: uptime and check counts for the last 24 \
               hours, plus median latency charted per region.",
         caption: "Monitor detail — latency broken down by region",
-        width: 2014,
-        height: 1611,
+        width: 2096,
+        height: 1677,
     },
     Shot {
         id: "shot-channels",
         file: "marketing/notification-channels-slack-pagerduty-sms.webp",
         alt: "The notification channels list: Slack, PagerDuty, SMS, email, \
-              webhook, Discord, Teams, Pushover, ntfy, and Telegram, each \
-              enabled or disabled.",
-        caption: "Alerting — Slack, PagerDuty, SMS, webhook, and seven more",
-        width: 2014,
-        height: 1611,
+              webhook, Discord, Teams, Pushover, ntfy, and Telegram, all \
+              enabled.",
+        caption: "Alerting — Slack, PagerDuty, SMS, webhook, and six more",
+        width: 2096,
+        height: 1677,
     },
     Shot {
         id: "shot-create-channel",
@@ -61,8 +61,8 @@ pub const SHOTS: &[Shot] = &[
         alt: "The new notification-channel form: choose a channel type such as \
               Slack, Discord, email, Telegram, PagerDuty, SMS, or webhook.",
         caption: "Adding a channel — pick a transport, paste one credential",
-        width: 2014,
-        height: 1611,
+        width: 2096,
+        height: 1677,
     },
     Shot {
         id: "shot-status",
@@ -70,8 +70,8 @@ pub const SHOTS: &[Shot] = &[
         alt: "A public status page reading All Systems Operational, with 90-day \
               uptime history per component.",
         caption: "Public status page — 90 days of history per component",
-        width: 2014,
-        height: 1611,
+        width: 2096,
+        height: 1677,
     },
 ];
 
