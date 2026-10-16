@@ -136,6 +136,7 @@ mod tests {
     fn switcher_lists_orgs_and_marks_active() {
         let html = ctx(0, true).render().unwrap();
         assert!(html.contains("data-navmenu"));
+        assert!(html.contains("nav-org__slug"));
         assert!(html.contains(r#"data-org-switch="00000000-0000-0000-0000-000000000002""#));
         assert_eq!(html.matches(r#"aria-current="true""#).count(), 1);
     }
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn single_org_omits_slug_and_switcher() {
         let html = ctx(0, false).render().unwrap();
-        assert!(!html.contains("nav-root__slug"));
+        assert!(!html.contains("nav-org__slug"));
         assert!(!html.contains("data-org-switch"));
     }
 

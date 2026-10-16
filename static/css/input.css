@@ -1512,6 +1512,7 @@
         @apply text-sm;
         font-family: var(--font-mono);
         color: var(--theme-text-muted);
+        white-space: nowrap;
         transition: color 120ms ease;
     }
     .nav-link:hover     { color: var(--theme-accent); }
@@ -1522,6 +1523,15 @@
     .nav-link--active:hover { color: var(--theme-text); }
 
     .nav-root { display: inline-flex; align-items: center; gap: 0.5rem; }
+    /* Columns: `[ `, slug, caret, ` ]`. Only the slug track can shrink, and
+       its floor is the shortest valid slug, so the bar gives up slug
+       characters before anything wraps or overflows. */
+    .nav-org {
+        display: inline-grid;
+        grid-template-columns: auto minmax(3ch, max-content) auto auto;
+        align-items: center;
+    }
+    .nav-org__slug { overflow: hidden; text-overflow: ellipsis; }
     /* Right cluster as one hairline rail, same register as .sm-rail: a framed
        toolbar of borderless segments that fill on hover, instead of three
        separate boxes. */
@@ -1537,6 +1547,7 @@
         background: transparent;
         color: var(--theme-text-muted);
         font-family: var(--font-mono);
+        white-space: nowrap;
         text-decoration: none;
         cursor: pointer;
         transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
@@ -1623,6 +1634,16 @@
         .nav-search__keyhint { display: none; }
         /* Drop the redundant "operational" copy; the LED already carries it. */
         .nav-rail__seg--static .nav-rail__label { display: none; }
+    }
+    /* From lg to xl the inline links leave the org switcher no room, so the
+       field collapses there too, but only when there is a switcher. */
+    @media (min-width: 1024px) and (max-width: 1279.98px) {
+        nav:has(.nav-org) .nav-search { min-width: 0; gap: 0; padding: 0; width: 1.75rem; justify-content: center; }
+        nav:has(.nav-org) :is(.nav-search__text, .nav-search__keyhint) { display: none; }
+    }
+    /* Phones: the mark alone leaves the org switcher room for its slug. */
+    @media (max-width: 639.98px) {
+        nav:has(.nav-org) .nav-brand__word { display: none; }
     }
 
     /* Account avatar: initials in a circular chip, image-ready (a future

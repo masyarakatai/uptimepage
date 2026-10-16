@@ -1,9 +1,9 @@
 {% if show_switcher %}
 <div class="monitors-menu" data-navmenu>
-    <button type="button" class="nav-link" data-navmenu-toggle
-            aria-haspopup="menu" aria-expanded="false"
+    <button type="button" class="nav-link nav-org cli-brackets" data-navmenu-toggle
+            aria-haspopup="menu" aria-expanded="false" title="{{ slug }}"
             aria-label="Switch organization — current: {{ slug }}">
-        <span class="cli-brackets">{{ slug }} ▾</span>
+        <span class="nav-org__slug">{{ slug }}</span>&nbsp;▾
     </button>
     <div class="monitors-popover" role="menu" hidden data-navmenu-panel>
         {% for o in orgs %}
