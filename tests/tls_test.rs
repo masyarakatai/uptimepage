@@ -1,9 +1,10 @@
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::http::Version;
+use axum::response::Redirect;
 use axum::routing::get;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -17,7 +18,8 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::common::{
-    PRELOAD_HINT, default_http_check, link_header, router_with, spawn_self_signed_tls_router,
+    PRELOAD_HINT, default_http_check, link_header, router_with, spawn_router_on,
+    spawn_self_signed_tls_router, spawn_self_signed_tls_router_on,
     spawn_truncated_chain_tls_router, test_client,
 };
 
@@ -53,6 +55,27 @@ async fn verify_tls_true_rejects_self_signed() {
     assert_eq!(
         err, "certificate self-signed",
         "expected self-signed reason, got {err}"
+    );
+}
+
+/// `Uri` hands an IPv6 literal over in brackets, which once sent it to the
+/// resolver as a name and failed every such check with a DNS error.
+#[tokio::test]
+async fn an_ipv6_literal_host_connects_and_follows_its_redirect() {
+    let https = spawn_self_signed_tls_router_on(router(), Ipv6Addr::LOCALHOST.into()).await;
+    let upgrade = Router::new().route("/", get(Redirect::permanent(&format!("https://{https}/"))));
+    let http = spawn_router_on(upgrade, Ipv6Addr::LOCALHOST.into()).await;
+    let url = Url::parse(&format!("http://{http}/")).unwrap();
+    let mut check = default_http_check(url, ExpectedStatus::Exact(200));
+    check.follow_redirects = true;
+    check.verify_tls = false;
+
+    let result = execute_http_check(Uuid::now_v7(), Uuid::nil(), &check, &test_client()).await;
+
+    assert_up(&result);
+    assert!(
+        result.tls_ms.is_some(),
+        "the redirect lands on the https hop"
     );
 }
 

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1017,7 +1017,11 @@ pub fn router_with(headers: HeaderMap, only: Version) -> Router {
 }
 
 pub async fn spawn_router(router: Router) -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    spawn_router_on(router, Ipv4Addr::LOCALHOST.into()).await
+}
+
+pub async fn spawn_router_on(router: Router, ip: IpAddr) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind((ip, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
@@ -1026,6 +1030,10 @@ pub async fn spawn_router(router: Router) -> SocketAddr {
 }
 
 pub async fn spawn_self_signed_tls_router(router: Router) -> SocketAddr {
+    spawn_self_signed_tls_router_on(router, Ipv4Addr::LOCALHOST.into()).await
+}
+
+pub async fn spawn_self_signed_tls_router_on(router: Router, ip: IpAddr) -> SocketAddr {
     use axum_server::tls_rustls::RustlsConfig;
     use rcgen::generate_simple_self_signed;
 
@@ -1039,7 +1047,7 @@ pub async fn spawn_self_signed_tls_router(router: Router) -> SocketAddr {
     .await
     .expect("rustls config");
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let listener = std::net::TcpListener::bind((ip, 0)).expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("local_addr");
 

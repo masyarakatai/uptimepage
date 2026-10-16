@@ -107,7 +107,7 @@ impl Service<Uri> for SsrfHttpConnector {
             // `Uri::host()` returns IPv6 literals with their surrounding
             // brackets (e.g. `[fc00::1]`); `lookup_host` expects the bracket-
             // less form. Share `domain::check::unbracket` with the abuse / SSRF
-            // hostname checks so all three normalise identically.
+            // hostname checks and the probe so they all normalise identically.
             let host = crate::domain::check::unbracket(
                 dst.host()
                     .ok_or_else(|| io::Error::other("missing host in URI"))?,

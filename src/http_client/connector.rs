@@ -277,6 +277,9 @@ pub(crate) async fn timed_connect(
     is_https: bool,
     deadline: tokio::time::Instant,
 ) -> Result<TimedConnection, ConnectError> {
+    // `Uri::host()` keeps an IPv6 literal's brackets, which the resolver
+    // would look up as a name and `ServerName` rejects.
+    let host = crate::domain::check::unbracket(host);
     let dns_start = Instant::now();
     let addrs: Vec<SocketAddr> = tokio::time::timeout_at(deadline, p.resolver.resolve_addrs(host))
         .await
@@ -733,6 +736,84 @@ mod tests {
             remote_ip: None,
         };
         assert_eq!(tls.partial_timings(), (Some(12), Some(45)));
+    }
+
+    /// The literal arrives as `Uri::host()` gives it, in brackets. It has to be
+    /// dialled without a lookup and the certificate checked against the address.
+    #[tokio::test]
+    async fn an_ipv6_literal_is_dialled_and_verified_as_an_address() {
+        use std::net::Ipv6Addr;
+        use std::sync::Arc;
+
+        use metrics::Histogram;
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio::net::TcpListener;
+        use tokio_rustls::TlsAcceptor;
+
+        use crate::config::DnsConfig;
+
+        crate::http_client::client::install_default_crypto_provider();
+        let cases = [
+            ("::1", None),
+            ("localhost", Some("certificate hostname mismatch")),
+        ]
+        .map(|(san, want)| {
+            let leaf = rcgen::generate_simple_self_signed(vec![san.to_owned()]).expect("cert");
+            (san, leaf, want)
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        for (_, leaf, _) in &cases {
+            roots.add(leaf.cert.der().clone()).expect("trust the leaf");
+        }
+        let tls = TlsConnector::from(Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        ));
+        let resolver = HickoryDnsResolver::new(&DnsConfig {
+            cache_size: 1,
+            positive_ttl_secs: 1,
+            negative_ttl_secs: 1,
+            servers: vec!["127.0.0.1:9".into()],
+        })
+        .expect("resolver");
+        let noop = Histogram::noop();
+        let params = ConnectParams {
+            resolver: &resolver,
+            ssrf_guard: SsrfGuard::new(true),
+            tls: &tls,
+            connect_ms: &noop,
+            tls_ms: &noop,
+            connect_timeout: Duration::from_secs(2),
+            tcp_keepalive: None,
+        };
+
+        for (san, leaf, want) in cases {
+            let server = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![leaf.cert.der().clone()],
+                    PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                        leaf.signing_key.serialize_der(),
+                    )),
+                )
+                .expect("server config");
+            let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))
+                .await
+                .expect("bind [::1]");
+            let port = listener.local_addr().expect("local_addr").port();
+            tokio::spawn(async move {
+                let (tcp, _) = listener.accept().await.expect("accept");
+                let _ = TlsAcceptor::from(Arc::new(server)).accept(tcp).await;
+            });
+
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let reason = timed_connect(&params, "[::1]", port, true, deadline)
+                .await
+                .err()
+                .map(|e| e.reason());
+            assert_eq!(reason, want, "certificate for {san}");
+        }
     }
 
     #[test]
