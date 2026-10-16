@@ -168,12 +168,18 @@ pub fn request_origin(headers: &HeaderMap, base_domain: &str) -> Option<String> 
                 .filter(|s| matches!(*s, "http" | "https"))
                 .unwrap_or("https");
             // The port stays: a deploy off 443 still has to publish links that
-            // resolve. Anything but digits is not one, so it is dropped rather
-            // than pasted into a URL.
+            // resolve. The scheme's default port goes, since a proxy that
+            // forwards `Host` as `acme.example.com:443` names the same origin
+            // and would otherwise put the port in every published link.
+            // Anything but a valid port number is dropped rather than pasted
+            // into a URL.
+            let default_port = if scheme == "http" { 80 } else { 443 };
             let port = raw
                 .split_once(':')
                 .map(|(_, p)| p)
-                .filter(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+                .filter(|p| p.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|p| p.parse::<u16>().ok())
+                .filter(|&p| p != 0 && p != default_port);
             let host = normalize_host(raw).to_ascii_lowercase();
             Some(match port {
                 Some(port) => format!("{scheme}://{host}:{port}"),
@@ -1069,13 +1075,56 @@ mod tests {
             .as_deref(),
             Some("https://acme.example.com:8080")
         );
-        for bogus in ["acme.example.com:", "acme.example.com:80a"] {
+        for bogus in [
+            "acme.example.com:",
+            "acme.example.com:80a",
+            "acme.example.com:+8080",
+            "acme.example.com:0",
+            "acme.example.com:65536",
+        ] {
             assert_eq!(
                 request_origin(&headers(&[("host", bogus)]), "example.com").as_deref(),
                 Some("https://acme.example.com"),
                 "{bogus}"
             );
         }
+    }
+
+    #[test]
+    fn request_origin_drops_the_schemes_default_port() {
+        // A proxy that forwards Host with the default port names the same
+        // origin; keeping it would put `:443` in every canonical, og:url and
+        // feed link the page publishes.
+        for host in ["acme.example.com:443", "acme.example.com:0443"] {
+            assert_eq!(
+                request_origin(&headers(&[("host", host)]), "example.com").as_deref(),
+                Some("https://acme.example.com"),
+                "{host}"
+            );
+        }
+        assert_eq!(
+            request_origin(
+                &headers(&[
+                    ("host", "acme.example.com:80"),
+                    ("x-forwarded-proto", "http")
+                ]),
+                "example.com"
+            )
+            .as_deref(),
+            Some("http://acme.example.com")
+        );
+        // Only the default for the scheme in use: 443 under http is a real port.
+        assert_eq!(
+            request_origin(
+                &headers(&[
+                    ("host", "acme.example.com:443"),
+                    ("x-forwarded-proto", "http")
+                ]),
+                "example.com"
+            )
+            .as_deref(),
+            Some("http://acme.example.com:443")
+        );
     }
 
     #[test]
