@@ -2,7 +2,7 @@ apiVersion: v2
 name: uptimepage
 description: Self-hosted uptime monitoring, incidents, and status pages
 type: application
-version: 0.7.0
+version: 0.7.1
 appVersion: "1.4.0"
 # `-0` so vendor builds (v1.31.1-gke.x) satisfy the constraint.
 kubeVersion: ">=1.29.0-0"
@@ -37,8 +37,16 @@ annotations:
       url: https://uptimepage.dev/static/marketing/uptime-monitoring-dashboard.webp
     - title: Monitors list
       url: https://uptimepage.dev/static/marketing/uptime-monitors-list.webp
+    - title: Latency by region
+      url: https://uptimepage.dev/static/marketing/monitor-latency-by-region.webp
+    - title: Notification channels
+      url: https://uptimepage.dev/static/marketing/notification-channels-slack-pagerduty-sms.webp
+    - title: Adding a notification channel
+      url: https://uptimepage.dev/static/marketing/add-notification-channel.webp
     - title: Public status page
       url: https://uptimepage.dev/static/marketing/public-status-page.webp
+    - title: Status page day history
+      url: https://uptimepage.dev/static/marketing/blog-maintenance-day.webp
   artifacthub.io/changes: |
     - kind: changed
       description: Tracks application 1.4.0

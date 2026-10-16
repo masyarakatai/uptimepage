@@ -442,7 +442,7 @@ pub const DOCS: &[DocPage] = &[
         section: Section::SelfHosting,
         scope: Scope::SelfHosting,
         created: "2026-07-26",
-        lastmod: "2026-10-11",
+        lastmod: "2026-10-16",
         source: include_str!("../../docs/kubernetes.md"),
         dir: "",
     },
