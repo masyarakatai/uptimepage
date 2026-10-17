@@ -11,13 +11,14 @@ use axum::routing::get;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use uptimepage::domain::{CheckResult, CheckStatus, OrgId, Target};
+use uptimepage::domain::{
+    CheckResult, CheckSpec, CheckStatus, OrgId, Target, humanize_check_error,
+};
 use uptimepage::error::{AppError, Result as SmResult};
 use uptimepage::pipeline::{BatcherConfig, ResultBatcher};
 use uptimepage::scheduler::{Scheduler, TargetRegistry, stop_probing};
 use uptimepage::storage::admin::EnabledTargetSource;
 use uptimepage::storage::{InMemorySink, InMemoryTargetStore};
-use uptimepage::worker::circuit_breaker::CIRCUIT_OPEN_REASON;
 use uptimepage::worker::{ResultFanout, WorkerPool};
 
 use crate::common::{breaker_cfg, http_target, scheduler_cfg, spawn_router, test_client};
@@ -505,11 +506,174 @@ async fn scheduler_shutdown_observed_during_slow_refresh() {
     );
 }
 
+/// `/` accepts the request and never answers, like an origin whose workers
+/// hang; `/ok` answers.
+async fn spawn_hanging() -> std::net::SocketAddr {
+    let app = Router::new()
+        .route("/", get(std::future::pending::<&'static str>))
+        .route("/ok", get(|| async { "ok" }));
+    spawn_router(app).await
+}
+
+fn with_timeout(mut target: Target, timeout: Duration) -> Target {
+    if let CheckSpec::Http(http) = &mut target.check {
+        http.timeout = timeout;
+    }
+    target
+}
+
 #[tokio::test]
-async fn worker_pool_breaker_opens_after_failures() {
+async fn worker_pool_breaker_opens_on_timeouts_and_repeats_the_cause() {
+    let addr = spawn_hanging().await;
+    let target = with_timeout(http_target(addr, "/", 100), Duration::from_millis(150));
+    let store = Arc::new(InMemoryTargetStore::from_vec(vec![target]));
+    let registry = Arc::new(TargetRegistry::new(store));
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let pool = test_pool(tx);
+    let scheduler = Arc::new(Scheduler::new(registry, pool.clone(), scheduler_cfg(30)));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    let mut timeouts = 0;
+    let mut skipped = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline && skipped.is_none() {
+        if let Ok(Some(r)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+            if r.is_served_stale() {
+                skipped = Some(r);
+            } else if r.error.as_deref() == Some("no response") {
+                timeouts += 1;
+            }
+        }
+    }
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+
+    let skipped = skipped.expect("breaker never opened");
+    assert!(timeouts >= 2, "expected ≥2 timeouts, got {timeouts}");
+    assert_eq!(skipped.status, CheckStatus::Error);
+    assert_eq!(
+        humanize_check_error(skipped.error.as_deref().unwrap()),
+        "connected, but no response (timed out)"
+    );
+    assert_eq!(pool.open_breakers(), 1);
+
+    // A check-now that timed out again leaves the breaker, even with the
+    // status line in (a 200 whose body hangs); one that got an answer resets it.
+    let timed_out = CheckResult::error(skipped.target_id, skipped.org_id, "no response");
+    pool.note_check_now(skipped.target_id, &timed_out);
+    assert_eq!(pool.open_breakers(), 1);
+    let body_hung = CheckResult {
+        response_code: Some(200),
+        error: Some("body timeout".into()),
+        ..timed_out.clone()
+    };
+    pool.note_check_now(skipped.target_id, &body_hung);
+    assert_eq!(pool.open_breakers(), 1);
+    let answered = CheckResult {
+        status: CheckStatus::Up,
+        error: None,
+        ..timed_out
+    };
+    pool.note_check_now(skipped.target_id, &answered);
+    assert_eq!(pool.open_breakers(), 0);
+}
+
+#[tokio::test]
+async fn a_hanging_monitor_never_skips_another_on_the_same_host() {
+    let addr = spawn_hanging().await;
+    let hanging = with_timeout(http_target(addr, "/", 100), Duration::from_millis(150));
+    let healthy = http_target(addr, "/ok", 100);
+    let (hanging_id, healthy_id) = (hanging.id, healthy.id);
+    let store = Arc::new(InMemoryTargetStore::from_vec(vec![hanging, healthy]));
+    let registry = Arc::new(TargetRegistry::new(store));
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let pool = test_pool(tx);
+    let scheduler = Arc::new(Scheduler::new(registry, pool.clone(), scheduler_cfg(30)));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    let mut hanging_skipped = 0;
+    let mut healthy_up = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline && hanging_skipped < 2 {
+        if let Ok(Some(r)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+            if r.target_id == healthy_id {
+                assert_eq!(r.status, CheckStatus::Up, "healthy monitor: {:?}", r.error);
+                healthy_up += 1;
+            } else if r.target_id == hanging_id && r.is_served_stale() {
+                hanging_skipped += 1;
+            }
+        }
+    }
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert!(
+        hanging_skipped >= 2,
+        "hanging monitor's breaker never opened"
+    );
+    assert!(
+        healthy_up >= 2,
+        "expected ≥2 healthy checks, got {healthy_up}"
+    );
+    assert_eq!(pool.open_breakers(), 1);
+}
+
+#[tokio::test]
+async fn an_edited_monitor_probes_on_a_fresh_breaker() {
+    let addr = spawn_hanging().await;
+    let org = OrgId(uuid::Uuid::from_u128(1));
+    let hanging = with_timeout(http_target(addr, "/", 100), Duration::from_millis(150));
+    let source = Arc::new(MutableSource::new(vec![(org, hanging.clone())]));
+    let registry = Arc::new(TargetRegistry::new(source.clone()));
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let pool = test_pool(tx);
+    let scheduler = Arc::new(Scheduler::new(registry, pool.clone(), scheduler_cfg(1)));
+    let shutdown = CancellationToken::new();
+    let handle = tokio::spawn(scheduler.run(shutdown.clone()));
+
+    let opened = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(r) = rx.recv().await {
+            if r.is_served_stale() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(opened.is_ok(), "breaker never opened");
+
+    // The breaker stays open for 30 s; a fix to the URL must not wait it out.
+    let mut fixed = hanging.clone();
+    if let CheckSpec::Http(http) = &mut fixed.check {
+        http.url = format!("http://{addr}/ok").parse().unwrap();
+    }
+    fixed.updated_at = chrono::Utc::now();
+    source.set(vec![(org, fixed)]);
+
+    let up = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(r) = rx.recv().await {
+            if r.status == CheckStatus::Up {
+                return;
+            }
+        }
+    })
+    .await;
+    shutdown.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert!(up.is_ok(), "the edited monitor kept its open breaker");
+    assert_eq!(pool.open_breakers(), 0);
+}
+
+#[tokio::test]
+async fn worker_pool_breaker_stays_closed_on_a_host_that_answers() {
     let addr = spawn_always_500().await;
     let store = Arc::new(InMemoryTargetStore::from_vec(vec![http_target(
-        addr, "/", 100,
+        addr, "/", 50,
     )]));
     let registry = Arc::new(TargetRegistry::new(store));
     let (tx, mut rx) = mpsc::channel(64);
@@ -520,25 +684,24 @@ async fn worker_pool_breaker_opens_after_failures() {
     let handle = tokio::spawn(scheduler.run(shutdown.clone()));
 
     let mut downs = 0;
-    let mut circuit_opens = 0;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while tokio::time::Instant::now() < deadline && circuit_opens == 0 {
+    while tokio::time::Instant::now() < deadline && downs < 6 {
         if let Ok(Some(r)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
-            match r.status {
-                CheckStatus::Down => downs += 1,
-                CheckStatus::Error if r.error.as_deref() == Some(CIRCUIT_OPEN_REASON) => {
-                    circuit_opens += 1
-                }
-                _ => {}
+            assert!(
+                !r.is_served_stale(),
+                "a 500 opened the breaker: {:?}",
+                r.error
+            );
+            if r.status == CheckStatus::Down {
+                downs += 1;
             }
         }
     }
     shutdown.cancel();
     handle.await.unwrap().unwrap();
 
-    assert!(downs >= 2, "expected ≥2 downs, got {downs}");
-    assert!(circuit_opens >= 1, "breaker never opened");
-    assert!(pool.open_breakers() >= 1);
+    assert!(downs >= 6, "expected ≥6 downs, got {downs}");
+    assert_eq!(pool.open_breakers(), 0);
 }
 
 struct MutableSource {

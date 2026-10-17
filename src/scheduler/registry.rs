@@ -6,19 +6,17 @@ use uuid::Uuid;
 use crate::domain::{OrgId, Target};
 use crate::error::Result;
 use crate::storage::admin::EnabledTargetSource;
-use crate::worker::host_for_spec;
 use crate::worker::host_throttle::{HostKey, HostThrottle};
 
 /// A scheduled target plus its owning tenant. The `org_id` rides with the
 /// target through the scheduler→worker→alert path so channel resolution is
-/// tenant-scoped. host_key / breaker_key / rdap_tld are pre-computed at
+/// tenant-scoped. host_key / rdap_tld are pre-computed at
 /// registry refresh so dispatch never allocates a host string.
 #[derive(Debug, Clone)]
 pub struct ScheduledTarget {
     pub org_id: OrgId,
     pub target: Arc<Target>,
     pub host_key: Option<HostKey>,
-    pub breaker_key: Arc<str>,
     pub rdap_tld: Option<Arc<str>>,
 }
 
@@ -26,7 +24,6 @@ impl ScheduledTarget {
     pub fn build(org_id: OrgId, target: Target) -> Self {
         let target = Arc::new(target);
         let host_key = HostThrottle::key_for(org_id, &target.check);
-        let breaker_key: Arc<str> = Arc::from(host_for_spec(&target.check));
         let rdap_tld = match &target.check {
             crate::domain::CheckSpec::DomainExpiry(d) => {
                 HostThrottle::rdap_tld(&d.domain).map(Arc::from)
@@ -37,7 +34,6 @@ impl ScheduledTarget {
             org_id,
             target,
             host_key,
-            breaker_key,
             rdap_tld,
         }
     }
@@ -52,6 +48,9 @@ pub struct TargetRegistry {
 pub struct RegistryDiff {
     pub added: Vec<ScheduledTarget>,
     pub updated: Vec<ScheduledTarget>,
+    /// The updated targets whose check itself changed, not just their name,
+    /// alerts or interval.
+    pub probe_changed: Vec<Uuid>,
     pub removed: Vec<Uuid>,
 }
 
@@ -59,6 +58,12 @@ impl RegistryDiff {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty()
     }
+}
+
+/// `CheckSpec` has no `PartialEq` (it holds sealed secrets and URLs), so two
+/// specs compare by their serialized form.
+fn same_check(a: &crate::domain::CheckSpec, b: &crate::domain::CheckSpec) -> bool {
+    serde_json::to_value(a).ok() == serde_json::to_value(b).ok()
 }
 
 impl TargetRegistry {
@@ -98,9 +103,13 @@ impl TargetRegistry {
                     if existing.target.updated_at != st.target.updated_at
                         || existing.target.interval != st.target.interval
                     {
+                        let probe_changed = !same_check(&existing.target.check, &st.target.check);
                         drop(existing);
                         self.targets.insert(id, st.clone());
                         diff.updated.push(st);
+                        if probe_changed {
+                            diff.probe_changed.push(id);
+                        }
                     }
                 }
                 None => {
@@ -223,6 +232,34 @@ pub(crate) mod tests {
             registry.get(&id).expect("resident").target.interval,
             StdDuration::from_secs(180)
         );
+    }
+
+    #[tokio::test]
+    async fn only_an_edit_to_the_check_counts_as_a_probe_change() {
+        let source = Arc::new(FixedSource {
+            target: Mutex::new(a_target(StdDuration::from_secs(30))),
+        });
+        let registry = TargetRegistry::new(source.clone());
+        registry.refresh().await.expect("first refresh");
+
+        {
+            let mut target = source.target.lock().expect("lock");
+            target.group_name = Some("edge".into());
+            target.updated_at = Utc::now() + chrono::Duration::seconds(1);
+        }
+        let renamed = registry.refresh().await.expect("rename refresh");
+        assert_eq!(renamed.updated.len(), 1);
+        assert!(renamed.probe_changed.is_empty());
+
+        {
+            let mut target = source.target.lock().expect("lock");
+            if let CheckSpec::Http(http) = &mut target.check {
+                http.timeout = StdDuration::from_secs(20);
+            }
+            target.updated_at = Utc::now() + chrono::Duration::seconds(2);
+        }
+        let edited = registry.refresh().await.expect("edit refresh");
+        assert_eq!(edited.probe_changed.len(), 1);
     }
 
     #[tokio::test]

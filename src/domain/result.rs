@@ -5,11 +5,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// Prefix on the `error` field of results synthesized by the domain-expiry
-/// executor when serving a cached last-good answer instead of a fresh
-/// probe. Internal annotation — every renderer must strip it before
-/// showing the field to a customer.
+/// Prefix on the `error` field of a result that repeats an earlier answer
+/// instead of a fresh probe: a domain-expiry cache hit, or a check skipped by
+/// an open circuit breaker. Internal annotation — every renderer must strip it
+/// before showing the field to a customer.
 pub const SERVED_STALE_PREFIX: &str = "served_stale:";
+
+/// Error prefix of a check an open circuit breaker skipped; the timeout it
+/// repeats follows. Fixed, so every skip of one cause groups as one error.
+const BREAKER_SKIP_PREFIX: &str = "served_stale: refresh_failed=circuit_open; ";
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CheckResult {
@@ -46,6 +50,25 @@ pub struct CheckResult {
 impl CheckResult {
     pub fn error(target_id: Uuid, org_id: Uuid, reason: impl Into<String>) -> Self {
         Self::error_with_elapsed(target_id, org_id, Utc::now(), 0, reason)
+    }
+
+    /// This timeout, repeated now by a check an open circuit breaker skipped.
+    /// Status, cause and network path stay; no request ran, so its timings and
+    /// response go.
+    pub fn repeated_by_breaker(&self) -> Self {
+        let reason = self.error.as_deref().unwrap_or_default();
+        Self {
+            timestamp: Utc::now(),
+            duration_ms: 0,
+            dns_ms: None,
+            connect_ms: None,
+            tls_ms: None,
+            ttfb_ms: None,
+            response_code: None,
+            response_size: None,
+            error: Some(format!("{BREAKER_SKIP_PREFIX}{reason}")),
+            ..self.clone()
+        }
     }
 
     pub fn error_with_elapsed(
@@ -437,14 +460,33 @@ impl DiagnosticRemediation {
 }
 
 /// The error string with the operator-only `served_stale:` annotation removed,
-/// leaving the wrapped reason — the trailing JSON detail, or the bare reason
-/// for a non-stale error. Returns `None` when a stale annotation wraps nothing
-/// renderable. Every customer-facing surface must route `error` through this.
+/// leaving the wrapped reason — what follows its `key=value;` segments, or the
+/// bare reason for a non-stale error. Returns `None` when a stale annotation
+/// wraps nothing renderable. Every customer-facing surface must route `error`
+/// through this.
 pub fn strip_served_stale(raw: &str) -> Option<&str> {
-    match raw.strip_prefix(SERVED_STALE_PREFIX) {
-        None => Some(raw),
-        Some(rest) => rest.find('{').map(|i| &rest[i..]),
+    let Some(mut rest) = raw.strip_prefix(SERVED_STALE_PREFIX) else {
+        return Some(raw);
+    };
+    loop {
+        rest = rest.trim_start();
+        let (segment, tail) = rest.split_once(';').unwrap_or((rest, ""));
+        if !is_stale_annotation(segment) {
+            return (!rest.is_empty()).then_some(rest);
+        }
+        rest = tail;
     }
+}
+
+/// Whether `raw` is the error of a check an open circuit breaker skipped.
+pub fn is_breaker_skip(raw: &str) -> bool {
+    raw.starts_with(BREAKER_SKIP_PREFIX)
+}
+
+fn is_stale_annotation(segment: &str) -> bool {
+    segment.split_once('=').is_some_and(|(key, _)| {
+        !key.is_empty() && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+    })
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
@@ -808,6 +850,26 @@ mod tests {
     }
 
     #[test]
+    fn a_breaker_skip_is_a_stale_annotation() {
+        assert!(BREAKER_SKIP_PREFIX.starts_with(SERVED_STALE_PREFIX));
+    }
+
+    #[test]
+    fn a_breaker_skip_reads_as_the_timeout_it_repeats() {
+        let mut timeout = synth(CheckStatus::Error, Some("body timeout"));
+        timeout.response_code = Some(200);
+        timeout.ttfb_ms = Some(40);
+        let skipped = timeout.repeated_by_breaker();
+        let error = skipped.error.as_deref().unwrap();
+        assert!(is_breaker_skip(error));
+        assert!(skipped.is_served_stale());
+        assert_eq!(strip_served_stale(error), Some("body timeout"));
+        assert_eq!(skipped.status, CheckStatus::Error);
+        assert_eq!(skipped.response_code, None);
+        assert_eq!(skipped.ttfb_ms, None);
+    }
+
+    #[test]
     fn strip_served_stale_unwraps_or_passes_through() {
         // Non-stale errors pass through untouched.
         assert_eq!(strip_served_stale("no response"), Some("no response"));
@@ -818,6 +880,22 @@ mod tests {
         );
         // Stale annotation with nothing renderable → None.
         assert_eq!(strip_served_stale("served_stale: age=10"), None);
+        // A plain reason after the annotation is the payload too.
+        assert_eq!(
+            strip_served_stale(
+                "served_stale: age=10; refresh_failed=circuit_open; connect timeout"
+            ),
+            Some("connect timeout")
+        );
+        assert!(!is_breaker_skip(
+            "served_stale: age=10; refresh_failed=whois_timeout; {\"domain\":\"x\"}"
+        ));
+        assert!(!is_breaker_skip("circuit_open"));
+        // A `;` inside the payload stays in it.
+        assert_eq!(
+            strip_served_stale("served_stale: age=10; {\"registrar\":\"a; b=c\"}"),
+            Some("{\"registrar\":\"a; b=c\"}")
+        );
     }
 
     #[test]

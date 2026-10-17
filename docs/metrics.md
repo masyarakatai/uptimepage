@@ -12,7 +12,7 @@ these names verbatim.
 | Name | Type | Purpose |
 |---|---|---|
 | `uptimepage_checks_total{status}` | counter | checks completed, partitioned by terminal status (`up`/`down`/`degraded`/`error`) |
-| `uptimepage_checks_errors_total{kind}` | counter | error breakdown by `kind`; currently only `circuit_open` is emitted (a check skipped because its host breaker was open) |
+| `uptimepage_checks_errors_total{kind}` | counter | error breakdown by `kind`; currently only `circuit_open` is emitted (a check skipped because its monitor's breaker was open) |
 | `uptimepage_checks_skipped_in_flight_total` | counter | scheduler ticks skipped because the target's previous probe was still running (a slow check, or a timeout longer than its interval). The running probe still reports, so no result is lost; sustained growth means a monitor is checked less often than its interval says |
 | `uptimepage_check_redirects_total{outcome}` | counter | HTTP redirect hops (`followed` / `limit_exceeded` / `invalid_location` / `blocked_scheme`) |
 | `uptimepage_circuit_breaker_state_changes_total{from,to}` | counter | breaker state transitions |

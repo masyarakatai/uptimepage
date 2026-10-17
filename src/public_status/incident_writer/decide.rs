@@ -4,7 +4,7 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use uuid::Uuid;
 
-use crate::domain::{CheckResult, CheckStatus, Recovered};
+use crate::domain::{CheckResult, CheckStatus, Recovered, strip_served_stale};
 
 use super::{NewOpenIncident, OpenIncident};
 
@@ -500,7 +500,7 @@ fn incident_error_sample(bad: &[&Verdict<'_>], quorum: usize) -> Option<String> 
         // label a multi-region outage.
         if matching_regions >= quorum {
             let mut parts = Vec::with_capacity(4);
-            if let Some(error) = sample.error.as_deref() {
+            if let Some(error) = sample.error.as_deref().and_then(strip_served_stale) {
                 parts.push(error.to_owned());
             }
             parts.push(diagnostic.summary());
@@ -518,13 +518,16 @@ fn incident_error_sample(bad: &[&Verdict<'_>], quorum: usize) -> Option<String> 
     }
 
     // Nothing cleared the bar: report the protocol failure rather than guess,
-    // newest first for the same reason as above.
+    // newest first for the same reason as above. A reused result names the
+    // failure it repeats, never its own annotation.
     bad.iter().find_map(|verdict| {
-        verdict
-            .bad
-            .iter()
-            .rev()
-            .find_map(|result| result.error.clone())
+        verdict.bad.iter().rev().find_map(|result| {
+            result
+                .error
+                .as_deref()
+                .and_then(strip_served_stale)
+                .map(str::to_owned)
+        })
     })
 }
 

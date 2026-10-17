@@ -480,8 +480,8 @@ pub(crate) fn carry_flow_secrets(
 
 /// Normalises the host/domain of the check in place: surrounding whitespace
 /// trimmed, IDN-encoded, ASCII lowercase, trailing dot stripped. After this runs, downstream stores the
-/// canonical form and every layer (circuit breaker, host throttle, RDAP
-/// singleflight) keys on the same string regardless of how the user typed it.
+/// canonical form and every layer (host throttle, RDAP singleflight) keys on
+/// the same string regardless of how the user typed it.
 /// HTTP URLs are skipped — `url::Url` already canonicalises hosts on parse.
 /// Returns `400` when IDN encoding fails on a user-supplied host.
 pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result<()> {
@@ -504,7 +504,7 @@ pub(crate) fn canonicalize_check(check: &mut crate::domain::CheckSpec) -> Result
         let unbracketed = crate::domain::check::unbracket(raw);
         // IPs bypass IDN, but not canonicalisation: `2001:db8::1` and
         // `2001:db8:0:0::1` are one address written two ways, and storing them
-        // verbatim gave each its own breaker and throttle bucket. Displaying
+        // verbatim gave each its own throttle bucket. Displaying
         // the parsed address collapses the spellings, lowercase included.
         if let Ok(ip) = unbracketed.parse::<IpAddr>() {
             *host = ip.to_string();

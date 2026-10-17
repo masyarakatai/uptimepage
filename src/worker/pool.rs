@@ -10,10 +10,10 @@ use tokio_util::task::TaskTracker;
 use uuid::Uuid;
 
 use crate::config::CircuitBreakerConfig;
-use crate::domain::{CheckResult, CheckSpec, IpVersion, OrgId, Target};
+use crate::domain::{CheckResult, CheckSpec, CheckStatus, OrgId, Target};
 use crate::http_client::HttpClients;
 use crate::metric_names;
-use crate::worker::circuit_breaker::{BreakerState, CIRCUIT_OPEN_REASON, CircuitBreaker};
+use crate::worker::circuit_breaker::{BreakerState, CircuitBreaker};
 use crate::worker::host_throttle::{HostPermit, HostThrottle, Throttled};
 use crate::worker::sweep::sweep_idle;
 
@@ -37,62 +37,8 @@ pub struct CheckTask {
     /// Pre-computed throttle key from `ScheduledTarget::build`. `None` for
     /// check kinds the throttle skips (DNS, DomainExpiry — RDAP path).
     pub host_key: Option<crate::worker::host_throttle::HostKey>,
-    /// Pre-computed circuit-breaker key. Cheap Arc clone — never recomputed
-    /// on the dispatch hot path.
-    pub breaker_key: Arc<str>,
     /// Pre-computed RDAP TLD for DomainExpiry checks.
     pub rdap_tld: Option<Arc<str>>,
-}
-
-impl CheckTask {
-    pub fn breaker_key(&self) -> &str {
-        &self.breaker_key
-    }
-}
-
-/// Canonical circuit-breaker key for a CheckSpec. Shared between the scheduler
-/// fan-out and the on-demand `check-now` handler so both paths share the
-/// same per-host breaker. Hosts are normalized (lowercased + trailing-dot
-/// stripped) — otherwise `Example.com` and `example.com` from two targets
-/// allocate two breakers + grow the map without bound under tenant-
-/// controlled casing. A check pinned to one address family keys apart, so a
-/// dead IPv6 path cannot open the breaker for the host's IPv4 monitor.
-pub fn host_for_spec(spec: &CheckSpec) -> String {
-    if let Some((host, _)) = crate::worker::host_throttle::host_port_raw(spec) {
-        let host = crate::net::host::canonical_host(host);
-        return match spec.ip_version() {
-            IpVersion::Any => host,
-            family => format!("{host}/{}", family.as_str()),
-        };
-    }
-    match spec {
-        // Group circuit-breaker state by TLD so a flaky registry doesn't
-        // trip the breaker for unrelated TLDs.
-        CheckSpec::DomainExpiry(d) => {
-            let tld = d.domain.rsplit('.').next().unwrap_or("unknown");
-            format!("rdap:{}", tld.to_ascii_lowercase())
-        }
-        // Custom resolver → key by the resolver itself; default → key by
-        // the queried name so a single broken domain doesn't trip the
-        // system breaker.
-        CheckSpec::Dns(d) => match &d.resolver {
-            Some(addr) => format!("dns:{addr}"),
-            None => format!("dns:{}", d.domain.to_ascii_lowercase()),
-        },
-        // Passive kinds, dispatched on the fast path before any breaker
-        // lookup, so these keys never gate.
-        CheckSpec::Heartbeat(_) => "heartbeat".to_owned(),
-        CheckSpec::Manual(_) => "manual".to_owned(),
-        // host_port_raw already covered these; reaching here means an
-        // HTTP URL with no host_str. Listed explicitly so a future
-        // CheckSpec variant is forced through the match and can't
-        // silently collapse onto this catch-all.
-        CheckSpec::Http(_)
-        | CheckSpec::Tcp(_)
-        | CheckSpec::Ping(_)
-        | CheckSpec::TlsCert(_)
-        | CheckSpec::Flow(_) => "unknown".to_owned(),
-    }
 }
 
 /// Sink for completed CheckResults into the storage mpsc. Notifications are
@@ -138,7 +84,9 @@ pub struct WorkerPool {
     semaphore: Arc<Semaphore>,
     max_concurrent: usize,
     http_clients: Arc<HttpClients>,
-    breakers: Arc<DashMap<Arc<str>, Arc<CircuitBreaker>>>,
+    /// One per monitor, so a skipped check repeats that monitor's own last
+    /// timeout and one monitor never gates another.
+    breakers: Arc<DashMap<Uuid, Arc<CircuitBreaker>>>,
     breaker_cfg: CircuitBreakerConfig,
     fanout: ResultFanout,
     host_throttle: Arc<HostThrottle>,
@@ -270,41 +218,26 @@ impl WorkerPool {
         self.http_clients.clone()
     }
 
-    pub fn breaker_for(&self, host: &str) -> Arc<CircuitBreaker> {
-        get_or_init_breaker(&self.breakers, host, self.breaker_cfg)
+    /// Drop breakers whose only strong reference is the map and that hold
+    /// no live count or belong to a monitor this node no longer schedules.
+    /// Run from the scheduler tick to bound the breaker map.
+    pub fn sweep_breakers(&self, scheduled: impl Fn(&Uuid) -> bool) -> usize {
+        sweep_idle(&self.breakers, |id, b| b.is_idle() || !scheduled(id))
     }
 
-    /// Drop breakers whose only strong reference is the map and that are
-    /// in the steady `Closed` state. Run from the scheduler tick to bound
-    /// the breaker map under target churn (user-driven host edits, deletes).
-    pub fn sweep_breakers(&self) -> usize {
-        sweep_idle(&self.breakers, |b| b.state() == BreakerState::Closed)
+    /// Drops the monitor's breaker: what it counted no longer applies.
+    pub fn forget_breaker(&self, target_id: Uuid) {
+        self.breakers.remove(&target_id);
     }
 
-    /// Runs a one-off check against `target` honoring the per-host circuit
-    /// breaker. Returns `None` if the breaker is open and `force` is false.
-    /// Result is recorded on the breaker but NOT dispatched through the
-    /// pool's fanout — caller decides whether to persist.
-    pub async fn run_once(
-        &self,
-        target_id: Uuid,
-        org_id: Uuid,
-        spec: &CheckSpec,
-        host: &str,
-        force: bool,
-    ) -> Option<CheckResult> {
-        let breaker = self.breaker_for(host);
-        if !force && breaker.state() == BreakerState::Open && !breaker.allow() {
-            return None;
+    /// A check-now the target answered in time shows it reachable again, so
+    /// its scheduled checks probe instead of repeating the old timeout. A body
+    /// timeout keeps its status code, so the code alone is no answer.
+    pub fn note_check_now(&self, target_id: Uuid, result: &CheckResult) {
+        let answered = result.status == CheckStatus::Up || result.response_code.is_some();
+        if answered && !CircuitBreaker::counts(result) {
+            self.forget_breaker(target_id);
         }
-        let deps = crate::worker::WorkerDeps {
-            http: &self.http_clients,
-            domain_expiry: &self.domain_expiry,
-            flow: self.flow_engine.as_deref(),
-        };
-        let result = crate::worker::execute(target_id, org_id, spec, &deps).await;
-        breaker.record(result.status);
-        Some(result)
     }
 
     pub fn dispatch(&self, task: CheckTask) {
@@ -372,12 +305,12 @@ impl WorkerPool {
         self.tasks.spawn(async move {
             let _permit = permit;
             let _in_flight_guard = in_flight_guard;
-            let breaker = get_or_init_breaker(&breakers, &task.breaker_key, breaker_cfg);
 
-            if !breaker.allow() {
+            // No entry is a closed breaker with nothing counted.
+            let breaker = breakers.get(&task.target.id).map(|b| b.clone());
+            if let Some(skipped) = breaker.as_ref().and_then(|b| b.skip()) {
                 counter!(metric_names::CHECK_ERRORS, "kind" => "circuit_open").increment(1);
-                let result = CheckResult::error(task.target.id, org_id.0, CIRCUIT_OPEN_REASON);
-                fanout.dispatch(result);
+                fanout.dispatch(skipped);
                 return;
             }
 
@@ -401,7 +334,13 @@ impl WorkerPool {
                 &deps,
             )
             .await;
-            breaker.record(result.status);
+            match breaker {
+                Some(breaker) => breaker.record(&result),
+                None if CircuitBreaker::counts(&result) => {
+                    get_or_init_breaker(&breakers, task.target.id, breaker_cfg).record(&result)
+                }
+                None => {}
+            }
             record_metrics(&result);
             drop(host_permit);
             fanout.dispatch(result);
@@ -444,15 +383,15 @@ fn acquire_host_slot(
 }
 
 fn get_or_init_breaker(
-    breakers: &DashMap<Arc<str>, Arc<CircuitBreaker>>,
-    host: &str,
+    breakers: &DashMap<Uuid, Arc<CircuitBreaker>>,
+    target_id: Uuid,
     cfg: CircuitBreakerConfig,
 ) -> Arc<CircuitBreaker> {
-    if let Some(b) = breakers.get(host) {
+    if let Some(b) = breakers.get(&target_id) {
         return b.clone();
     }
     breakers
-        .entry(Arc::from(host))
+        .entry(target_id)
         .or_insert_with(|| Arc::new(CircuitBreaker::new(cfg)))
         .clone()
 }
@@ -460,22 +399,4 @@ fn get_or_init_breaker(
 fn record_metrics(result: &CheckResult) {
     counter!(metric_names::CHECKS_TOTAL, "status" => result.status.as_str()).increment(1);
     histogram!(metric_names::CHECK_DURATION_MS).record(result.duration_ms as f64);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_pinned_family_gets_its_own_breaker() {
-        let tcp = |family: &str| -> CheckSpec {
-            serde_json::from_str(&format!(
-                r#"{{"type":"tcp","host":"DB.example.com.","port":5432,"timeout":3000,"ip_version":"{family}"}}"#
-            ))
-            .unwrap()
-        };
-        assert_eq!(host_for_spec(&tcp("any")), "db.example.com");
-        assert_eq!(host_for_spec(&tcp("ipv4")), "db.example.com/ipv4");
-        assert_eq!(host_for_spec(&tcp("ipv6")), "db.example.com/ipv6");
-    }
 }

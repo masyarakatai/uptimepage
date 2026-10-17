@@ -21,7 +21,7 @@ The result channel between worker pool and batcher is back-pressured.
 
 ## Circuit breaker stuck open
 
-Look at `uptimepage_checks_errors_total{kind}` filtered by host to find the failure mode, then wait `circuit_breaker.open_duration_secs` for the breaker to enter half-open and probe.
+Each monitor has its own breaker. It opens after `circuit_breaker.failure_threshold` timeouts in a row: an HTTP connect, request, body or DNS lookup timeout, a TCP, TLS or DNS check timing out, or a ping with no reply. Any answer, even a 5xx or a refused connection, starts the count over. While it is open, the monitor's checks skip the probe and repeat its last timeout with a `served_stale: refresh_failed=circuit_open; <reason>` annotation, so it keeps the real cause. After `circuit_breaker.open_duration_secs` the next check probes again: `success_threshold` answers close the breaker, and another timeout reopens it. A breaker that stays open means the target is still timing out. `uptimepage_checks_errors_total{kind="circuit_open"}` counts the checks it skipped.
 
 ## A monitor shows `degraded` but every check looks fine
 

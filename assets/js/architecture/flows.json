@@ -389,7 +389,7 @@
           "f": "pool",
           "t": "e-http",
           "h": "gates passed",
-          "d": "in-flight set → semaphore try_acquire (fail-fast) → circuit breaker → per-tenant (org, host, port) bulkhead."
+          "d": "in-flight set → semaphore try_acquire (fail-fast) → per-monitor circuit breaker → per-tenant (org, host, port) bulkhead."
         },
         {
           "f": "e-http",
@@ -946,7 +946,7 @@
           "f": "pool",
           "t": "e-rdap",
           "h": "dispatch",
-          "d": "Circuit-breaker key is rdap:{tld} so one slow registry cannot correlate failures across every customer."
+          "d": "Domain expiry never opens the monitor's circuit breaker: an RDAP failure is served from the sticky cache, or reported as rdap timeout, which the breaker does not count."
         },
         {
           "f": "e-rdap",

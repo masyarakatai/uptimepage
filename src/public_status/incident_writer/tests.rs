@@ -102,6 +102,21 @@ fn decide_two_consecutive_bad_opens_incident() {
 }
 
 #[test]
+fn a_skipped_check_samples_the_failure_it_repeats() {
+    let base = Utc.with_ymd_and_hms(2026, 5, 13, 12, 0, 0).unwrap();
+    let target = Uuid::now_v7();
+    let mut probed = result(target, base, CheckStatus::Error);
+    probed.error = Some("connect timeout".into());
+    let mut skipped = result(target, ts(base, 60), CheckStatus::Error);
+    skipped.error = Some("served_stale: refresh_failed=circuit_open; connect timeout".into());
+
+    match decide(None, &[probed, skipped], 2) {
+        Action::Open(new) => assert_eq!(new.error_sample.as_deref(), Some("connect timeout")),
+        other => panic!("expected Open, got {other:?}"),
+    }
+}
+
+#[test]
 fn decide_carries_access_diagnosis_into_incident_sample() {
     let base = Utc.with_ymd_and_hms(2026, 5, 13, 12, 0, 0).unwrap();
     let target = Uuid::now_v7();

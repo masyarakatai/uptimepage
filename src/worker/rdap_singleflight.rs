@@ -125,7 +125,7 @@ impl RdapSingleflight {
     /// locked (`try_lock` fails). Atomic per shard.
     pub fn sweep(&self) -> usize {
         let cache_ttl = self.cache_ttl;
-        sweep_idle(&self.slots, |slot| {
+        sweep_idle(&self.slots, |_, slot| {
             let Ok(guard) = slot.state.try_lock() else {
                 return false;
             };

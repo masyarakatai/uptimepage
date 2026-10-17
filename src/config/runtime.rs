@@ -105,7 +105,6 @@ pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
     pub success_threshold: u32,
     pub open_duration_secs: u64,
-    pub half_open_max_calls: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

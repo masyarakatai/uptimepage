@@ -1325,7 +1325,6 @@ pub fn breaker_cfg() -> CircuitBreakerConfig {
         failure_threshold: 2,
         success_threshold: 1,
         open_duration_secs: 30,
-        half_open_max_calls: 1,
     }
 }
 

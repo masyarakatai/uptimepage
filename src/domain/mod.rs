@@ -51,7 +51,9 @@ pub use check::{
     min_interval_secs_for_kind, publishes_no_expiry, reduced_domain_hint, registered_domain,
 };
 pub use check_address::AddressError;
-pub use check_error::{ErrorClass, ErrorFamily, classify_check_error, humanize_check_error};
+pub use check_error::{
+    ErrorClass, ErrorFamily, classify_check_error, humanize_check_error, is_timeout_error,
+};
 pub use credential::{CredentialAction, CredentialOrigin, LinkedIdentity, OauthProvider, WaysIn};
 pub use escalation_policy::{
     EscalationDecision, EscalationPolicy, EscalationPolicySummary, EscalationStep,
@@ -117,7 +119,7 @@ pub use reserved_slugs::is_reserved;
 pub use result::{
     CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
     DiagnosticEvidence, DiagnosticRemediation, DnsAnswer, EdgeProvider, NetworkPath,
-    SERVED_STALE_PREFIX, strip_served_stale,
+    SERVED_STALE_PREFIX, is_breaker_skip, strip_served_stale,
 };
 pub use status_page::{
     NewStatusPage, NewStatusPageComponent, PageRef, StatusPage, StatusPageComponent,

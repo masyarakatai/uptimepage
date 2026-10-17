@@ -2,7 +2,7 @@
 //! shared by the web views, the JSON API, and MCP, plus the bounded
 //! classification of that same code for operator metrics.
 
-use crate::domain::strip_served_stale;
+use crate::domain::{is_breaker_skip, strip_served_stale};
 
 pub fn humanize_check_error(raw: &str) -> String {
     let raw = match strip_served_stale(raw) {
@@ -25,6 +25,7 @@ pub fn humanize_check_error(raw: &str) -> String {
     }
     match raw {
         "timeout" => "timed out".into(),
+        "circuit_open" => "skipped after repeated failures".into(),
         "connect timeout" => "couldn't connect (timed out)".into(),
         "no response" => "connected, but no response (timed out)".into(),
         "body timeout" => "response body timed out".into(),
@@ -300,8 +301,23 @@ impl ErrorClass {
     }
 }
 
+/// A probe that spent its whole budget waiting on the target. Matched on the
+/// emitters' own strings: a class cannot tell a DNS lookup that timed out from
+/// one that failed, or a silent ping host from a send error.
+pub fn is_timeout_error(raw: &str) -> bool {
+    matches!(
+        raw,
+        "timeout" | "connect timeout" | "no response" | "body timeout" | "dns: lookup timed out"
+    ) || raw.starts_with("no echo reply from ")
+}
+
 pub fn classify_check_error(raw: &str) -> ErrorClass {
-    // A stale-served error always carries the payload it stood in for, so the
+    // A skipped check repeats a timeout no probe saw this time, so it counts
+    // as skipped, not as another timeout.
+    if is_breaker_skip(raw) {
+        return ErrorClass::CircuitOpen;
+    }
+    // Any other stale-served error carries the payload it stood in for, so the
     // payload's own class wins. A bare annotation would be unclassified, which
     // `Other` reports honestly rather than inventing a class for it.
     let Some(raw) = strip_served_stale(raw) else {
@@ -566,6 +582,24 @@ mod tests {
         assert_eq!(out, "domain expires in 5 days · example.com");
         assert!(!out.contains("served_stale"));
         assert!(!out.contains("refresh_failed"));
+    }
+
+    #[test]
+    fn served_stale_reason_reads_as_the_reason_it_repeats() {
+        let raw = "served_stale: refresh_failed=circuit_open; no response";
+        assert_eq!(
+            humanize_check_error(raw),
+            "connected, but no response (timed out)"
+        );
+        assert_eq!(classify_check_error(raw), ErrorClass::CircuitOpen);
+    }
+
+    #[test]
+    fn a_bare_circuit_open_is_worded() {
+        assert_eq!(
+            humanize_check_error("circuit_open"),
+            "skipped after repeated failures"
+        );
     }
 
     /// One sample per error shape the executors emit, kept by hand. It pins the

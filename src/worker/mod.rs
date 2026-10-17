@@ -18,7 +18,7 @@ pub mod whois;
 
 pub use http_check::execute_http_check;
 pub(crate) use http_check::{HttpProbe, execute_http_check_probe};
-pub use pool::{CheckTask, ResultFanout, WorkerPool, host_for_spec};
+pub use pool::{CheckTask, ResultFanout, WorkerPool};
 
 use std::sync::Arc;
 

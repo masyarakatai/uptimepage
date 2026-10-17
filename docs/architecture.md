@@ -10,7 +10,7 @@ For an interactive companion to this page, open the [flow map](/architecture): p
 - Keep every tenant's data isolated by construction, not by convention. See [Multi-tenancy](multi-tenancy.md).
 - Turn a run of failing checks into a confirmed incident, page the right people, and publish a customer-facing status surface. See [Incident management](incidents.md) and [Public status page](public-status.md).
 - Attribute every result to the region that produced it, so a deployment can probe from many locations with no coordination. See [Multi-region probes](multi-region.md).
-- Survive transient target failures (per-host circuit breakers), tenant bursts (per-tenant host throttle), and storage flaps (in-process retry and batching), and count every dropped unit of work with a reason.
+- Survive hosts that hang (circuit breakers on repeated timeouts), tenant bursts (per-tenant host throttle), and storage flaps (in-process retry and batching), and count every dropped unit of work with a reason.
 - Drain in-flight work on shutdown rather than lose it.
 
 ## Process modes
@@ -63,7 +63,7 @@ src/
 │   probe pipeline
 ├── scheduler/        target registry (full re-list + diff), single-driver timing
 │                     heap, gauge sampler
-├── worker/           worker pool + per-host circuit breaker + host throttle +
+├── worker/           worker pool + per-monitor circuit breaker + host throttle +
 │                     one executor per check kind (http/tcp/ping/heartbeat/dns/
 │                     tls_cert/domain_expiry/flow/manual)
 ├── http_client/      poolless probe client: phase-timing connector, DNS cache,
@@ -178,7 +178,7 @@ Every tenant-facing storage method takes `org: OrgId` as its first parameter, ev
 - **Sealed secrets.** Channel and variable secrets are sealed with one AES-GCM envelope at the storage edge and redacted on every read. A read-then-write round trip that resubmits the redaction sentinel is rejected, so a UI edit can never overwrite a secret with its own mask. See [Variables and secrets](variables.md).
 - **Quota in the insert.** Handler-level quota checks exist only for a friendly error. The race-safe guarantee is `(count) + 1 <= limit` evaluated inside the INSERT under a per-org advisory lock. See [Quotas and rate limits](quotas.md).
 - **Explicit back-pressure.** Every bounded queue and gate that drops a result increments `uptimepage_storage_dropped_results_total` with a reason label, so a dropped result is always counted, never swallowed. A tick that never ran loses no result and has its own counter: `uptimepage_host_throttle_drops_total` for the host throttle, `uptimepage_checks_skipped_in_flight_total` for a probe still running from the previous tick.
-- **Per-host circuit breakers and a per-tenant host throttle.** A failing host opens its breaker and subsequent checks fail fast without consuming a worker slot. A separate fail-fast semaphore, keyed per tenant, caps how many in-flight checks one tenant can run against the same host and port, so one customer's burst cannot starve another. Throttle drops are recorded as degraded and do not page; the upstream is fine, the back-pressure is operator-side.
+- **Per-monitor circuit breakers and a per-tenant host throttle.** A monitor that keeps timing out opens its breaker, and its next checks skip the probe instead of holding a worker slot for the full timeout. They repeat its last timeout marked `served_stale:`, so the monitor keeps its real cause. A target that answers, even with an error, never opens it, and one monitor's breaker never gates another. A separate fail-fast semaphore, keyed per tenant, caps how many in-flight checks one tenant can run against the same host and port, so one customer's burst cannot starve another. Throttle drops are recorded as degraded and do not page; the upstream is fine, the back-pressure is operator-side.
 - **Sticky last-good for domain expiry.** Each successful RDAP probe writes the expiry, registrar, and last-success time. A subsequent transient failure serves the cached verdict with a `served_stale:` annotation rather than flipping the monitor; only staleness past a threshold escalates to an alert-eligible error. Concurrent probes for the same domain are collapsed to one outbound request.
 - **Self-describing API.** `utoipa` derives an OpenAPI 3.1 document at compile time, served at `/api/openapi.json` and rendered at `/docs`. The 4xx/5xx error envelope and the list page envelope are unified across every endpoint. See [REST API](api.md).
 - **Cancellation tokens for shutdown.** The root token is cloned into the scheduler, batcher, sampler, jobs, and the graceful axum shutdown. SIGINT or SIGTERM cancels the root and subsystems drain together.

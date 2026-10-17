@@ -7,8 +7,6 @@ use idna::uts46::{AsciiDenyList, DnsLength, Hyphens, Uts46};
 /// worker hot path never panics on unexpected input.
 ///
 /// Used by:
-/// - circuit-breaker key (`host_for_spec`) — `Example.COM`, `example.com.`,
-///   `BÄHN.de`, and `xn--bhn-qla.de` share one breaker.
 /// - per-(org, host, port) throttle key.
 /// - per-TLD RDAP throttle (`rdap_tld`).
 /// - cross-tenant RDAP singleflight cache key.

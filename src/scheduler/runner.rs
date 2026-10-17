@@ -107,7 +107,7 @@ impl Scheduler {
                     Some(diff) => self.apply_diff(&diff, &mut heap, &mut live, &mut next_seq),
                     None => break,
                 },
-                _ = sweep.tick() => self.sweep_once(),
+                _ = sweep.tick() => self.sweep_once(&live),
                 _ = sleep_until_opt(next_at) => self.drain_due(&mut heap, &mut live),
             }
         }
@@ -197,7 +197,7 @@ impl Scheduler {
     /// any prior entry for the same id is superseded; removed ids drop from the
     /// live map, leaving their stale entries to reap on pop. An updated target
     /// was edited or moved by its plan, so its new config probes within
-    /// seconds.
+    /// seconds, on a fresh circuit breaker when what it probes changed.
     fn apply_diff(
         &self,
         diff: &RegistryDiff,
@@ -215,6 +215,9 @@ impl Scheduler {
         for st in &diff.updated {
             let wait = quick_probe_in(&st.target, region);
             schedule(st.target.id, heap, live, next_seq, now + wait);
+        }
+        for id in &diff.probe_changed {
+            self.pool.forget_breaker(*id);
         }
         for id in &diff.removed {
             live.remove(id);
@@ -249,9 +252,9 @@ impl Scheduler {
         self.scheduled.store(live.len(), Ordering::Relaxed);
     }
 
-    fn sweep_once(&self) {
+    fn sweep_once(&self, live: &HashMap<Uuid, u64>) {
         let evicted_throttle = self.pool.host_throttle().sweep();
-        let evicted_breakers = self.pool.sweep_breakers();
+        let evicted_breakers = self.pool.sweep_breakers(|id| live.contains_key(id));
         let evicted_singleflight = self.pool.domain_expiry_runtime().singleflight.sweep();
         if evicted_throttle > 0 || evicted_breakers > 0 || evicted_singleflight > 0 {
             tracing::debug!(
@@ -355,7 +358,6 @@ fn dispatch(pool: &WorkerPool, st: ScheduledTarget) {
         target: st.target,
         org_id: st.org_id,
         host_key: st.host_key,
-        breaker_key: st.breaker_key,
         rdap_tld: st.rdap_tld,
     });
 }

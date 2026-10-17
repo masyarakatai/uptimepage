@@ -117,8 +117,8 @@ impl HostThrottle {
     pub fn sweep(&self) -> usize {
         let per_host_max = self.per_host_max;
         let rdap_max = self.rdap_max;
-        sweep_idle(&self.caps, |sem| sem.available_permits() == per_host_max)
-            + sweep_idle(&self.rdap, |sem| sem.available_permits() == rdap_max)
+        sweep_idle(&self.caps, |_, sem| sem.available_permits() == per_host_max)
+            + sweep_idle(&self.rdap, |_, sem| sem.available_permits() == rdap_max)
     }
 
     #[cfg(test)]

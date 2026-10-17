@@ -5,19 +5,19 @@ use dashmap::DashMap;
 
 /// Off-hot-path eviction over a `DashMap<K, Arc<T>>`. Drops entries whose
 /// only strong reference is the map's own and that the caller-supplied
-/// `idle` predicate accepts. Atomic per shard via `DashMap::retain` — never
+/// `idle` predicate accepts for their key and value. Atomic per shard via `DashMap::retain` — never
 /// drops an entry another task just cloned out of the map.
 pub(crate) fn sweep_idle<K, T, F>(map: &DashMap<K, Arc<T>>, idle: F) -> usize
 where
     K: Eq + Hash,
-    F: Fn(&T) -> bool,
+    F: Fn(&K, &T) -> bool,
 {
     let mut removed = 0usize;
-    map.retain(|_, slot| {
+    map.retain(|key, slot| {
         if Arc::strong_count(slot) != 1 {
             return true;
         }
-        if idle(slot.as_ref()) {
+        if idle(key, slot.as_ref()) {
             removed += 1;
             false
         } else {

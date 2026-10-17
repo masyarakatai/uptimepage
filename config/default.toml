@@ -51,7 +51,6 @@ trusted_proxies = []
 failure_threshold = 5
 success_threshold = 2
 open_duration_secs = 60
-half_open_max_calls = 3
 
 [bootstrap]
 # Seeds this owner on first boot, for installs that cannot run the CLI.

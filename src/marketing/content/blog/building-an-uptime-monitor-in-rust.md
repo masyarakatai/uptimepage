@@ -1,7 +1,7 @@
 +++
 title = "Building an uptime monitor in Rust: one binary, two databases"
 date = "2026-06-30"
-updated = "2026-08-05"
+updated = "2026-10-17"
 slug = "building-an-uptime-monitor-in-rust"
 excerpt = "The Rust build behind Uptimepage: a custom hyper client doing ~130K checks a second on one core, a single-heap scheduler, and ClickHouse rollups."
 tags = ["rust", "clickhouse", "monitoring", "devops"]
@@ -46,7 +46,7 @@ The whole scheduler, with the code and the tests that back each of those claims,
 
 ## Failure isolation inside one process
 
-Because everything is one process, one bad target cannot be allowed to take down the rest. Three patterns do most of that work. Per-host circuit breakers trip when a host keeps failing, so it fails fast with `circuit_open` instead of tying up a worker on a timeout, then probes half-open after a cooldown. A per-tenant host throttle bulkhead caps how many checks can be in flight against one host at once; over the cap, a check is recorded as throttled and degraded rather than piling on, and it never pages. And singleflight on RDAP collapses domain-expiry checks for the same domain across many tenants into one upstream probe, with sticky last-good state so a flaky registrar does not flip the monitor red.
+Because everything is one process, one bad target cannot be allowed to take down the rest. Three patterns do most of that work. Per-monitor circuit breakers trip when a monitor keeps timing out, so its next checks skip the probe instead of tying up a worker on a timeout, repeat the last timeout so the cause stays visible, and probe again after a cooldown. A per-tenant host throttle bulkhead caps how many checks can be in flight against one host at once; over the cap, a check is recorded as throttled and degraded rather than piling on, and it never pages. And singleflight on RDAP collapses domain-expiry checks for the same domain across many tenants into one upstream probe, with sticky last-good state so a flaky registrar does not flip the monitor red.
 
 The worker pool itself is a task-per-dispatch gated by a semaphore sized to a max-concurrency setting, with an SSRF guard filtering resolved IPs before any connect.
 

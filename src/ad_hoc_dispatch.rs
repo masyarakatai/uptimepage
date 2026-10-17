@@ -477,6 +477,9 @@ async fn run_local_check(
     let target_id = check.target_id.unwrap_or_else(Uuid::nil);
     let (result, probe) =
         crate::worker::execute_with_probe(target_id, check.org_id, &check.spec, &deps).await;
+    if let Some(id) = check.target_id {
+        worker_pool.note_check_now(id, &result);
+    }
     // We produced the result with the authoritative ids, so persist it as-is
     // (mirrors the agent result-ingest path).
     let persist = persists(check.kind, &result).then(|| result.clone());

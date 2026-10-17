@@ -363,6 +363,7 @@ struct AgentDispatchClient {
     http_clients: Arc<HttpClients>,
     domain_runtime: Arc<DomainExpiryRuntime>,
     flow_engine: Option<Arc<crate::worker::flow::engine::CdpEngine>>,
+    pool: Arc<WorkerPool>,
 }
 
 /// Backoff before reconnecting a long-poll that errored (control plane down).
@@ -398,6 +399,9 @@ impl AgentDispatchClient {
         let target_id = check.target_id.unwrap_or_else(Uuid::nil);
         let (result, probe) =
             crate::worker::execute_with_probe(target_id, check.org_id, &check.spec, &deps).await;
+        if let Some(id) = check.target_id {
+            self.pool.note_check_now(id, &result);
+        }
         let payload = DispatchReport {
             check_id: check.id,
             result,
@@ -604,6 +608,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         http_clients: http_clients.clone(),
         domain_runtime,
         flow_engine,
+        pool: pool.clone(),
     });
     let job_handle = {
         let token = root.clone();
