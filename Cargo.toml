@@ -102,7 +102,7 @@ mime_guess = "2"
 # parser output is never trusted — every byte passes through the ammonia
 # allowlist before it reaches a template.
 pulldown-cmark = { version = "0.13.3", default-features = false, features = ["html"] }
-ammonia = "4.2.3"
+ammonia = "4.2.4"
 # Code-fence highlighting, emitted as CSS classes rather than inline styles:
 # the marketing CSP is `style-src 'self'`. fancy-regex keeps the build pure
 # Rust; two-face carries the syntaxes syntect ships without (TOML, Terraform).
