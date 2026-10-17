@@ -18,7 +18,7 @@
 //! origin, so a directly-connected client cannot forge their own IP.
 
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRef, FromRequestParts};
 use axum::http::HeaderMap;
@@ -87,6 +87,19 @@ where
     }
 }
 
+/// The address a per-client limit should key on: an IPv6 address collapses to
+/// its /64. Any VPS is handed a routed /64 or wider, so keying on the full
+/// address would hand one client an unbounded number of independent budgets.
+pub fn network_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+        }
+        v4 => v4,
+    }
+}
+
 /// The client IP when it is worth showing a reader: behind a declared proxy an
 /// internal result means the chain lost the client, with none declared it is the client.
 pub fn reportable(ip: IpAddr, trusted: &[IpNet]) -> Option<IpAddr> {
@@ -135,6 +148,17 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(XFF, v.parse().unwrap());
         h
+    }
+
+    /// One client must not open an unbounded number of budgets by walking a
+    /// routed /64.
+    #[test]
+    fn an_ipv6_client_is_keyed_by_its_prefix() {
+        let a = ip("2001:db8:1:2:3:4:5:6");
+        let b = ip("2001:db8:1:2:ffff:ffff:ffff:ffff");
+        assert_eq!(network_key(a), network_key(b));
+        assert_ne!(network_key(a), network_key(ip("2001:db8:1:3::1")));
+        assert_eq!(network_key(ip("203.0.113.7")), ip("203.0.113.7"));
     }
 
     #[test]

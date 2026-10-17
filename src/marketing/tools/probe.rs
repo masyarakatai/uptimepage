@@ -6,7 +6,7 @@
 //! that keeps a stranger's dead host out of our own 5xx rate. A tool adds its
 //! own port allowlist and deadline on top.
 
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::time::Duration;
 
@@ -56,20 +56,6 @@ static RESOLVER: std::sync::LazyLock<Option<TokioResolver>> = std::sync::LazyLoc
     builder.build().ok()
 });
 
-/// Collapses an IPv6 address to its /64. Any VPS is handed a routed /64 or
-/// wider, so keying on the full address would hand one visitor an unbounded
-/// number of independent budgets against the only routes here that open a
-/// socket.
-fn budget_key(ip: IpAddr) -> IpAddr {
-    match ip {
-        IpAddr::V6(v6) => {
-            let s = v6.segments();
-            IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
-        }
-        v4 => v4,
-    }
-}
-
 /// Charges `cost` probes to the visitor's address, all or nothing. Missing
 /// `ConnectInfo` means the server was built without it, which would silently
 /// hand everyone the same budget; an unspecified address keeps them metered
@@ -87,7 +73,7 @@ pub(super) fn spend_budget(
     let client = crate::request::client_ip::extract(headers, peer, &cfg.trusted_proxies);
     let cost = NonZeroU32::new(cost).expect("a probe costs at least one");
     let allowed = limiter
-        .check_key_n(&budget_key(client), cost)
+        .check_key_n(&crate::request::client_ip::network_key(client), cost)
         .is_ok_and(|r| r.is_ok());
     if limiter.len() > LIMITER_HIGH_WATER {
         limiter.retain_recent();
@@ -307,16 +293,5 @@ mod tests {
         .unwrap();
         assert_eq!(json["ok"], true);
         assert_eq!(json["host"], "acme.com");
-    }
-
-    /// One visitor must not open an unbounded number of budgets by walking a
-    /// routed /64.
-    #[test]
-    fn an_ipv6_visitor_is_metered_by_prefix() {
-        let a: IpAddr = "2001:db8:1:2:3:4:5:6".parse().unwrap();
-        let b: IpAddr = "2001:db8:1:2:ffff:ffff:ffff:ffff".parse().unwrap();
-        assert_eq!(budget_key(a), budget_key(b));
-        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
-        assert_ne!(budget_key(a), budget_key(other));
     }
 }
