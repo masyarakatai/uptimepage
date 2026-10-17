@@ -164,49 +164,6 @@ resource "grafana_rule_group" "pipeline" {
     }
   }
 
-  # Circuit breakers stuck Open. Transient trips are normal and
-  # self-heal, so for = 15m: alert only when breakers stay open (a
-  # wedged upstream or a target permanently failing). Warning, not
-  # critical — checks still run; this is degraded coverage, not data
-  # loss.
-  rule {
-    name           = "UptimepageCircuitBreakersOpen"
-    condition      = "C"
-    for            = "15m"
-    no_data_state  = "OK"
-    exec_err_state = "Error"
-    labels = {
-      severity = "warning"
-      service  = "uptimepage"
-    }
-    annotations = {
-      summary     = "uptimepage: circuit breakers stuck open"
-      description = "one or more circuit breakers Open for 15m — a target/upstream is persistently failing and its checks are being skipped. Runbook: runbooks/grafana-cloud.md."
-    }
-    data {
-      ref_id         = "A"
-      datasource_uid = data.grafana_data_source.prometheus.uid
-      relative_time_range {
-        from = 300
-        to   = 0
-      }
-      model = jsonencode({
-        refId   = "A"
-        instant = true
-        expr    = "sum(uptimepage_circuit_breakers_open) > 0"
-      })
-    }
-    data {
-      ref_id         = "C"
-      datasource_uid = "__expr__"
-      relative_time_range {
-        from = 0
-        to   = 0
-      }
-      model = local.threshold_c
-    }
-  }
-
   # Result queue backing up. Brief depth is normal; sustained high
   # depth is backpressure that precedes dropped results (which
   # ResultsLost catches only once data is already lost). Warning,
