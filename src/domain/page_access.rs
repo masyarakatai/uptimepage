@@ -3,6 +3,8 @@
 //! Visitors here are not app users: a viewer is an address that proved itself
 //! on one page's host, and nothing about it reaches the app's own sign-in.
 
+use chrono::{DateTime, Utc};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -10,6 +12,9 @@ use super::{UserId, email_norm, hostname};
 
 /// Plan-independent: the list exists to name people, not to be metered.
 pub const MAX_ACCESS_RULES: usize = 500;
+
+/// Bounds what the hash is run over; below it the owner types what they like.
+pub const MAX_PAGE_PASSWORD_CHARS: usize = 128;
 
 /// The periods the editor offers. The column CHECKs hold the same lists.
 pub const RECHECK_DAY_CHOICES: &[i32] = &[30, 90, 365];
@@ -50,10 +55,10 @@ db_enum!(
 );
 
 db_enum!(
-    /// How a session was opened. A shared password joins later as a session
-    /// with no viewer.
+    /// How a session was opened. A password session names no viewer.
     PageSessionMethod, "status_page_sessions_method_check" {
         Email => "email",
+        Password => "password",
     }
 );
 
@@ -67,6 +72,7 @@ db_enum!(
         PasskeyRemoved => "passkey_removed",
         Blocked => "blocked",
         Unblocked => "unblocked",
+        PasswordFailed => "password_failed",
     }
 );
 
@@ -74,6 +80,7 @@ db_enum!(
     AccessEventMethod, "status_page_access_events_method_check" {
         Email => "email",
         Passkey => "passkey",
+        Password => "password",
     }
 );
 
@@ -163,9 +170,11 @@ pub struct PageAccessSettings {
     /// Days a passkey viewer may go without proving their address again.
     /// `None` never asks.
     pub recheck_days: Option<i32>,
-    /// `None` keeps a session until sign-out, block, or the list stops
-    /// matching.
+    /// For email and password sign-ins alike. `None` keeps a session until
+    /// sign-out, or until the way in it came through closes.
     pub session_days: Option<i32>,
+    /// Off keeps the stored password, so turning it on again brings it back.
+    pub password_enabled: bool,
 }
 
 impl Default for PageAccessSettings {
@@ -176,15 +185,19 @@ impl Default for PageAccessSettings {
             passkeys_enabled: true,
             recheck_days: None,
             session_days: None,
+            password_enabled: false,
         }
     }
 }
 
-/// What the gate reads for one page.
+/// What the gate reads for one page. Never the password or its hash.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PageAccess {
     pub settings: PageAccessSettings,
     pub rules: Vec<AccessRule>,
+    /// When the stored password was set; `None` while none ever was. A
+    /// subscription made with a password carries the same instant.
+    pub password_set_at: Option<DateTime<Utc>>,
 }
 
 impl PageAccess {
@@ -196,6 +209,26 @@ impl PageAccess {
     pub fn admits(&self, email: &str) -> bool {
         self.settings.email_enabled && self.rules.iter().any(|r| r.admits(email))
     }
+
+    pub fn has_password(&self) -> bool {
+        self.password_set_at.is_some()
+    }
+
+    /// The subscription was made with the password stored now.
+    pub fn made_with_password(&self, via_password_at: Option<DateTime<Utc>>) -> bool {
+        via_password_at.is_some() && via_password_at == self.password_set_at
+    }
+
+    /// A subscription stays while a way in still covers it: the email list
+    /// its address is on, or the password it was made with, still on.
+    pub fn keeps_subscription(
+        &self,
+        email: Option<&str>,
+        via_password_at: Option<DateTime<Utc>>,
+    ) -> bool {
+        email.is_some_and(|e| self.admits(e))
+            || (self.settings.password_enabled && self.made_with_password(via_password_at))
+    }
 }
 
 /// Who may open a page, as the API, MCP and Terraform send and read it.
@@ -203,12 +236,20 @@ impl PageAccess {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AccessSpec {
-    /// Private when true: only the addresses and domains on `rules` can open
-    /// the page. False keeps the list for the next time it is made private.
+    /// Private when true: only people a way in lets through can open the
+    /// page. False keeps the list and the password for the next time it is
+    /// made private.
     pub protected: bool,
+    /// Keep a sign-in, by email or password, for this many days: 7, 30 or
+    /// 90. `null` keeps it until sign-out, or until the way in it came
+    /// through closes.
+    #[serde(default)]
+    pub session_days: Option<i32>,
     #[serde(default)]
     pub email: EmailAccessSpec,
-    /// Up to 500 entries.
+    #[serde(default)]
+    pub password: PasswordAccessSpec,
+    /// Who can get an email code, up to 500 entries.
     #[serde(default)]
     pub rules: Vec<AccessRule>,
 }
@@ -226,10 +267,6 @@ pub struct EmailAccessSpec {
     /// 90 or 365. `null` never asks.
     #[serde(default)]
     pub recheck_days: Option<i32>,
-    /// Keep a sign-in for this many days: 7, 30 or 90. `null` keeps it until
-    /// sign-out, a block, or the list stops covering the viewer.
-    #[serde(default)]
-    pub session_days: Option<i32>,
 }
 
 fn yes() -> bool {
@@ -243,21 +280,84 @@ impl Default for EmailAccessSpec {
             enabled: s.email_enabled,
             passkeys_enabled: s.passkeys_enabled,
             recheck_days: s.recheck_days,
-            session_days: s.session_days,
         }
     }
 }
+
+/// One password shared with everyone who should read the page. It is stored
+/// as a hash, so it is never read back, only replaced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordAccessSpec {
+    /// Anyone with the password can open the page. Off keeps the stored
+    /// password, so turning it on again brings the same one back.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Sets or replaces the password, kept exactly as sent: 1 to 128
+    /// characters. Write only, never returned; omit it to keep the stored one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>, write_only, min_length = 1, max_length = 128)]
+    pub value: Option<PagePassword>,
+}
+
+/// A page password as the owner typed it. Prints as redacted, so no `Debug`
+/// or log line carries it.
+#[derive(Clone, Deserialize)]
+#[serde(transparent)]
+pub struct PagePassword(SecretString);
+
+impl PagePassword {
+    pub fn expose(&self) -> &str {
+        self.0.expose_secret()
+    }
+
+    pub fn into_secret(self) -> SecretString {
+        self.0
+    }
+}
+
+impl From<&str> for PagePassword {
+    fn from(s: &str) -> Self {
+        Self(SecretString::from(s))
+    }
+}
+
+impl std::fmt::Debug for PagePassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PagePassword([REDACTED])")
+    }
+}
+
+/// Reads never carry one, so this only stops a stray serialisation from
+/// writing it out.
+impl Serialize for PagePassword {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str("[REDACTED]")
+    }
+}
+
+impl PartialEq for PagePassword {
+    fn eq(&self, other: &Self) -> bool {
+        self.expose() == other.expose()
+    }
+}
+
+impl Eq for PagePassword {}
 
 impl From<&PageAccess> for AccessSpec {
     fn from(a: &PageAccess) -> Self {
         let s = a.settings;
         Self {
             protected: s.protected,
+            session_days: s.session_days,
             email: EmailAccessSpec {
                 enabled: s.email_enabled,
                 passkeys_enabled: s.passkeys_enabled,
                 recheck_days: s.recheck_days,
-                session_days: s.session_days,
+            },
+            password: PasswordAccessSpec {
+                enabled: s.password_enabled,
+                value: None,
             },
             rules: a.rules.clone(),
         }
@@ -275,10 +375,16 @@ pub enum AccessError {
         field: &'static str,
         choices: &'static [i32],
     },
-    #[error("a private page needs a way in: turn the email code on")]
+    #[error("a private page needs a way in: turn on the email code or set a password")]
     NoWayIn,
-    #[error("add who can open it: a private page needs at least one address or domain")]
+    #[error(
+        "add who can get a code: with the email code on, the list needs at least one address or domain"
+    )]
     EmptyList,
+    #[error("set a password before turning the password way in on")]
+    PasswordRequired,
+    #[error("a page password is 1 to {MAX_PAGE_PASSWORD_CHARS} characters")]
+    InvalidPassword,
     #[error("private status pages are part of the Team plan")]
     NotOnPlan,
 }
@@ -290,16 +396,31 @@ impl AccessError {
             Self::TooManyRules | Self::EmptyList => "access.rules".into(),
             Self::Period { field, .. } => (*field).into(),
             Self::NoWayIn => "access.email.enabled".into(),
+            Self::PasswordRequired | Self::InvalidPassword => "access.password.value".into(),
             Self::NotOnPlan => "access.protected".into(),
         }
     }
 }
 
+/// A checked access write, and the new password it carries, still in the
+/// clear: the caller hashes it off the async runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidAccess {
+    pub access: PageAccess,
+    pub password: Option<PagePassword>,
+}
+
 impl AccessSpec {
     /// The write this spec asks for, normalised, or why it cannot be made.
-    /// `may_be_private` is whether the plan includes private pages or the page
-    /// already is one: a page held since its plan lost them stays editable.
-    pub fn validate(self, may_be_private: bool) -> Result<PageAccess, AccessError> {
+    /// `plan_allows` is whether the plan includes private pages; a page that
+    /// already is one stays editable while held for a plan that lost them.
+    /// `stored` is the page's access now, whose password a spec without a
+    /// value keeps.
+    pub fn validate(
+        self,
+        plan_allows: bool,
+        stored: Option<&PageAccess>,
+    ) -> Result<ValidAccess, AccessError> {
         // Before any parsing, so an oversized list costs nothing to refuse.
         if self.rules.len() > MAX_ACCESS_RULES {
             return Err(AccessError::TooManyRules);
@@ -321,8 +442,8 @@ impl AccessSpec {
                 RECHECK_DAY_CHOICES,
             ),
             (
-                self.email.session_days,
-                "access.email.session_days",
+                self.session_days,
+                "access.session_days",
                 SESSION_DAY_CHOICES,
             ),
         ] {
@@ -330,26 +451,43 @@ impl AccessSpec {
                 return Err(AccessError::Period { field, choices });
             }
         }
+        let password = self.password.value;
+        if password.as_ref().is_some_and(|p| {
+            p.expose().is_empty() || p.expose().chars().count() > MAX_PAGE_PASSWORD_CHARS
+        }) {
+            return Err(AccessError::InvalidPassword);
+        }
+        if self.password.enabled
+            && password.is_none()
+            && !stored.is_some_and(PageAccess::has_password)
+        {
+            return Err(AccessError::PasswordRequired);
+        }
         if self.protected {
-            if !may_be_private {
+            if !plan_allows && !stored.is_some_and(PageAccess::is_private) {
                 return Err(AccessError::NotOnPlan);
             }
-            if !self.email.enabled {
+            if !self.email.enabled && !self.password.enabled {
                 return Err(AccessError::NoWayIn);
             }
-            if rules.is_empty() {
+            if self.email.enabled && rules.is_empty() {
                 return Err(AccessError::EmptyList);
             }
         }
-        Ok(PageAccess {
-            settings: PageAccessSettings {
-                protected: self.protected,
-                email_enabled: self.email.enabled,
-                passkeys_enabled: self.email.passkeys_enabled,
-                recheck_days: self.email.recheck_days,
-                session_days: self.email.session_days,
+        Ok(ValidAccess {
+            access: PageAccess {
+                settings: PageAccessSettings {
+                    protected: self.protected,
+                    email_enabled: self.email.enabled,
+                    passkeys_enabled: self.email.passkeys_enabled,
+                    recheck_days: self.email.recheck_days,
+                    session_days: self.session_days,
+                    password_enabled: self.password.enabled,
+                },
+                rules,
+                password_set_at: stored.and_then(|s| s.password_set_at),
             },
-            rules,
+            password,
         })
     }
 }
@@ -359,6 +497,8 @@ impl AccessSpec {
 #[derive(Debug, Clone)]
 pub struct AccessWrite {
     pub access: PageAccess,
+    /// The new password's argon2id PHC string; `None` keeps the stored one.
+    pub password_hash: Option<String>,
     pub actor: Option<UserId>,
 }
 
@@ -397,6 +537,7 @@ mod tests {
                 ..Default::default()
             },
             rules: vec![rule(AccessRuleKind::Domain, "dealer.example")],
+            password_set_at: None,
         };
         assert!(access.admits("anna@dealer.example"));
         access.settings.email_enabled = false;
@@ -458,22 +599,157 @@ mod tests {
     fn spec(protected: bool, rules: &[(&str, AccessRuleKind)]) -> AccessSpec {
         AccessSpec {
             protected,
+            session_days: None,
             email: EmailAccessSpec::default(),
+            password: PasswordAccessSpec::default(),
             rules: rules.iter().map(|(v, k)| rule(*k, v)).collect(),
+        }
+    }
+
+    fn password_only(value: Option<&str>) -> AccessSpec {
+        let mut s = spec(true, &[]);
+        s.email.enabled = false;
+        s.password = PasswordAccessSpec {
+            enabled: true,
+            value: value.map(PagePassword::from),
+        };
+        s
+    }
+
+    fn stored_password() -> PageAccess {
+        PageAccess {
+            password_set_at: Some(Utc::now()),
+            ..Default::default()
         }
     }
 
     #[test]
     fn a_private_page_needs_the_plan_a_way_in_and_someone_on_the_list() {
         let ok = spec(true, &[("dealer.example", AccessRuleKind::Domain)]);
-        assert!(ok.clone().validate(true).is_ok());
-        assert_eq!(ok.clone().validate(false), Err(AccessError::NotOnPlan));
-        assert_eq!(spec(true, &[]).validate(true), Err(AccessError::EmptyList));
+        assert!(ok.clone().validate(true, None).is_ok());
+        assert_eq!(
+            ok.clone().validate(false, None),
+            Err(AccessError::NotOnPlan)
+        );
+        assert_eq!(
+            spec(true, &[]).validate(true, None),
+            Err(AccessError::EmptyList)
+        );
         let mut off = ok;
         off.email.enabled = false;
-        assert_eq!(off.validate(true), Err(AccessError::NoWayIn));
+        assert_eq!(off.validate(true, None), Err(AccessError::NoWayIn));
         // Public keeps its list, empty or not, whatever the plan.
-        assert!(spec(false, &[]).validate(false).is_ok());
+        assert!(spec(false, &[]).validate(false, None).is_ok());
+    }
+
+    #[test]
+    fn a_page_held_since_its_plan_lost_private_pages_stays_editable() {
+        let ok = spec(true, &[("dealer.example", AccessRuleKind::Domain)]);
+        let held = PageAccess {
+            settings: PageAccessSettings {
+                protected: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(ok.clone().validate(false, Some(&held)).is_ok());
+        assert_eq!(
+            ok.validate(false, Some(&PageAccess::default())),
+            Err(AccessError::NotOnPlan)
+        );
+    }
+
+    #[test]
+    fn a_password_alone_is_a_way_in_and_needs_no_list() {
+        let valid = password_only(Some("x")).validate(true, None).unwrap();
+        assert!(valid.access.settings.password_enabled);
+        assert!(!valid.access.settings.email_enabled);
+        assert_eq!(valid.password, Some(PagePassword::from("x")));
+        // With email on as well, the list is needed again.
+        let mut both = password_only(Some("x"));
+        both.email.enabled = true;
+        assert_eq!(both.validate(true, None), Err(AccessError::EmptyList));
+    }
+
+    #[test]
+    fn turning_the_password_on_needs_one_sent_or_stored() {
+        assert_eq!(
+            password_only(None).validate(true, None),
+            Err(AccessError::PasswordRequired)
+        );
+        let kept = password_only(None)
+            .validate(true, Some(&stored_password()))
+            .unwrap();
+        assert_eq!(kept.password, None);
+        assert!(kept.access.has_password());
+        // Stored while off is fine without a way in being on yet.
+        let mut stored_off = spec(false, &[]);
+        stored_off.password.value = Some(PagePassword::from("later"));
+        assert!(stored_off.validate(true, None).is_ok());
+    }
+
+    #[test]
+    fn a_password_is_kept_as_typed_and_bounded_only_by_length() {
+        for ok in [
+            "1",
+            " padded ",
+            "ünïcödé",
+            &"a".repeat(MAX_PAGE_PASSWORD_CHARS),
+        ] {
+            let valid = password_only(Some(ok)).validate(true, None).unwrap();
+            assert_eq!(valid.password.unwrap().expose(), ok);
+        }
+        // Characters, not bytes: 128 multi-byte ones still fit.
+        assert!(
+            password_only(Some(&"ü".repeat(MAX_PAGE_PASSWORD_CHARS)))
+                .validate(true, None)
+                .is_ok()
+        );
+        for bad in ["", &"a".repeat(MAX_PAGE_PASSWORD_CHARS + 1)] {
+            assert_eq!(
+                password_only(Some(bad)).validate(true, None),
+                Err(AccessError::InvalidPassword)
+            );
+        }
+    }
+
+    #[test]
+    fn the_password_never_prints_and_never_reads_back() {
+        let p = PagePassword::from("hunter2-secret");
+        assert!(!format!("{p:?}").contains("hunter2"));
+        let spec: AccessSpec = serde_json::from_value(serde_json::json!({
+            "protected": true,
+            "email": { "enabled": false },
+            "password": { "enabled": true, "value": "hunter2-secret" },
+        }))
+        .unwrap();
+        assert!(!format!("{spec:?}").contains("hunter2"));
+        assert!(!serde_json::to_string(&spec).unwrap().contains("hunter2"));
+        let read = AccessSpec::from(&spec.validate(true, None).unwrap().access);
+        let out = serde_json::to_value(&read).unwrap();
+        assert_eq!(out["password"], serde_json::json!({ "enabled": true }));
+    }
+
+    #[test]
+    fn a_subscription_stays_while_a_way_in_covers_it() {
+        let set_at = Utc::now();
+        let mut access = PageAccess {
+            settings: PageAccessSettings {
+                protected: true,
+                password_enabled: true,
+                ..Default::default()
+            },
+            rules: vec![rule(AccessRuleKind::Domain, "dealer.example")],
+            password_set_at: Some(set_at),
+        };
+        assert!(access.keeps_subscription(Some("anna@dealer.example"), None));
+        assert!(access.keeps_subscription(Some("j@gmail.example"), Some(set_at)));
+        assert!(!access.keeps_subscription(Some("j@gmail.example"), None));
+        let older = set_at - chrono::Duration::days(1);
+        assert!(!access.keeps_subscription(Some("j@gmail.example"), Some(older)));
+        assert!(!access.keeps_subscription(None, None));
+        access.settings.password_enabled = false;
+        assert!(!access.keeps_subscription(Some("j@gmail.example"), Some(set_at)));
     }
 
     #[test]
@@ -485,15 +761,16 @@ mod tests {
                 ("dealer.example", AccessRuleKind::Domain),
             ],
         )
-        .validate(true)
-        .unwrap();
+        .validate(true, None)
+        .unwrap()
+        .access;
         assert_eq!(
             access.rules,
             vec![rule(AccessRuleKind::Domain, "dealer.example")]
         );
         let bad = spec(true, &[("dealer.example", AccessRuleKind::Address)]);
         assert!(matches!(
-            bad.validate(true),
+            bad.validate(true, None),
             Err(AccessError::Rule { index: 0, .. })
         ));
         let many: Vec<String> = (0..=MAX_ACCESS_RULES).map(|i| format!("d{i}.de")).collect();
@@ -502,7 +779,7 @@ mod tests {
             .map(|d| (d.as_str(), AccessRuleKind::Domain))
             .collect();
         assert_eq!(
-            spec(true, &many).validate(true),
+            spec(true, &many).validate(true, None),
             Err(AccessError::TooManyRules)
         );
     }
@@ -512,12 +789,17 @@ mod tests {
         let mut s = spec(true, &[("dealer.example", AccessRuleKind::Domain)]);
         s.email.recheck_days = Some(14);
         assert!(matches!(
-            s.clone().validate(true),
+            s.clone().validate(true, None),
             Err(AccessError::Period { .. })
         ));
         s.email.recheck_days = Some(90);
-        s.email.session_days = Some(30);
-        assert!(s.validate(true).is_ok());
+        s.session_days = Some(31);
+        assert_eq!(
+            s.clone().validate(true, None).unwrap_err().field(),
+            "access.session_days"
+        );
+        s.session_days = Some(30);
+        assert!(s.validate(true, None).is_ok());
     }
 
     #[test]

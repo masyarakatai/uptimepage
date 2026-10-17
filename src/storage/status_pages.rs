@@ -291,14 +291,7 @@ impl StatusPageStore for PgStatusPageStore {
         )
         .await?;
         if let Some(w) = &new.access {
-            page_access::settings::replace_in_tx(
-                &mut tx,
-                org,
-                StatusPageId(row.id),
-                &w.access,
-                w.actor,
-            )
-            .await?;
+            page_access::settings::replace_in_tx(&mut tx, org, StatusPageId(row.id), w).await?;
         }
         tx.commit().await.map_err(db_err)?;
         Ok(Some(row.into_page()))
@@ -381,7 +374,7 @@ impl StatusPageStore for PgStatusPageStore {
         };
         // After the page row: its lock is what serialises two edits of one page.
         if let Some(w) = &upd.access {
-            page_access::settings::replace_in_tx(&mut tx, org, id, &w.access, w.actor).await?;
+            page_access::settings::replace_in_tx(&mut tx, org, id, w).await?;
         }
         tx.commit().await.map_err(db_err)?;
         Ok(Some(row.into_page()))

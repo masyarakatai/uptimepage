@@ -120,6 +120,8 @@ edit it with `PATCH`. Model + caps in [Per-org status pages](per-org-status.md).
 | `POST` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/block` | sign a viewer out, remove their passkeys and subscription, and keep them out |
 | `POST` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/unblock` | lift a block |
 | `GET` | `/api/v1/status-pages/{id}/access/viewers/{viewer_id}/history` | a viewer's visit days and sign-in events, kept a year |
+| `GET` | `/api/v1/status-pages/{id}/access/password` | the page password's use: `enabled`, `set_at`, `set_by`, devices signed in (`sessions`), `last_sign_in_at`, `failed_last_24h`, and the `subscriptions` a change would end |
+| `POST` | `/api/v1/status-pages/{id}/access/password/sign-out` | sign out every device signed in with the password; the password still works |
 
 `access` is who may open the page. It is `null` on a page never made private,
 and as a write it replaces what is stored, whole. `POST` and `PATCH` take it
@@ -129,7 +131,9 @@ beside the other fields and commit it in the same transaction:
 {
   "access": {
     "protected": true,
-    "email": { "enabled": true, "passkeys_enabled": true, "recheck_days": null, "session_days": null },
+    "session_days": null,
+    "email": { "enabled": true, "passkeys_enabled": true, "recheck_days": null },
+    "password": { "enabled": true, "value": "…" },
     "rules": [
       { "kind": "domain", "value": "example.com" },
       { "kind": "address", "value": "name@partner.example" }
@@ -140,11 +144,20 @@ beside the other fields and commit it in the same transaction:
 
 `protected: true` needs a plan with private pages (`403 PRIVATE_PAGES_DISABLED`
 otherwise; a page that already is private stays editable after its plan loses
-them), the email code on, and at least one rule. `recheck_days` is 30, 90,
-365 or `null`; `session_days` is 7, 30, 90 or `null`. Entries are normalised
+them) and a way in: the email code on with at least one rule, the password on,
+or both. `session_days` (7, 30, 90 or `null`) applies to email and password
+sign-ins alike; `recheck_days` is 30, 90, 365 or `null`. Entries are normalised
 (lower case, an international domain in its ASCII form) and deduplicated, up to
-500. Anything else is `400 ACCESS_INVALID`, with `field` naming the part. See
-[Who can open a page](public-status.md#who-can-open-a-page).
+500. Anything else is `400 ACCESS_INVALID`, with `field` naming the part.
+
+`password.value` is write only: it sets or replaces the page password, kept as
+sent, 1 to 128 characters (`400 INVALID_PAGE_PASSWORD` otherwise). Reads return
+`password: { "enabled": … }` and never the value, so a GET then a PATCH of what
+it said keeps the stored password. Without `value` the stored one stays, on or
+off; `enabled: true` with none stored is `400 PASSWORD_REQUIRED` (field
+`access.password.value`). `value` with `enabled: false` stores it and leaves the
+way in off. Audit entries say a password was `set` or `changed`, never what it
+is. See [Who can open a page](public-status.md#who-can-open-a-page).
 
 ### Public status endpoints
 
@@ -154,8 +167,9 @@ Each response carries `Cache-Control: public, max-age=10,
 stale-while-revalidate=30`. A [private page](public-status.md#who-can-open-a-page)
 answers these only to a signed-in viewer, with `Cache-Control: private,
 no-store`, and anyone else with `401 PAGE_SIGN_IN_REQUIRED`. Its feed also
-answers a viewer's personal link (`?viewer=…&t=…`), for readers that carry no
-cookie. A monitor not curated onto the page being
+answers a viewer's own link (`?viewer=…&t=…`) or the page-password link
+(`?t=…`, which stops when the password changes), for readers that carry no
+cookie. The page password itself is never accepted in a URL or a header. A monitor not curated onto the page being
 served is invisible on every public surface — direct lookups return 404
 and it never appears in any list. Wire types literally cannot serialise
 sensitive target fields (`url`, `headers`, `basic_auth`, `bearer_token`).

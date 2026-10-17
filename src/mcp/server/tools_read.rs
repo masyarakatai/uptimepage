@@ -33,7 +33,7 @@ use crate::mcp::schema::{
     LatencyPoint, ListIncidentsArgs, ListMaintenanceArgs, ListMonitorsArgs, ListStatusPagesArgs,
     MaintenanceIdArg, MaintenanceList, MaintenanceWindowView, MetricCount, MonitorDetail,
     MonitorHistory, MonitorList, MonitorListItem, NoisyMonitor, OrgHealth, OrgUsage,
-    PageViewerItem, PageViewerList, Quota, RecoveredStretch, RegionList,
+    PagePasswordUse, PageViewerItem, PageViewerList, Quota, RecoveredStretch, RegionList,
     StatusPageComponent as McpComponent, StatusPageDetail, StatusPageList, StatusPageSummary,
     TagItem, TagList, VariableList, VariableSummary, WorstMonitor,
 };
@@ -833,7 +833,7 @@ impl McpServer {
     /// The people who signed in to a private page, for "who can see our
     /// status page?".
     #[tool(
-        description = "List who signed in to a private status page: each viewer's address, first and last visit, saved passkeys, whether they subscribe by email, and whether they are blocked. Addresses are customer data. Read-only.",
+        description = "List who signed in to a private status page: each viewer's address, first and last visit, saved passkeys, whether they subscribe by email, and whether they are blocked; and for the page password, which names nobody, the devices signed in with it, its last sign-in and the wrong tries in 24 hours. Addresses are customer data. Read-only.",
         title = "List status page viewers",
         annotations(read_only_hint = true)
     )]
@@ -854,11 +854,30 @@ impl McpServer {
             .into_iter()
             .find(|p| p.slug == args.slug)
             .ok_or_else(|| McpToolError::not_found("status page not found"))?;
-        let rows =
-            crate::storage::page_access::viewers::list_for_page(self.require_pool()?, org, page.id)
-                .await
-                .map_err(|e| McpToolError::internal(format!("page viewers: {e}")))?;
+        let pool = self.require_pool()?;
+        let rows = crate::storage::page_access::viewers::list_for_page(pool, org, page.id)
+            .await
+            .map_err(|e| McpToolError::internal(format!("page viewers: {e}")))?;
+        let page_ref = crate::domain::PageRef { page: page.id, org };
+        let password = match crate::storage::page_access::settings::load(pool, page_ref)
+            .await
+            .map_err(|e| McpToolError::internal(format!("page access: {e}")))?
+        {
+            Some(access) => {
+                let s = crate::storage::page_access::password::summary(pool, page_ref, &access)
+                    .await
+                    .map_err(|e| McpToolError::internal(format!("page password: {e}")))?;
+                Some(PagePasswordUse {
+                    enabled: s.enabled,
+                    sessions: s.sessions,
+                    last_sign_in: s.last_sign_in_at.map(|t| t.to_rfc3339()),
+                    wrong_tries_24h: s.failed_last_24h,
+                })
+            }
+            None => None,
+        };
         Ok(Json(PageViewerList {
+            password,
             viewers: rows
                 .into_iter()
                 .map(|v| PageViewerItem {

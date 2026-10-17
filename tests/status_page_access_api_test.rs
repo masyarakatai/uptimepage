@@ -174,7 +174,8 @@ async fn a_private_page_is_written_in_one_request_and_reads_back() {
     let (status, page) = rig
         .create(Some(json!({
             "protected": true,
-            "email": { "passkeys_enabled": false, "recheck_days": 90, "session_days": 30 },
+            "session_days": 30,
+            "email": { "passkeys_enabled": false, "recheck_days": 90 },
             "rules": [
                 { "kind": "domain", "value": "DEALER.example" },
                 { "kind": "address", "value": "K.Lindner@Example.org" },
@@ -187,7 +188,9 @@ async fn a_private_page_is_written_in_one_request_and_reads_back() {
         page["access"],
         json!({
             "protected": true,
-            "email": { "enabled": true, "passkeys_enabled": false, "recheck_days": 90, "session_days": 30 },
+            "session_days": 30,
+            "email": { "enabled": true, "passkeys_enabled": false, "recheck_days": 90 },
+            "password": { "enabled": false },
             "rules": [
                 { "kind": "address", "value": "k.lindner@example.org" },
                 { "kind": "domain", "value": "dealer.example" }
@@ -213,6 +216,11 @@ async fn a_private_page_is_written_in_one_request_and_reads_back() {
                     "rules": [{ "kind": "domain", "value": "dealer.example" }] }),
             "access.email.enabled",
         ),
+        (
+            json!({ "protected": true, "session_days": 14,
+                    "rules": [{ "kind": "domain", "value": "dealer.example" }] }),
+            "access.session_days",
+        ),
     ] {
         let (status, body) = rig
             .call(
@@ -234,6 +242,16 @@ async fn a_private_page_is_written_in_one_request_and_reads_back() {
             Method::PATCH,
             &path,
             Some(json!({ "access": { "protected": true, "rules": [], "extra": 1 } })),
+        )
+        .await;
+    assert!(status.is_client_error(), "{body}");
+    // The session length moved out of `email`; the old spelling is refused.
+    let (status, body) = rig
+        .call(
+            Method::PATCH,
+            &path,
+            Some(json!({ "access": { "protected": true, "email": { "session_days": 30 },
+                                     "rules": [{ "kind": "domain", "value": "dealer.example" }] } })),
         )
         .await;
     assert!(status.is_client_error(), "{body}");
@@ -390,5 +408,219 @@ async fn another_orgs_viewer_is_not_found() {
         StatusCode::NOT_FOUND
     );
     other.cleanup().await;
+    rig.cleanup().await;
+}
+
+fn password_only(value: Option<&str>) -> Value {
+    let mut access = json!({
+        "protected": true,
+        "email": { "enabled": false },
+        "password": { "enabled": true },
+    });
+    if let Some(v) = value {
+        access["password"]["value"] = json!(v);
+    }
+    access
+}
+
+async fn stored_password(pool: &PgPool, page: &str) -> (Option<String>, bool) {
+    sqlx::query_as(
+        "SELECT password_hash, password_set_by IS NOT NULL FROM status_page_access \
+         WHERE status_page_id = $1",
+    )
+    .bind(Uuid::parse_str(page).unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn the_page_password_is_written_once_and_never_read_back() {
+    let Some(rig) = rig("team").await else { return };
+    let secret = "hunter2 but longer";
+    let (status, page) = rig.create(Some(password_only(Some(secret)))).await;
+    assert_eq!(status, StatusCode::CREATED, "{page}");
+    assert_eq!(page["access"]["password"], json!({ "enabled": true }));
+    assert!(!page.to_string().contains(secret));
+    let id = page["id"].as_str().unwrap().to_owned();
+    let path = format!("/api/v1/status-pages/{id}");
+    let (hash, set_by) = stored_password(&rig.pool, &id).await;
+    let hash = hash.unwrap();
+    assert!(hash.starts_with("$argon2id$"), "{hash}");
+    assert!(set_by);
+
+    // A GET then a PATCH of what it said keeps the password.
+    let (_, read) = rig.call(Method::GET, &path, None).await;
+    assert!(!read.to_string().contains(secret));
+    let (status, body) = rig
+        .call(
+            Method::PATCH,
+            &path,
+            Some(json!({ "access": read["access"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        stored_password(&rig.pool, &id).await.0.as_deref(),
+        Some(hash.as_str())
+    );
+
+    // Off keeps it; on again without a value brings it back.
+    let mut off = read["access"].clone();
+    off["password"]["enabled"] = json!(false);
+    off["email"]["enabled"] = json!(true);
+    off["rules"] = json!([{ "kind": "domain", "value": "dealer.example" }]);
+    let (status, body) = rig
+        .call(Method::PATCH, &path, Some(json!({ "access": off })))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["access"]["password"]["enabled"], false);
+    assert_eq!(
+        stored_password(&rig.pool, &id).await.0.as_deref(),
+        Some(hash.as_str())
+    );
+    let (status, body) = rig
+        .call(
+            Method::PATCH,
+            &path,
+            Some(json!({ "access": password_only(None) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        stored_password(&rig.pool, &id).await.0.as_deref(),
+        Some(hash.as_str())
+    );
+
+    // A one-character password is the owner's call; empty and too long are not.
+    let (status, _) = rig
+        .call(
+            Method::PATCH,
+            &path,
+            Some(json!({ "access": password_only(Some("1")) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(stored_password(&rig.pool, &id).await.0.unwrap(), hash);
+    for bad in [String::new(), "a".repeat(129)] {
+        let (status, body) = rig
+            .call(
+                Method::PATCH,
+                &path,
+                Some(json!({ "access": password_only(Some(&bad)) })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "INVALID_PAGE_PASSWORD");
+        assert_eq!(body["error"]["field"], "access.password.value");
+    }
+
+    // The trail says a password was set and changed, never what it is.
+    let audit: Vec<(Value,)> = sqlx::query_as(
+        "SELECT metadata FROM org_audit_log \
+         WHERE org_id = $1 AND action = 'status_page.access_updated' ORDER BY occurred_at, id",
+    )
+    .bind(rig.org.0)
+    .fetch_all(&rig.pool)
+    .await
+    .unwrap();
+    let said: Vec<&Value> = audit.iter().map(|(m,)| &m["password"]).collect();
+    assert_eq!(said.first(), Some(&&json!("set")));
+    assert_eq!(said.last(), Some(&&json!("changed")));
+    for (m,) in &audit {
+        assert!(!m.to_string().contains(secret), "{m}");
+    }
+    rig.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn turning_the_password_on_needs_one_sent_or_stored() {
+    let Some(rig) = rig("team").await else { return };
+    let (status, body) = rig.create(Some(password_only(None))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "PASSWORD_REQUIRED");
+    assert_eq!(body["error"]["field"], "access.password.value");
+
+    // Stored while off, and the way in stays off.
+    let (status, page) = rig
+        .create(Some(json!({
+            "protected": false,
+            "password": { "enabled": false, "value": "for later" },
+        })))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{page}");
+    assert_eq!(page["access"]["password"]["enabled"], false);
+    let id = page["id"].as_str().unwrap();
+    assert!(stored_password(&rig.pool, id).await.0.is_some());
+    let (status, body) = rig
+        .call(
+            Method::PATCH,
+            &format!("/api/v1/status-pages/{id}"),
+            Some(json!({ "access": password_only(None) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    rig.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn the_password_line_counts_its_use_and_signs_everyone_out() {
+    let Some(rig) = rig("team").await else { return };
+    let (_, page) = rig.create(Some(password_only(Some("shared one")))).await;
+    let id = page["id"].as_str().unwrap();
+    let page_id = Uuid::parse_str(id).unwrap();
+    for (method, ip) in [("password", "a"), ("password", "b")] {
+        sqlx::query(
+            "INSERT INTO status_page_sessions (id_hash, status_page_id, org_id, method, ip_hash) \
+             VALUES (gen_random_uuid()::text, $1, $2, $3, $4)",
+        )
+        .bind(page_id)
+        .bind(rig.org.0)
+        .bind(method)
+        .bind(ip)
+        .execute(&rig.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO status_page_access_events (status_page_id, org_id, kind, method) \
+         VALUES ($1, $2, 'password_failed', 'password'), ($1, $2, 'signed_in', 'password')",
+    )
+    .bind(page_id)
+    .bind(rig.org.0)
+    .execute(&rig.pool)
+    .await
+    .unwrap();
+    let base = format!("/api/v1/status-pages/{id}/access/password");
+    let (status, line) = rig.call(Method::GET, &base, None).await;
+    assert_eq!(status, StatusCode::OK, "{line}");
+    assert_eq!(line["enabled"], true);
+    assert_eq!(line["sessions"], 2);
+    assert_eq!(line["failed_last_24h"], 1);
+    assert_eq!(line["subscriptions"], 0);
+    assert!(line["set_at"].is_string());
+    assert!(line["set_by"].is_string());
+    assert!(line["last_sign_in_at"].is_string());
+
+    let (status, _) = rig
+        .call(Method::POST, &format!("{base}/sign-out"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, line) = rig.call(Method::GET, &base, None).await;
+    assert_eq!(line["sessions"], 0);
+    // The password still works, so it is not changed.
+    assert!(stored_password(&rig.pool, id).await.0.is_some());
+    let (ended,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM org_audit_log \
+         WHERE org_id = $1 AND action = 'status_page.password_sessions_ended'",
+    )
+    .bind(rig.org.0)
+    .fetch_one(&rig.pool)
+    .await
+    .unwrap();
+    assert_eq!(ended, 1);
     rig.cleanup().await;
 }

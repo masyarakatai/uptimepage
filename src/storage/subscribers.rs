@@ -84,12 +84,34 @@ pub async fn subscribe(pool: &PgPool, new: &NewSubscriber) -> Result<Subscriber>
 
 /// A signed-in viewer of a private page subscribing their own address. The
 /// sign-in already proved the address, so it is verified at once.
+///
+/// The viewer row is held `FOR SHARE` to commit, so a block (which updates it)
+/// either waits and then deletes this subscription, or goes first and is seen
+/// here. `false` when the viewer is blocked or gone.
 pub async fn subscribe_viewer(
     pool: &PgPool,
     page: crate::domain::PageRef,
     viewer: Uuid,
     email: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("subscribers::subscribe_viewer begin")?;
+    let blocked: Option<(bool,)> = sqlx::query_as(
+        "SELECT blocked_at IS NOT NULL FROM status_page_viewers \
+         WHERE id = $1 AND status_page_id = $2 AND org_id = $3 FOR SHARE",
+    )
+    .bind(viewer)
+    .bind(page.page.0)
+    .bind(page.org.0)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("subscribers::subscribe_viewer lock")?;
+    if blocked != Some((false,)) {
+        tx.rollback().await.ok();
+        return Ok(false);
+    }
     // A subscription from before the page went private keeps the address as
     // it was typed; sign-in already tied it to this viewer, so reuse it.
     let claimed = sqlx::query(
@@ -100,29 +122,107 @@ pub async fn subscribe_viewer(
     .bind(page.page.0)
     .bind(page.org.0)
     .bind(viewer)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("subscribers::subscribe_viewer claimed")?;
-    if claimed.rows_affected() > 0 {
-        return Ok(());
+    if claimed.rows_affected() == 0 {
+        sqlx::query(
+            "INSERT INTO status_page_subscribers \
+                 (status_page_id, org_id, channel, target, config, verified_at, viewer_id) \
+             VALUES ($1, $2, 'email', $3, '{}'::jsonb, now(), $4) \
+             ON CONFLICT (status_page_id, channel, target) DO UPDATE SET \
+                 verified_at = COALESCE(status_page_subscribers.verified_at, now()), \
+                 viewer_id = EXCLUDED.viewer_id, updated_at = now() \
+             WHERE status_page_subscribers.org_id = EXCLUDED.org_id",
+        )
+        .bind(page.page.0)
+        .bind(page.org.0)
+        .bind(email)
+        .bind(viewer)
+        .execute(&mut *tx)
+        .await
+        .context("subscribers::subscribe_viewer")?;
     }
-    sqlx::query(
-        "INSERT INTO status_page_subscribers \
-             (status_page_id, org_id, channel, target, config, verified_at, viewer_id) \
-         VALUES ($1, $2, 'email', $3, '{}'::jsonb, now(), $4) \
-         ON CONFLICT (status_page_id, channel, target) DO UPDATE SET \
-             verified_at = COALESCE(status_page_subscribers.verified_at, now()), \
-             viewer_id = EXCLUDED.viewer_id, updated_at = now() \
-         WHERE status_page_subscribers.org_id = EXCLUDED.org_id",
+    tx.commit()
+        .await
+        .context("subscribers::subscribe_viewer commit")?;
+    Ok(true)
+}
+
+/// A visitor signed in with the page password subscribing by email. Nothing
+/// proved the address, so it waits for the double opt-in like a public
+/// subscription. The row records which password let it in; an address that
+/// already has one keeps its own.
+///
+/// Under a shared lock on the access row, the visitor's session is read
+/// again by a statement after it: a new password or turning it off holds the
+/// row exclusively and deletes those sessions, so a subscribe that queued
+/// behind it finds none, and one that went first is pruned by it. `None` when
+/// the session or the password way in is gone.
+pub async fn subscribe_with_password(
+    pool: &PgPool,
+    page: crate::domain::PageRef,
+    session_hash: &str,
+    new: &NewSubscriber,
+) -> Result<Option<Subscriber>> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("subscribers::subscribe_with_password begin")?;
+    crate::storage::page_access::password::lock_page_first(&mut tx, page).await?;
+    let access: Option<(bool, bool, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT protected, password_enabled, password_set_at FROM status_page_access \
+         WHERE status_page_id = $1 AND org_id = $2 FOR SHARE",
     )
     .bind(page.page.0)
     .bind(page.org.0)
-    .bind(email)
-    .bind(viewer)
-    .execute(pool)
+    .fetch_optional(&mut *tx)
     .await
-    .context("subscribers::subscribe_viewer")?;
-    Ok(())
+    .context("subscribers::subscribe_with_password lock")?;
+    let Some((true, true, Some(set_at))) = access else {
+        tx.rollback().await.ok();
+        return Ok(None);
+    };
+    let (live,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM status_page_sessions \
+                        WHERE id_hash = $1 AND status_page_id = $2 AND org_id = $3 \
+                          AND method = 'password' \
+                          AND (expires_at IS NULL OR expires_at > now()))",
+    )
+    .bind(session_hash)
+    .bind(page.page.0)
+    .bind(page.org.0)
+    .fetch_one(&mut *tx)
+    .await
+    .context("subscribers::subscribe_with_password session")?;
+    if !live {
+        tx.rollback().await.ok();
+        return Ok(None);
+    }
+    let row: Option<SubscriberRow> = sqlx::query_as(
+        "INSERT INTO status_page_subscribers \
+             (status_page_id, org_id, channel, target, config, via_password_at) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         ON CONFLICT (status_page_id, channel, target) DO UPDATE SET updated_at = now() \
+         WHERE status_page_subscribers.org_id = EXCLUDED.org_id \
+         RETURNING id, status_page_id, org_id, channel, target, config, verified_at, \
+                   created_at, updated_at",
+    )
+    .bind(new.status_page_id)
+    .bind(new.org_id)
+    .bind(new.channel.as_db_str())
+    .bind(&new.target)
+    .bind(&new.config)
+    .bind(set_at)
+    .fetch_optional(&mut *tx)
+    .await
+    .context("subscribers::subscribe_with_password insert")?;
+    tx.commit()
+        .await
+        .context("subscribers::subscribe_with_password commit")?;
+    row.map(Subscriber::try_from)
+        .transpose()
+        .map_err(Into::into)
 }
 
 /// Mark a subscriber verified. Used by the webhook confirmation-ping path,
@@ -423,6 +523,9 @@ pub struct OperatorSubscriber {
     pub channel: String,
     pub verified: bool,
     pub created_at: chrono::DateTime<Utc>,
+    /// Set when a visitor signed in with the page password made it: that
+    /// password's `password_set_at`.
+    pub via_password_at: Option<chrono::DateTime<Utc>>,
 }
 
 /// Subscribers of one page for the operator roster (newest first), verified and
@@ -433,7 +536,8 @@ pub async fn list_for_page(
     status_page_id: Uuid,
 ) -> Result<Vec<OperatorSubscriber>> {
     let rows = sqlx::query_as::<_, OperatorSubscriber>(
-        "SELECT id, target, channel, (verified_at IS NOT NULL) AS verified, created_at
+        "SELECT id, target, channel, (verified_at IS NOT NULL) AS verified, created_at,
+                via_password_at
          FROM status_page_subscribers
          WHERE org_id = $1 AND status_page_id = $2
          ORDER BY created_at DESC",

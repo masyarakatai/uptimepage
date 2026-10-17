@@ -3,7 +3,8 @@
 // live in notify.js (`smToast`).
 //
 // Direct calls:
-//   await smConfirm({title, body, confirmLabel, danger, match}) -> boolean
+//   await smConfirm({title, body, items, confirmLabel, danger, match}) -> boolean
+//     `items` lists consequences one per bullet in place of `body`.
 //     `match` holds confirm disabled until the name is typed back, with a
 //     copy button so it stays a speed bump rather than a memory test.
 //   await smPrompt({title, body, placeholder, value, splitOnComma}) -> string | string[] | null
@@ -20,7 +21,7 @@
 
 (function () {
     let dialog = null;
-    let titleEl, bodyEl, confirmBtn, cancelBtn;
+    let titleEl, bodyEl, itemsEl, confirmBtn, cancelBtn;
     let matchWrap, matchHint, matchToken, matchInput, matchCopy;
     let resolveFn = null;
 
@@ -36,6 +37,7 @@
             '<div class="space-y-4 p-6">' +
                 '<h2 id="sm-confirm-title" class="text-lg font-semibold"></h2>' +
                 '<p class="text-sm text-muted"></p>' +
+                '<ul data-sm-confirm-items hidden class="list-inside list-disc space-y-1.5 text-sm text-muted"></ul>' +
                 '<div data-sm-confirm-match hidden class="space-y-2">' +
                     '<p data-sm-confirm-hint class="font-mono text-xs text-quiet"></p>' +
                     '<div class="flex items-center gap-2">' +
@@ -57,6 +59,7 @@
         document.body.appendChild(dialog);
         titleEl    = dialog.querySelector("h2");
         bodyEl     = dialog.querySelector("p");
+        itemsEl    = dialog.querySelector("[data-sm-confirm-items]");
         confirmBtn = dialog.querySelector("[data-sm-confirm-ok]");
         cancelBtn  = dialog.querySelector("[data-sm-confirm-cancel]");
         matchWrap  = dialog.querySelector("[data-sm-confirm-match]");
@@ -119,6 +122,14 @@
         opts = opts || {};
         titleEl.textContent    = opts.title        || "Are you sure?";
         bodyEl.textContent     = opts.body         || "";
+        const items = Array.isArray(opts.items) ? opts.items : [];
+        itemsEl.replaceChildren(...items.map((text) => {
+            const li = document.createElement("li");
+            li.textContent = String(text);
+            return li;
+        }));
+        itemsEl.hidden = !items.length;
+        bodyEl.hidden = !bodyEl.textContent;
         confirmBtn.textContent = opts.confirmLabel || "confirm";
         cancelBtn.textContent  = opts.cancelLabel  || "cancel";
 

@@ -1,7 +1,11 @@
-// The page editor's access tab: who can open a private page, and the viewers
-// who did. The list and settings ride the page's one Save; block and unblock
-// act at once, like removing a subscriber. The general/access tabs switch on
-// the page, so moving between them keeps unsaved edits.
+// The page editor's access tab: who can open a private page, the ways in
+// (the email code, the page password), and the viewers who came. The list,
+// the settings and a new password ride the page's one Save; block, unblock
+// and signing password visitors out act at once, like removing a subscriber.
+// The general/access tabs switch on the page, so moving between them keeps
+// unsaved edits.
+import { SUGGEST_BELOW, generatePassword } from "./_page_password.js";
+
 (function () {
     "use strict";
 
@@ -13,6 +17,10 @@
     const pageId = root.dataset.pageId;
     const locked = panel.dataset.locked === "true";
     let stored = JSON.parse(panel.dataset.access);
+    // The password's line; `set_at` is what says one is stored.
+    let line = JSON.parse(panel.dataset.password);
+    const subscriberCount = Number(panel.dataset.subscribers || 0);
+    const subscribersWithPassword = Number(panel.dataset.subscribersWithPassword || 0);
     let rules = stored.rules.map((r) => ({ kind: r.kind, value: r.value }));
     let touched = false;
     let viewers = null;
@@ -23,6 +31,18 @@
     function toast(message, kind) {
         if (kind === "error") window.smToastClear?.();
         window.smToast?.({ message: String(message), kind: kind || "ok" });
+    }
+
+    const plural = (n, one, many) => n + " " + (n === 1 ? one : many);
+
+    // A <time data-tz>, like every console time: localtime.js keeps the label
+    // current and puts the full stamp on hover.
+    function stamp(iso) {
+        const t = document.createElement("time");
+        t.dateTime = iso;
+        t.dataset.tz = "";
+        t.textContent = window.smLocalFmt?.relative(new Date(iso)) || iso.slice(0, 16).replace("T", " ");
+        return t;
     }
 
     async function api(method, path) {
@@ -75,6 +95,91 @@
         if (visibility() === "private" && !rules.length) showTab("access");
     }));
 
+    // ── Ways in ──────────────────────────────────────────────────────────
+
+    const wayEmail = $("#access-way-email");
+    const wayPassword = $("#access-way-password");
+    wayEmail.checked = stored.email.enabled;
+    wayPassword.checked = stored.password.enabled;
+    wayEmail.addEventListener("change", edited);
+    // Off hides the section, and a password typed but not saved goes with it.
+    wayPassword.addEventListener("change", () => {
+        if (!wayPassword.checked) {
+            pwInput.value = "";
+            reveal(false);
+        }
+        edited();
+    });
+
+    // ── The password ─────────────────────────────────────────────────────
+
+    const hasPassword = () => Boolean(line.set_at);
+    const pwInput = $("#access-password");
+    const pwShow = $("#access-password-show");
+    const pwCopy = $("#access-password-copy");
+
+    function reveal(on) {
+        pwInput.type = on ? "text" : "password";
+        pwShow.textContent = on ? "[ hide ]" : "[ show ]";
+    }
+
+    function generate() {
+        pwInput.value = generatePassword();
+        reveal(true);
+        edited();
+    }
+
+    pwInput.addEventListener("input", edited);
+    pwShow.addEventListener("click", () => reveal(pwInput.type === "password"));
+    $("#access-password-generate").addEventListener("click", generate);
+    $("[data-password-generate]").addEventListener("click", generate);
+    pwCopy.addEventListener("click", async () => {
+        let label = "[ nothing to copy ]";
+        if (pwInput.value) {
+            try {
+                await navigator.clipboard.writeText(pwInput.value);
+                label = "[ copied ]";
+            } catch {
+                // Refused (permissions, an insecure context): shown and
+                // selected, so it can be copied by hand.
+                reveal(true);
+                pwInput.select();
+                label = "[ copy failed · select and copy ]";
+            }
+        }
+        pwCopy.textContent = label;
+        setTimeout(() => { pwCopy.textContent = "[ copy ]"; }, 2000);
+    });
+
+    async function loadLine() {
+        try {
+            line = await api("GET", "/api/v1/status-pages/" + pageId + "/access/password");
+        } catch (m) {
+            toast(m, "error");
+        }
+        sync();
+    }
+
+    $("[data-password-sign-out]").addEventListener("click", async () => {
+        const ok = await window.smConfirm({
+            title: "Sign out every password visitor?",
+            items: [
+                plural(line.sessions || 0, "device goes", "devices go") + " back to the sign-in screen.",
+                "The password does not change, so anyone who knows it can sign in again. To shut them out, change it.",
+            ],
+            confirmLabel: "sign them all out",
+            danger: true,
+        });
+        if (!ok) return;
+        try {
+            await api("POST", "/api/v1/status-pages/" + pageId + "/access/password/sign-out");
+            toast("signed out");
+        } catch (m) {
+            toast(m, "error");
+        }
+        loadLine();
+    });
+
     // ── Settings ─────────────────────────────────────────────────────────
 
     const passkeys = $("#access-passkeys");
@@ -85,7 +190,7 @@
         if (r) r.checked = true;
     }
     pickRadio("access_recheck", stored.email.recheck_days);
-    pickRadio("access_session", stored.email.session_days);
+    pickRadio("access_session", stored.session_days);
     const radio = (name) => {
         const v = ($("input[name=" + name + "]:checked") || {}).value;
         return v ? Number(v) : null;
@@ -190,7 +295,7 @@
 
     function cell(text, cls) {
         const td = document.createElement("td");
-        td.className = "px-4 py-2 align-top " + (cls || "");
+        td.className = "px-4 py-2 align-middle " + (cls || "");
         if (text !== undefined) td.textContent = text;
         return td;
     }
@@ -221,15 +326,17 @@
             status.appendChild(badge);
             const actions = cell();
             const wrap = document.createElement("div");
-            wrap.className = "flex items-center justify-end gap-3";
+            wrap.className = "flex items-center justify-end gap-4";
+            // A 40 px target each; the negative margin keeps the text where it was.
+            const target = "row-link -mx-2 inline-flex min-h-10 items-center px-2";
             const hist = document.createElement("button");
             hist.type = "button";
-            hist.className = "row-link";
+            hist.className = target;
             hist.textContent = "history";
             hist.addEventListener("click", () => showHistory(v));
             const block = document.createElement("button");
             block.type = "button";
-            block.className = "row-link" + (v.blocked_at ? "" : " row-link--danger");
+            block.className = target + (v.blocked_at ? "" : " row-link--danger");
             block.textContent = v.blocked_at ? "unblock" : "block";
             block.addEventListener("click", () => setBlocked(v, !v.blocked_at));
             wrap.append(hist, block);
@@ -327,10 +434,44 @@
 
     // ── Sync ─────────────────────────────────────────────────────────────
 
-    function emptyReason() {
-        return visibility() === "private" && !rules.length
-            ? "Add who can open it. With email code as the only way in, the list needs at least one address or domain."
-            : "";
+    // Why the save would be refused, or "".
+    function refusal() {
+        if (visibility() !== "private") return "";
+        if (!wayEmail.checked && !wayPassword.checked) {
+            return "Pick at least one way in. A private page with none would open for nobody.";
+        }
+        if (wayPassword.checked && !hasPassword() && !pwInput.value) {
+            return "Set a password, or turn the password card off.";
+        }
+        if (wayEmail.checked && !rules.length) {
+            return "Add who can get a code. With the email code on, the list needs at least one address or domain.";
+        }
+        return "";
+    }
+
+    function syncPassword() {
+        const has = hasPassword();
+        const value = pwInput.value;
+        const storedLine = $("[data-password-stored]");
+        storedLine.hidden = !has;
+        if (has) {
+            storedLine.replaceChildren("set · changed ", stamp(line.set_at),
+                line.set_by ? " by " + line.set_by : "");
+        }
+        $("[data-password-label]").textContent = has ? "New password" : "Password";
+        pwInput.placeholder = has ? "empty keeps the current one" : "type one or generate it";
+        $("[data-password-replace]").hidden = !(has && value);
+        const length = [...value].length;
+        $("[data-password-weak]").hidden = !(length > 0 && length < SUGGEST_BELOW);
+
+        const on = stored.protected && stored.password.enabled;
+        $("[data-password-line]").hidden = locked || !on;
+        if (on) {
+            $("[data-password-line-stats]").replaceChildren(
+                plural(line.sessions || 0, "device", "devices") + " signed in",
+                ...(line.last_sign_in_at ? [" · last ", stamp(line.last_sign_in_at)] : []),
+                " · " + plural(line.failed_last_24h || 0, "wrong try", "wrong tries") + " in 24 h");
+        }
     }
 
     function sync() {
@@ -340,11 +481,25 @@
         $("[data-access-body]").hidden = locked || !isPrivate;
         const hasViewers = Array.isArray(viewers) && viewers.length > 0;
         $("[data-access-viewers]").hidden = locked || !(isPrivate || hasViewers);
-        const why = emptyReason();
+        const why = refusal();
         const warn = $("[data-access-warn]");
         warn.textContent = why;
         warn.hidden = !why;
+
+        const ways = [wayEmail.checked && "email", wayPassword.checked && "password"].filter(Boolean);
+        $("[data-access-email]").hidden = !wayEmail.checked;
+        $("[data-access-password]").hidden = !wayPassword.checked;
+        $("[data-access-ways-hint]").textContent = "# any one of them lets a visitor in" +
+            (!wayPassword.checked && hasPassword()
+                ? " · password off: the last one is kept, turn it on and it works again" : "");
+        $("[data-access-sessions]").hidden = !ways.length;
+        $("[data-access-sessions-hint]").textContent =
+            (ways.length === 2 ? "Applies to email and password sign-ins."
+                : ways[0] === "password" ? "Applies to password sign-ins." : "Applies to email sign-ins.") +
+            " A session not used for a year ends on its own.";
         $("[data-access-recheck]").hidden = !passkeys.checked;
+        syncPassword();
+
         $$("[data-public-only]").forEach((el) => { el.hidden = isPrivate; });
         $$("[data-private-only]").forEach((el) => { el.hidden = !isPrivate; });
         const active = Array.isArray(viewers) ? viewers.filter((x) => !x.blocked_at).length : null;
@@ -357,8 +512,74 @@
         const meta = $("[data-access-meta]");
         if (meta && !locked) {
             meta.textContent = rules.length + " on the list" +
-                (active !== null ? " · " + active + " viewer" + (active === 1 ? "" : "s") : "");
+                (active !== null ? " · " + active + " viewer" + (active === 1 ? "" : "s") : "") +
+                (stored.protected && stored.password.enabled ? " · password" : "");
         }
+    }
+
+    // What a save would end, as bullets for one confirm, or none.
+    function consequences(next) {
+        const groups = [];
+        if (!next || !next.protected) return groups;
+        const wasPrivate = stored.protected;
+        const sessions = line.sessions || 0;
+        const subscriptions = line.subscriptions || 0;
+        const ending = (devices) => [
+            sessions && "Signs out " + plural(sessions, "device", "devices") + " that opened the page with " + devices + ".",
+            subscriptions && "Ends " + plural(subscriptions, "subscription", "subscriptions") + " made with it.",
+        ].filter(Boolean);
+        if (wasPrivate && stored.password.enabled) {
+            if (!next.password.enabled) {
+                const items = ending("it");
+                if (items.length) {
+                    groups.push({
+                        title: "Turn the password off?",
+                        label: "turn it off",
+                        items: items.concat("The password is kept: turn it back on and the same one works."),
+                    });
+                }
+            } else if (next.password.value && hasPassword()) {
+                const items = ending("the old one");
+                if (items.length) {
+                    groups.push({
+                        title: "Change the page password?",
+                        label: "change password",
+                        items: items.concat("Share the new one with the people who need it."),
+                    });
+                }
+            }
+        }
+        if (wasPrivate && stored.email.enabled && !next.email.enabled) {
+            const known = Array.isArray(viewers);
+            const people = known ? viewers.filter((x) => !x.blocked_at).length : Number(panel.dataset.viewersActive || 0);
+            const subscribed = known ? viewers.filter((x) => !x.blocked_at && x.subscribed).length : 0;
+            if (people || subscribed) {
+                groups.push({
+                    title: "Turn the email code off?",
+                    label: "turn it off",
+                    items: [
+                        "Signs out " + plural(people, "person", "people") + " who signed in by email" +
+                            (subscribed ? " and ends " + subscribed + " of their subscriptions." : "."),
+                        "The list, the viewers and their passkeys are kept for when you turn it back on.",
+                    ],
+                });
+            }
+        }
+        if (!wasPrivate && !next.email.enabled) {
+            const ends = subscriberCount - subscribersWithPassword;
+            if (ends > 0) {
+                groups.push({
+                    title: "Make the page private?",
+                    label: "make it private",
+                    items: [
+                        "Ends " + plural(ends, "subscription", "subscriptions") +
+                            ": with the password as the only way in, only those made with the current password stay.",
+                        "People who subscribed while the page was public can subscribe again with the password.",
+                    ],
+                });
+            }
+        }
+        return groups;
     }
 
     // ── What the page form reads ─────────────────────────────────────────
@@ -366,7 +587,7 @@
     window.smPageAccess = {
         visibility,
         show: (name, focus = true) => showTab(name, focus),
-        refusal: emptyReason,
+        refusal,
         // Omitted when the save changes nothing about access: a page never
         // made private keeps no access row, and a held private page on a plan
         // without the feature can still be renamed or switched off.
@@ -375,16 +596,34 @@
             // Off keeps whatever it returns to.
             const protect = v === "private" || (v === "off" && stored.protected);
             if (!touched && protect === stored.protected) return undefined;
+            // On only with one to use: a tick left on a page made public
+            // with nothing typed has nothing to turn on.
+            const password = { enabled: wayPassword.checked && (hasPassword() || Boolean(pwInput.value)) };
+            if (wayPassword.checked && pwInput.value) password.value = pwInput.value;
             return {
                 protected: protect,
+                session_days: radio("access_session"),
                 email: {
-                    enabled: true,
+                    enabled: wayEmail.checked,
                     passkeys_enabled: passkeys.checked,
                     recheck_days: radio("access_recheck"),
-                    session_days: radio("access_session"),
                 },
+                password,
                 rules: rules.map((r) => ({ kind: r.kind, value: r.value })),
             };
+        },
+        // Asks first when the save signs anyone out or ends subscriptions;
+        // false when the owner backs out.
+        async confirm() {
+            const groups = consequences(this.payload());
+            if (!groups.length) return true;
+            const one = groups.length === 1;
+            return window.smConfirm({
+                title: one ? groups[0].title : "Save these access changes?",
+                items: groups.flatMap((g) => g.items),
+                confirmLabel: one ? groups[0].label : "save",
+                danger: true,
+            });
         },
         // The server's copy: it normalises entries (case, international
         // domains) and drops duplicates.
@@ -394,8 +633,11 @@
                 rules = access.rules.map((r) => ({ kind: r.kind, value: r.value }));
                 renderRules();
             }
+            pwInput.value = "";
+            reveal(false);
             touched = false;
             sync();
+            loadLine();
             if (viewers !== null) loadViewers();
         },
     };

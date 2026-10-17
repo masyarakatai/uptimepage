@@ -63,7 +63,7 @@ pub const LANDINGS: &[Landing] = &[
             },
             Section {
                 heading: "A private page for the customers who need one",
-                body: "Some status is not for the whole internet: an enterprise customer whose contract promises its own page, a partner integration, an internal page for support. On Team, a page can be private. Only the email addresses and domains on its list can open it, after signing in with a code sent by email, and a passkey skips the code next time. Everything on it stays behind the sign-in, the RSS feed and the JSON API included, and nothing is cached or indexed.",
+                body: "Some status is not for the whole internet: an enterprise customer whose contract promises its own page, a partner integration, an internal page for support. On Team, a page can be private. The email addresses and domains on its list open it with a code sent by email, and a passkey skips the code next time; or you share one page password with the people who need it. Everything on it stays behind the sign-in, the RSS feed and the JSON API included, and nothing is cached or indexed.",
             },
         ],
         code: None,

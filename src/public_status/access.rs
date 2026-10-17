@@ -1,8 +1,9 @@
 //! The one decision every surface of a status page asks before it serves:
 //! may this request read the page? A public page answers yes without a
-//! query; a private one needs a viewer session whose address the list still
-//! covers. A later way in (a shared password, an office network) is a new
-//! branch in [`PageGate::check`], not a change to any surface.
+//! query; a private one needs a session through a way in that is still open:
+//! a viewer whose address the list still covers, or the page password, still
+//! on. A later way in (an office network) is a new branch in
+//! [`PageGate::check`], not a change to any surface.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +19,9 @@ use tower_cookies::cookie::{Cookie, SameSite};
 use url::Url;
 use uuid::Uuid;
 
-use crate::domain::{PageAccess, PageRef, StatusPageId};
+use crate::domain::{PageAccess, PageRef, PageSessionMethod, StatusPageId};
 use crate::error::public::PublicAppError;
-use crate::storage::page_access::{sessions, settings, viewers};
+use crate::storage::page_access::{password, sessions, settings, viewers};
 
 /// Host-only on the page's own host, so one page's session never reaches
 /// another page, even a sibling under the same base domain.
@@ -45,6 +46,11 @@ pub enum Access {
     Public,
     /// A private page, read by a signed-in viewer.
     Viewer(Viewer),
+    /// A private page, read by someone who knew the page password. Nobody is
+    /// named. `session` is the session row's hash, for grants that read it
+    /// again under a lock and for the feed link a page shows, which only a
+    /// live session gets; `None` for the page-password feed link itself.
+    Password { session: Option<String> },
     /// A private page, and nothing that may read it.
     SignInRequired(Arc<PageAccess>),
 }
@@ -126,9 +132,6 @@ impl PageGate {
         let Some(session) = sessions::lookup(pool, page, &cookie).await? else {
             return Ok(Access::SignInRequired(access));
         };
-        if session.blocked || !access.admits(&session.email) {
-            return Ok(Access::SignInRequired(access));
-        }
         // The owner's current length, so shortening it ends older sessions
         // too, not only the ones opened after the change.
         if let Some(days) = access.settings.session_days
@@ -136,11 +139,22 @@ impl PageGate {
         {
             return Ok(Access::SignInRequired(access));
         }
+        let reader = match (session.method, &session.viewer) {
+            (PageSessionMethod::Email, Some(v)) if !v.blocked && access.admits(&v.email) => {
+                Access::Viewer(Viewer {
+                    id: v.id,
+                    email: v.email.clone(),
+                })
+            }
+            (PageSessionMethod::Password, None) if access.settings.password_enabled => {
+                Access::Password {
+                    session: Some(session.id_hash.clone()),
+                }
+            }
+            _ => return Ok(Access::SignInRequired(access)),
+        };
         self.touch(pool, page, &session);
-        Ok(Access::Viewer(Viewer {
-            id: session.viewer_id,
-            email: session.email,
-        }))
+        Ok(reader)
     }
 
     /// A viewer's personal feed link stands in for the cookie a feed reader
@@ -172,6 +186,32 @@ impl PageGate {
         }))
     }
 
+    /// The page-password feed link, for a reader with no cookie. It is cut
+    /// from the stored hash, so a new password kills every copy, and while
+    /// the password is off it is refused like no link at all.
+    pub async fn check_password_feed(
+        &self,
+        pool: Option<&PgPool>,
+        page: PageRef,
+        secret: &str,
+        token: &str,
+    ) -> Result<bool, PublicAppError> {
+        let Some(pool) = pool else {
+            return Ok(false);
+        };
+        if secret.is_empty() {
+            return Ok(false);
+        }
+        let Some(hash) = password::live_hash(pool, page).await? else {
+            return Ok(false);
+        };
+        Ok(bool::from(
+            password_feed_token(secret, page.page, &hash)
+                .as_bytes()
+                .ct_eq(token.as_bytes()),
+        ))
+    }
+
     /// Visit stamps, at most once a minute per session and off the request
     /// path: a lost stamp costs a history row, never a page view.
     fn touch(&self, pool: &PgPool, page: PageRef, session: &sessions::ActiveSession) {
@@ -181,12 +221,14 @@ impl PageGate {
         self.touched.insert(session.id_hash.clone(), ());
         let pool = pool.clone();
         let id_hash = session.id_hash.clone();
-        let viewer = session.viewer_id;
+        let viewer = session.viewer.as_ref().map(|v| v.id);
         tokio::spawn(async move {
             if let Err(e) = sessions::touch(&pool, page, &id_hash).await {
                 tracing::warn!(error = %e, "page session touch failed");
             }
-            if let Err(e) = viewers::touch(&pool, page, viewer).await {
+            if let Some(viewer) = viewer
+                && let Err(e) = viewers::touch(&pool, page, viewer).await
+            {
                 tracing::warn!(error = %e, "page viewer touch failed");
             }
         });
@@ -256,6 +298,19 @@ fn verify_feed_token(secret: &str, page: StatusPageId, viewer: Uuid, presented: 
         .into()
 }
 
+/// The feed link a password visitor is shown: one per page and password,
+/// since the password names nobody.
+pub fn password_feed_token(secret: &str, page: StatusPageId, password_hash: &str) -> String {
+    crate::security::mac::hmac_sha256_hex(
+        secret.as_bytes(),
+        &[
+            b"page-password-feed:",
+            page.0.as_bytes(),
+            password_hash.as_bytes(),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +350,20 @@ mod tests {
         ));
         assert!(!verify_feed_token("s", page, Uuid::from_u128(4), &t));
         assert!(!verify_feed_token("other", page, viewer, &t));
+    }
+
+    #[test]
+    fn a_password_feed_token_names_one_page_and_one_password() {
+        let page = StatusPageId(Uuid::from_u128(1));
+        let t = password_feed_token("s", page, "$argon2id$a");
+        assert_eq!(t, password_feed_token("s", page, "$argon2id$a"));
+        assert_ne!(t, password_feed_token("s", page, "$argon2id$b"));
+        assert_ne!(
+            t,
+            password_feed_token("s", StatusPageId(Uuid::from_u128(2)), "$argon2id$a")
+        );
+        // Not a viewer link under another name.
+        assert_ne!(t, feed_token("s", page, Uuid::from_u128(0)));
     }
 
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {

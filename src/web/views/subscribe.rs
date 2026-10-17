@@ -146,22 +146,33 @@ pub async fn subscribe(
         return Ok(invalid_page(tr));
     };
 
-    // On a private page only a signed-in viewer subscribes, as themselves.
-    match state.page_gate.check(Some(pool), page, &headers).await {
-        Ok(Access::Public) => {}
+    let sign_in_again = || Ok(Redirect::to(status_home(&state, &headers)).into_response());
+    // On a private page a signed-in viewer subscribes as themselves. Someone
+    // who came in with the page password proved no address, so they confirm
+    // one by email as on a public page; nobody subscribes a webhook there.
+    let password_session = match state.page_gate.check(Some(pool), page, &headers).await {
+        Ok(Access::Public) => None,
         Ok(Access::Viewer(viewer)) => {
             if !same_origin(&headers) {
                 return Ok(StatusCode::FORBIDDEN.into_response());
             }
-            subscribers::subscribe_viewer(pool, page, viewer.id, &viewer.email).await?;
+            if !subscribers::subscribe_viewer(pool, page, viewer.id, &viewer.email).await? {
+                return sign_in_again();
+            }
             return Ok(SubscribeNotice::subscribed_as(tr, &viewer.email));
         }
-        Ok(Access::SignInRequired(_)) => {
-            let home = status_home(&state, &headers);
-            return Ok(Redirect::to(home).into_response());
+        Ok(Access::Password { session }) => {
+            if !same_origin(&headers) || form.channel == "webhook" {
+                return Ok(StatusCode::FORBIDDEN.into_response());
+            }
+            let Some(session) = session else {
+                return sign_in_again();
+            };
+            Some(session)
         }
+        Ok(Access::SignInRequired(_)) => return sign_in_again(),
         Err(_) => return Ok(invalid_page(tr)),
-    }
+    };
 
     if form.channel == "webhook" {
         return subscribe_webhook(&state, pool, page, form.url.trim(), tr).await;
@@ -202,17 +213,22 @@ pub async fn subscribe(
         ));
     }
 
-    let sub = subscribers::subscribe(
-        pool,
-        &NewSubscriber {
-            status_page_id: page.page.0,
-            org_id: page.org.0,
-            channel: SubscriberChannel::Email,
-            target: email.to_string(),
-            config: serde_json::json!({}),
-        },
-    )
-    .await?;
+    let new = NewSubscriber {
+        status_page_id: page.page.0,
+        org_id: page.org.0,
+        channel: SubscriberChannel::Email,
+        target: email.to_string(),
+        config: serde_json::json!({}),
+    };
+    let sub = match &password_session {
+        Some(session) => {
+            match subscribers::subscribe_with_password(pool, page, session, &new).await? {
+                Some(sub) => sub,
+                None => return sign_in_again(),
+            }
+        }
+        None => subscribers::subscribe(pool, &new).await?,
+    };
 
     if let subscribers::ConfirmMint::Created { token } =
         subscribers::mint_confirm_token(pool, sub.id, page.org.0, page.page.0, &sub.target).await?
@@ -256,11 +272,11 @@ pub async fn subscribe(
         }
     }
 
-    Ok(SubscribeNotice::ok(
-        tr,
-        "notice-almost-there",
-        "notice-check-inbox",
-    ))
+    let mut resp = SubscribeNotice::ok(tr, "notice-almost-there", "notice-check-inbox");
+    if password_session.is_some() {
+        mark_private(&mut resp);
+    }
+    Ok(resp)
 }
 
 #[derive(Debug, Deserialize)]

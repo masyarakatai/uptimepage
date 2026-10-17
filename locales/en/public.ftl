@@ -327,8 +327,20 @@ access-bad-email = Enter your email address.
 access-bad-code = That is not a code. Codes are 6 letters and digits; nothing was used up, so try again.
 access-signed-as = signed in as
 access-sign-out = sign out
+access-lead-password = Enter the page password to see the status of { $page }.
+access-or-password = or with the page password
+access-password-label = Page password
+access-password-open = Open
+access-password-hint = Ask whoever shared this page with you for the password.
+access-password-wrong = That password is not right.
+access-password-throttled = Too many wrong tries from your network. Try again in { $minutes ->
+        [one] 1 minute
+       *[other] { $minutes } minutes
+    }.
+access-signed-password = signed in with the page password
 subscribe-as-lead = Get an email when an incident starts, changes or ends.
 subscribe-as-note = Stops on its own if you lose access to this page.
+subscribe-password-note = We email you a link to confirm first. If the page password changes, subscribe again with the new one.
 notice-subscribed-as-body = Updates for this page now go to { $email }.
 
 ## Private page sign-in email

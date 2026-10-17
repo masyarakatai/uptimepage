@@ -45,7 +45,8 @@ Four plans ship seeded: `free`, `founding` (a more generous free tier granted to
 Feature flags ride on the same row: `custom_domain_enabled`, `white_label_enabled`,
 `sms_alerts_enabled`, `incident_narration_enabled`, `on_call_enabled`,
 `private_pages_enabled`. `private_pages_enabled` lets an org make a status page
-[private](public-status.md#who-can-open-a-page); on a plan without it a private
+[private](public-status.md#who-can-open-a-page), by the email code, the page
+password or both; on a plan without it a private
 page is held rather than opened to everyone, and a self-hosted install has it
 whatever its plan row says.
 `custom_domain_enabled` gates the origin subscriber mail and webhooks link to:

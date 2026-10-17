@@ -120,8 +120,9 @@ pub struct BadgeQuery {
     pub style: Option<String>,
 }
 
-/// A viewer's personal link to a private page's feed, for a reader that
-/// carries no cookie.
+/// A private page's feed link, for a reader that carries no cookie: a
+/// viewer's own (`viewer` and `t`), or the page-password one (`t` alone),
+/// which stops working when the password changes or is turned off.
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct FeedQuery {
@@ -264,7 +265,7 @@ pub async fn public_incident(
     responses(
         (status = 200, description = "RSS 2.0 XML document",
             content_type = "application/rss+xml"),
-        (status = 401, body = PublicApiError, description = "Private page: sign in, or use your personal feed link"),
+        (status = 401, body = PublicApiError, description = "Private page: sign in, or use your own feed link"),
     ),
 )]
 pub async fn public_incidents_rss(
@@ -279,23 +280,30 @@ pub async fn public_incidents_rss(
         .await?
     {
         Access::SignInRequired(_) => {
-            let (Some(viewer), Some(token)) = (feed.viewer, feed.t.as_deref()) else {
+            let Some(token) = feed.t.as_deref() else {
                 return Err(PublicAppError::SignInRequired);
             };
-            let viewer = state
-                .page_gate
-                .check_feed(
-                    state.db.as_ref(),
-                    page,
-                    &state.page_feed_secret,
-                    viewer,
-                    token,
-                )
-                .await?
-                .ok_or(PublicAppError::SignInRequired)?;
+            let access = match feed.viewer {
+                Some(viewer) => state
+                    .page_gate
+                    .check_feed(
+                        state.db.as_ref(),
+                        page,
+                        &state.page_feed_secret,
+                        viewer,
+                        token,
+                    )
+                    .await?
+                    .map(Access::Viewer),
+                None => state
+                    .page_gate
+                    .check_password_feed(state.db.as_ref(), page, &state.page_feed_secret, token)
+                    .await?
+                    .then_some(Access::Password { session: None }),
+            };
             ReadablePage {
                 page,
-                access: Access::Viewer(viewer),
+                access: access.ok_or(PublicAppError::SignInRequired)?,
             }
         }
         access => ReadablePage { page, access },

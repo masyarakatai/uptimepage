@@ -8,6 +8,12 @@
         <p class="text-pretty text-xs text-muted">{{ tr.t("subscribe-as-lead") }}</p>
         <input type="hidden" name="channel" value="email">
         <p class="font-mono text-sm break-all text-body">{{ email }}</p>
+        {% else if reader.password %}
+        <p class="text-pretty text-xs text-muted">{{ tr.t("subscribe-lead") }}</p>
+        <input type="hidden" name="channel" value="email">
+        <label class="sr-only" for="subscribe-email">{{ tr.t("subscribe-email-label") }}</label>
+        <input id="subscribe-email" class="field w-full" type="email" name="email" required
+               placeholder="you@example.com" autocomplete="email">
         {% else %}
         <p class="text-pretty text-xs text-muted">{{ tr.t("subscribe-lead") }}</p>
         <div role="radiogroup" aria-label="{{ tr.t("subscribe-method") }}" class="flex gap-4 text-xs text-muted">
@@ -35,6 +41,9 @@
         <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-as-note") }}</p>
         {% else %}
         <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-privacy") }}</p>
+        {% endif %}
+        {% if reader.password %}
+        <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-password-note") }}</p>
         {% endif %}
         <p class="text-[0.7rem] text-quiet">{{ tr.t("subscribe-feed-prompt") }} <a class="underline hover:text-body" href="{{ reader.rss_url }}">RSS</a></p>
     </form>

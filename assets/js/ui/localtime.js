@@ -96,6 +96,8 @@
         // Seconds, for stamps that have to separate two actions a moment apart.
         timeSec: function (d) { return timeSecFmt.format(d); },
         dayTime: function (d) { return dayTimeFmt.format(d); },
+        // The label a <time data-tz> element shows, for one built in script.
+        relative: function (d) { return relativeLabel(d, new Date()); },
     } : null;
 
     function sameDay(a, b) {

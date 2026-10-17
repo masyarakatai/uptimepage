@@ -264,6 +264,10 @@ pub const ACCESS_INVALID: &str = "ACCESS_INVALID";
 pub const PRIVATE_PAGES_DISABLED: &str = "PRIVATE_PAGES_DISABLED";
 /// No such viewer on this page (404).
 pub const VIEWER_NOT_FOUND: &str = "VIEWER_NOT_FOUND";
+/// The password way in was turned on with no password sent or stored.
+pub const PASSWORD_REQUIRED: &str = "PASSWORD_REQUIRED";
+/// A page password that is empty or longer than allowed.
+pub const INVALID_PAGE_PASSWORD: &str = "INVALID_PAGE_PASSWORD";
 pub const LOGO_MISSING: &str = "LOGO_MISSING";
 pub const LOGO_TYPE_INVALID: &str = "LOGO_TYPE_INVALID";
 pub const LOGO_TOO_LARGE: &str = "LOGO_TOO_LARGE";

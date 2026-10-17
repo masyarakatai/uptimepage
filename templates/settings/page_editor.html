@@ -13,9 +13,9 @@
     <div class="check-type-cards check-type-cards--rail mt-3" role="radiogroup" aria-label="Who can open it">
       {% call reg::chooser_card("", "visibility", "public", visibility == "public", "public", "anyone with the URL can read it") %}{% endcall %}
       {% if lock.is_some() && visibility != "private" %}
-      {% call reg::chooser_card_locked("private", "only people on the access list", "team", "warn") %}{% endcall %}
+      {% call reg::chooser_card_locked("private", "only people you let in", "team", "warn") %}{% endcall %}
       {% else %}
-      {% call reg::chooser_card("", "visibility", "private", visibility == "private", "private", "only people on the access list") %}{% endcall %}
+      {% call reg::chooser_card("", "visibility", "private", visibility == "private", "private", "only people you let in") %}{% endcall %}
       {% endif %}
       {% call reg::chooser_card("", "visibility", "off", visibility == "off", "off", "the URL 404s") %}{% endcall %}
     </div>
@@ -269,7 +269,7 @@
         <tbody class="divide-y divide-[color:var(--theme-line)]">
           {% for s in subscribers %}
           <tr>
-            <td class="px-4 py-2 align-top font-mono text-xs break-words">{{ s.contact }}</td>
+            <td class="px-4 py-2 align-top font-mono text-xs break-words">{{ s.contact }}{% if s.via_password %} <span class="access-kind ml-1">via password</span>{% endif %}</td>
             <td class="px-4 py-2 align-top">
               {% if s.confirmed %}<span class="status-badge status-badge--up">confirmed</span>{% else %}<span class="status-badge status-badge--disabled">pending</span>{% endif %}
             </td>
@@ -483,6 +483,7 @@
           if (!style || !access) throw 'the form is missing a selection — reload the page.';
           const refused = access.refusal();
           if (refused) { access.show('access'); throw refused; }
+          if (!(await access.confirm())) return;
           const res = await api('PATCH', '/api/v1/status-pages/' + id, {
             slug,
             name: document.getElementById('f-name').value,
@@ -517,7 +518,7 @@
             slugStatus.textContent = m.message;
             slugStatus.className = 'font-mono text-xs text-[color:var(--theme-state-bad-fg)]';
             focusSlug();
-          } else if (code === 'ACCESS_INVALID' || code === 'PRIVATE_PAGES_DISABLED') {
+          } else if (['ACCESS_INVALID', 'PRIVATE_PAGES_DISABLED', 'PASSWORD_REQUIRED', 'INVALID_PAGE_PASSWORD'].includes(code)) {
             window.smPageAccess?.show('access');
           } else if (m instanceof Error && m.field) {
             window.smPageAccess?.show('general', false);

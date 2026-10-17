@@ -217,6 +217,9 @@ pub struct SubscriberView {
     pub channel: String,
     pub confirmed: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Made by a visitor signed in with a page password.
+    pub via_password: bool,
+    with_current_password: bool,
 }
 
 #[derive(Template, WebTemplate)]
@@ -267,6 +270,12 @@ pub struct PageEditorPage {
     pub lock: Option<crate::web::views::team_lock::TeamLock>,
     /// The stored access settings and list, for the access tab's script.
     pub access_json: String,
+    /// The page password's line, whose `set_at` also says whether one is
+    /// stored while the way in is off.
+    pub password_json: String,
+    /// Subscriptions made with the current password, which going private by
+    /// the password alone keeps.
+    pub subscribers_with_password: usize,
     pub rule_count: usize,
     pub viewers_active: i64,
     pub viewers_blocked: i64,
@@ -307,21 +316,29 @@ pub async fn page_editor(
             teaser: true,
         }),
     };
-    let (access, counts) = match state.db.as_ref() {
-        Some(pool) => (
-            crate::storage::page_access::settings::load(
-                pool,
-                crate::domain::PageRef { page: page_id, org },
+    let page_ref = crate::domain::PageRef { page: page_id, org };
+    let (access, counts, password) = match state.db.as_ref() {
+        Some(pool) => {
+            let access = crate::storage::page_access::settings::load(pool, page_ref)
+                .await?
+                .unwrap_or_default();
+            let password =
+                crate::storage::page_access::password::summary(pool, page_ref, &access).await?;
+            (
+                access,
+                crate::storage::page_access::viewers::counts_for_page(pool, org, page_id).await?,
+                password,
             )
-            .await?
-            .unwrap_or_default(),
-            crate::storage::page_access::viewers::counts_for_page(pool, org, page_id).await?,
-        ),
+        }
         None => Default::default(),
     };
     let visibility = visibility(page.enabled, access.is_private());
     let access_json = serde_json::to_string(&crate::domain::AccessSpec::from(&access))
         .map_err(|e| AppError::Other(anyhow::anyhow!("encode page access: {e}")))?;
+    let password_json = serde_json::to_string(
+        &crate::api::handlers::status_page::PagePasswordView::from(password),
+    )
+    .map_err(|e| AppError::Other(anyhow::anyhow!("encode page password: {e}")))?;
 
     // On-page components (curated, in order) + every other org monitor.
     let curated = state
@@ -463,11 +480,17 @@ pub async fn page_editor(
                     channel: s.channel,
                     confirmed: s.verified,
                     created_at: s.created_at,
+                    via_password: s.via_password_at.is_some(),
+                    with_current_password: access.made_with_password(s.via_password_at),
                 }
             })
             .collect(),
         None => Vec::new(),
     };
+    let subscribers_with_password = subscribers
+        .iter()
+        .filter(|s| s.with_current_password)
+        .count();
 
     let page_name = match state.db.as_ref() {
         Some(pool) => crate::storage::load_page_branding(pool, page_id)
@@ -523,6 +546,8 @@ pub async fn page_editor(
         visibility,
         lock,
         access_json,
+        password_json,
+        subscribers_with_password,
         rule_count: access.rules.len(),
         viewers_active: counts.active,
         viewers_blocked: counts.blocked,
@@ -597,7 +622,9 @@ mod tests {
             subscribers: Vec::new(),
             visibility: "public",
             lock: None,
-            access_json: r#"{"protected":false,"email":{"enabled":true,"passkeys_enabled":true,"recheck_days":null,"session_days":null},"rules":[]}"#.into(),
+            access_json: r#"{"protected":false,"session_days":null,"email":{"enabled":true,"passkeys_enabled":true,"recheck_days":null},"password":{"enabled":false},"rules":[]}"#.into(),
+            password_json: "{}".into(),
+            subscribers_with_password: 0,
             rule_count: 0,
             viewers_active: 0,
             viewers_blocked: 0,

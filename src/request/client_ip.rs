@@ -91,7 +91,7 @@ where
 /// its /64. Any VPS is handed a routed /64 or wider, so keying on the full
 /// address would hand one client an unbounded number of independent budgets.
 pub fn network_key(ip: IpAddr) -> IpAddr {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let s = v6.segments();
             IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
@@ -159,6 +159,8 @@ mod tests {
         assert_eq!(network_key(a), network_key(b));
         assert_ne!(network_key(a), network_key(ip("2001:db8:1:3::1")));
         assert_eq!(network_key(ip("203.0.113.7")), ip("203.0.113.7"));
+        // A dual-stack listener's v4 peers must not share the one key `::`.
+        assert_eq!(network_key(ip("::ffff:203.0.113.7")), ip("203.0.113.7"));
     }
 
     #[test]

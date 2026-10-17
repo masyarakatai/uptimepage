@@ -9,6 +9,7 @@ pub mod email_policy;
 pub mod incident_ack;
 pub mod mac;
 pub mod outbound_connector;
+pub mod page_password;
 pub(crate) mod rdap;
 pub mod redaction;
 pub mod sign_in_code;

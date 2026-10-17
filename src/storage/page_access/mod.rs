@@ -4,6 +4,7 @@
 pub mod codes;
 pub mod events;
 pub mod passkeys;
+pub mod password;
 pub mod sessions;
 pub mod settings;
 pub mod viewers;

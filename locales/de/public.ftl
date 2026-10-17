@@ -343,8 +343,20 @@ access-bad-email = Geben Sie Ihre E-Mail-Adresse ein.
 access-bad-code = Das ist kein Code. Codes haben 6 Buchstaben und Ziffern; nichts wurde verbraucht, versuchen Sie es noch einmal.
 access-signed-as = angemeldet als
 access-sign-out = abmelden
+access-lead-password = Geben Sie das Passwort der Seite ein, um den Status von { $page } zu sehen.
+access-or-password = oder mit dem Passwort der Seite
+access-password-label = Passwort der Seite
+access-password-open = Öffnen
+access-password-hint = Das Passwort erhalten Sie von der Person, die diese Seite mit Ihnen geteilt hat.
+access-password-wrong = Das Passwort stimmt nicht.
+access-password-throttled = Zu viele falsche Versuche aus Ihrem Netzwerk. Versuchen Sie es in { $minutes ->
+        [one] einer Minute
+       *[other] { $minutes } Minuten
+    } erneut.
+access-signed-password = mit dem Passwort der Seite angemeldet
 subscribe-as-lead = Erhalten Sie eine E-Mail, wenn eine Störung beginnt, sich ändert oder endet.
 subscribe-as-note = Endet automatisch, wenn Sie den Zugriff auf diese Seite verlieren.
+subscribe-password-note = Wir senden Ihnen zuerst einen Bestätigungslink. Ändert sich das Passwort der Seite, abonnieren Sie mit dem neuen erneut.
 notice-subscribed-as-body = Updates dieser Seite gehen jetzt an { $email }.
 
 ## Private page sign-in email

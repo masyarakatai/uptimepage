@@ -4,15 +4,16 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::domain::{
-    AccessRule, AccessRuleKind, OrgId, PageAccess, PageAccessSettings, PageRef, StatusPageId,
-    UserId, normalize_email,
+    AccessError, AccessRule, AccessRuleKind, AccessWrite, OrgId, PageAccess, PageAccessSettings,
+    PageRef, PageSessionMethod, StatusPageId, normalize_email,
 };
-use crate::error::Result;
+use crate::error::{AppError, Result, codes};
 use crate::storage::orgs::record_audit_tx;
 
 #[derive(sqlx::FromRow)]
@@ -23,6 +24,8 @@ struct SettingsRow {
     passkeys_enabled: bool,
     recheck_days: Option<i32>,
     session_days: Option<i32>,
+    password_enabled: bool,
+    password_set_at: Option<DateTime<Utc>>,
 }
 
 impl From<&SettingsRow> for PageAccessSettings {
@@ -33,12 +36,24 @@ impl From<&SettingsRow> for PageAccessSettings {
             passkeys_enabled: r.passkeys_enabled,
             recheck_days: r.recheck_days,
             session_days: r.session_days,
+            password_enabled: r.password_enabled,
         }
     }
 }
 
-const SETTINGS_COLUMNS: &str =
-    "status_page_id, protected, email_enabled, passkeys_enabled, recheck_days, session_days";
+impl SettingsRow {
+    fn access(&self, rules: Vec<AccessRule>) -> PageAccess {
+        PageAccess {
+            settings: self.into(),
+            rules,
+            password_set_at: self.password_set_at,
+        }
+    }
+}
+
+/// Never the hash: it is read only where a password is checked.
+const SETTINGS_COLUMNS: &str = "status_page_id, protected, email_enabled, passkeys_enabled, \
+     recheck_days, session_days, password_enabled, password_set_at";
 
 /// `None` for a page never made private.
 pub async fn load(pool: &PgPool, page: PageRef) -> Result<Option<PageAccess>> {
@@ -54,10 +69,7 @@ pub async fn load(pool: &PgPool, page: PageRef) -> Result<Option<PageAccess>> {
     let Some(row) = row else {
         return Ok(None);
     };
-    Ok(Some(PageAccess {
-        settings: (&row).into(),
-        rules: rules(pool, page.org, page.page).await?,
-    }))
+    Ok(Some(row.access(rules(pool, page.org, page.page).await?)))
 }
 
 /// Every page of the org that has settings, for the pages list.
@@ -71,15 +83,7 @@ pub async fn load_for_org(pool: &PgPool, org: OrgId) -> Result<HashMap<StatusPag
     .context("page_access::load_for_org")?;
     let mut out: HashMap<StatusPageId, PageAccess> = rows
         .iter()
-        .map(|r| {
-            (
-                StatusPageId(r.status_page_id),
-                PageAccess {
-                    settings: r.into(),
-                    rules: Vec::new(),
-                },
-            )
-        })
+        .map(|r| (StatusPageId(r.status_page_id), r.access(Vec::new())))
         .collect();
     let rules: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT status_page_id, kind, value::text FROM status_page_access_rules \
@@ -131,7 +135,9 @@ pub struct AccessChange {
     pub removed: Vec<AccessRule>,
     /// Names of the settings whose value moved.
     pub settings: Vec<&'static str>,
-    /// Subscriptions the list no longer covers, removed with the write.
+    /// `set` for a first password, `changed` for a new one over another.
+    pub password: Option<&'static str>,
+    /// Subscriptions no way in covers any more, removed with the write.
     pub subscribers_removed: u64,
 }
 
@@ -142,6 +148,7 @@ impl AccessChange {
             && self.added.is_empty()
             && self.removed.is_empty()
             && self.settings.is_empty()
+            && self.password.is_none()
     }
 }
 
@@ -149,16 +156,21 @@ impl AccessChange {
 /// they arrive with. The caller has already written the page row, which holds
 /// its lock, so two edits of one page cannot interleave here.
 ///
-/// A private page keeps only the subscriptions its list covers: webhooks go,
-/// since nobody signs in as one, and so does every address the list does not
-/// let in. Going public ends every viewer session; the viewers, their
-/// passkeys and the list stay for the next time.
+/// The access row is taken `FOR UPDATE` and held to commit: every revocation
+/// below orders against the password sign-ins and subscriptions that take it
+/// `FOR SHARE`, so neither can outlive the write it raced.
+///
+/// A private page keeps only the subscriptions a way in covers: webhooks go,
+/// since nobody signs in as one, and so does every address that is neither on
+/// the list nor made with the password still on. A new password, or turning
+/// it off, ends every password session; turning the email code off ends the
+/// email ones. Going public ends every session; the viewers, their passkeys,
+/// the list and the password stay for the next time.
 pub async fn replace_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     org: OrgId,
     page: StatusPageId,
-    new: &PageAccess,
-    actor: Option<UserId>,
+    write: &AccessWrite,
 ) -> Result<AccessChange> {
     let before: Option<SettingsRow> = sqlx::query_as(&format!(
         "SELECT {SETTINGS_COLUMNS} FROM status_page_access \
@@ -170,32 +182,58 @@ pub async fn replace_in_tx(
     .await
     .context("page_access::replace before")?;
     let old_settings = before.as_ref().map(PageAccessSettings::from);
+    let had_password = before.as_ref().is_some_and(|b| b.password_set_at.is_some());
+    let new_hash = write.password_hash.as_deref();
+    let new = &write.access;
+    let s = new.settings;
+    if s.password_enabled && !had_password && new_hash.is_none() {
+        let e = AccessError::PasswordRequired;
+        return Err(AppError::bad_request_field(
+            codes::PASSWORD_REQUIRED,
+            e.to_string(),
+            e.field(),
+        ));
+    }
     let old_rules: HashSet<AccessRule> = rules(&mut **tx, org, page).await?.into_iter().collect();
     let new_rules: HashSet<AccessRule> = new.rules.iter().cloned().collect();
-    let s = new.settings;
 
-    sqlx::query(
+    // An update when the row exists: the row it locked above. A CHECK is
+    // tested on an INSERT's own values before ON CONFLICT can apply, so an
+    // upsert carrying no new hash would fail on the stored one's behalf.
+    let sql = if before.is_some() {
+        "UPDATE status_page_access SET \
+             protected = $3, email_enabled = $4, passkeys_enabled = $5, \
+             recheck_days = $6, session_days = $7, password_enabled = $8, \
+             password_hash = COALESCE($9, password_hash), \
+             password_set_at = CASE WHEN $9::text IS NULL THEN password_set_at ELSE now() END, \
+             password_set_by = CASE WHEN $9::text IS NULL THEN password_set_by ELSE $10 END, \
+             updated_at = now() \
+         WHERE status_page_id = $1 AND org_id = $2 \
+         RETURNING password_set_at"
+    } else {
         "INSERT INTO status_page_access \
              (status_page_id, org_id, protected, email_enabled, passkeys_enabled, \
-              recheck_days, session_days) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         ON CONFLICT (status_page_id) DO UPDATE SET \
-             protected = EXCLUDED.protected, email_enabled = EXCLUDED.email_enabled, \
-             passkeys_enabled = EXCLUDED.passkeys_enabled, \
-             recheck_days = EXCLUDED.recheck_days, session_days = EXCLUDED.session_days, \
-             updated_at = now() \
-         WHERE status_page_access.org_id = EXCLUDED.org_id",
-    )
-    .bind(page.0)
-    .bind(org.0)
-    .bind(s.protected)
-    .bind(s.email_enabled)
-    .bind(s.passkeys_enabled)
-    .bind(s.recheck_days)
-    .bind(s.session_days)
-    .execute(&mut **tx)
-    .await
-    .context("page_access::replace settings")?;
+              recheck_days, session_days, password_enabled, password_hash, password_set_at, \
+              password_set_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
+                 CASE WHEN $9::text IS NULL THEN NULL ELSE now() END, \
+                 CASE WHEN $9::text IS NULL THEN NULL ELSE $10::uuid END) \
+         RETURNING password_set_at"
+    };
+    let (password_set_at,): (Option<DateTime<Utc>>,) = sqlx::query_as(sql)
+        .bind(page.0)
+        .bind(org.0)
+        .bind(s.protected)
+        .bind(s.email_enabled)
+        .bind(s.passkeys_enabled)
+        .bind(s.recheck_days)
+        .bind(s.session_days)
+        .bind(s.password_enabled)
+        .bind(new_hash)
+        .bind(write.actor.map(|u| u.0))
+        .fetch_one(&mut **tx)
+        .await
+        .context("page_access::replace settings")?;
 
     let mut removed: Vec<AccessRule> = old_rules.difference(&new_rules).cloned().collect();
     let mut added: Vec<AccessRule> = new_rules.difference(&old_rules).cloned().collect();
@@ -227,19 +265,23 @@ pub async fn replace_in_tx(
         .bind(org.0)
         .bind(&kinds)
         .bind(&values)
-        .bind(actor.map(|u| u.0))
+        .bind(write.actor.map(|u| u.0))
         .execute(&mut **tx)
         .await
         .context("page_access::replace add rules")?;
     }
 
-    let was_private = old_settings.is_some_and(|o| o.protected);
+    let old = old_settings.unwrap_or_default();
+    let was_private = old.protected;
+    let password_ended = new_hash.is_some() || (old.password_enabled && !s.password_enabled);
+    let email_ended = old.email_enabled && !s.email_enabled;
     let mut change = AccessChange {
         became_private: s.protected && !was_private,
         became_public: was_private && !s.protected,
         added,
         removed,
-        settings: changed_settings(old_settings.unwrap_or_default(), s),
+        settings: changed_settings(old, s),
+        password: new_hash.map(|_| if had_password { "changed" } else { "set" }),
         subscribers_removed: 0,
     };
     if change.became_public {
@@ -249,28 +291,41 @@ pub async fn replace_in_tx(
             .execute(&mut **tx)
             .await
             .context("page_access::replace end sessions")?;
+    } else {
+        for (method, ended) in [
+            (PageSessionMethod::Password, password_ended),
+            (PageSessionMethod::Email, email_ended),
+        ] {
+            if ended {
+                super::sessions::end_by_method(&mut **tx, org, page, method).await?;
+            }
+        }
     }
-    // Only when the list can have narrowed: an unchanged private page keeps
+    // Only when a way in can have narrowed: an unchanged private page keeps
     // the subscriptions an earlier write already checked.
-    if s.protected && (change.became_private || !change.removed.is_empty()) {
-        change.subscribers_removed = prune_subscribers(tx, org, page, new).await?;
+    if s.protected
+        && (change.became_private || !change.removed.is_empty() || email_ended || password_ended)
+    {
+        let after = PageAccess {
+            settings: s,
+            rules: new.rules.clone(),
+            password_set_at,
+        };
+        change.subscribers_removed = prune_subscribers(tx, org, page, &after).await?;
     }
     if !change.is_empty() {
-        record_audit_tx(
-            tx,
-            org,
-            actor,
-            "status_page.access_updated",
-            json!({
-                "status_page_id": page.0,
-                "protected": s.protected,
-                "settings": change.settings,
-                "rules_added": change.added,
-                "rules_removed": change.removed,
-                "subscribers_removed": change.subscribers_removed,
-            }),
-        )
-        .await?;
+        let mut meta = json!({
+            "status_page_id": page.0,
+            "protected": s.protected,
+            "settings": change.settings,
+            "rules_added": change.added,
+            "rules_removed": change.removed,
+            "subscribers_removed": change.subscribers_removed,
+        });
+        if let Some(password) = change.password {
+            meta["password"] = json!(password);
+        }
+        record_audit_tx(tx, org, write.actor, "status_page.access_updated", meta).await?;
     }
     Ok(change)
 }
@@ -292,6 +347,10 @@ fn changed_settings(old: PageAccessSettings, new: PageAccessSettings) -> Vec<&'s
         ),
         ("recheck_days", old.recheck_days != new.recheck_days),
         ("session_days", old.session_days != new.session_days),
+        (
+            "password_enabled",
+            old.password_enabled != new.password_enabled,
+        ),
     ]
     .into_iter()
     .filter_map(|(name, moved)| moved.then_some(name))
@@ -304,8 +363,8 @@ async fn prune_subscribers(
     page: StatusPageId,
     access: &PageAccess,
 ) -> Result<u64> {
-    let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT id, channel, target FROM status_page_subscribers \
+    let rows: Vec<(Uuid, String, String, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT id, channel, target, via_password_at FROM status_page_subscribers \
          WHERE status_page_id = $1 AND org_id = $2",
     )
     .bind(page.0)
@@ -315,10 +374,11 @@ async fn prune_subscribers(
     .context("page_access::prune read")?;
     let gone: Vec<Uuid> = rows
         .into_iter()
-        .filter(|(_, channel, target)| {
-            channel != "email" || !normalize_email(target).is_some_and(|e| access.admits(&e))
+        .filter(|(_, channel, target, via_password_at)| {
+            channel != "email"
+                || !access.keeps_subscription(normalize_email(target).as_deref(), *via_password_at)
         })
-        .map(|(id, _, _)| id)
+        .map(|(id, ..)| id)
         .collect();
     if gone.is_empty() {
         return Ok(0);

@@ -1523,3 +1523,76 @@ async fn a_page_is_made_private_and_its_viewers_listed() {
         "{foreign}"
     );
 }
+
+/// The page password is a credential, so it never passes through a tool
+/// argument: the tools read it as on or off and switch a stored one.
+#[tokio::test]
+#[ignore]
+async fn the_page_password_is_switched_here_but_never_passed() {
+    let Some(pool) = common::pg_pool_from_env().await else {
+        return;
+    };
+    let (mcp, org, _) = connect(&pool).await;
+    let slug = unique_slug("mcppw");
+    let page = seed_page(&pool, org, &slug).await;
+    let password_only = |value: Option<&str>| {
+        let mut access = json!({ "protected": true, "email": { "enabled": false },
+                                 "password": { "enabled": true } });
+        if let Some(v) = value {
+            access["password"]["value"] = json!(v);
+        }
+        json!({ "slug": slug, "access": access })
+    };
+
+    let passed = mcp
+        .call("update_status_page", password_only(Some("hunter2")))
+        .await;
+    assert_eq!(
+        error_code(&passed).as_deref(),
+        Some("invalid_argument"),
+        "{passed}"
+    );
+    assert!(error_message(&passed).contains("Terraform"), "{passed}");
+    let none_stored = mcp.call("update_status_page", password_only(None)).await;
+    assert_eq!(
+        error_code(&none_stored).as_deref(),
+        Some("invalid_argument"),
+        "{none_stored}"
+    );
+    assert!(
+        error_message(&none_stored).contains("set the password in the app"),
+        "{none_stored}"
+    );
+
+    // Stored elsewhere, then switched on here.
+    sqlx::query(
+        "INSERT INTO status_page_access \
+             (status_page_id, org_id, protected, password_hash, password_set_at) \
+         VALUES ($1, $2, false, '$argon2id$stored', now())",
+    )
+    .bind(page.0)
+    .bind(org.0)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let on = mcp.call("update_status_page", password_only(None)).await;
+    assert_eq!(error_code(&on), None, "{on}");
+    let access = &on["result"]["structuredContent"]["access"];
+    assert_eq!(access["password"], json!({ "enabled": true }));
+    let (hash,): (String,) =
+        sqlx::query_as("SELECT password_hash FROM status_page_access WHERE status_page_id = $1")
+            .bind(page.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(hash, "$argon2id$stored");
+
+    let listed = mcp
+        .call("list_status_page_viewers", json!({ "slug": slug }))
+        .await;
+    assert_eq!(error_code(&listed), None, "{listed}");
+    let line = &listed["result"]["structuredContent"]["password"];
+    assert_eq!(line["enabled"], true);
+    assert_eq!(line["sessions"], 0);
+    assert_eq!(line["wrong_tries_24h"], 0);
+}

@@ -18,7 +18,7 @@ use crate::domain::AssetSlot;
 use crate::domain::{PageRef, StatusPageId};
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
-use crate::public_status::access::{Access, feed_token};
+use crate::public_status::access::{Access, feed_token, password_feed_token};
 use crate::public_status::history::{HistoryEntry, HistoryPage, merge};
 use crate::request::host::{
     is_subdomain_public_request, published_page_origin, resolve_status_page,
@@ -74,7 +74,9 @@ pub struct StatusFullPage {
 pub struct Reader {
     /// The signed-in viewer's address on a private page.
     pub viewer: Option<String>,
-    /// The page's feed, or the viewer's personal link to it.
+    /// Signed in with the page password, which names nobody.
+    pub password: bool,
+    /// The page's feed, or the reader's own link to it.
     pub rss_url: String,
 }
 
@@ -82,28 +84,62 @@ impl Default for Reader {
     fn default() -> Self {
         Self {
             viewer: None,
+            password: false,
             rss_url: RSS_URL.to_owned(),
         }
     }
 }
 
 impl Reader {
-    fn of(state: &AppState, page: PageRef, access: &Access) -> Self {
-        let Some(viewer) = access.viewer() else {
-            return Self::default();
-        };
-        let rss_url = if state.page_feed_secret.is_empty() {
-            RSS_URL.to_owned()
-        } else {
-            format!(
-                "{RSS_URL}?viewer={}&t={}",
-                viewer.id,
-                feed_token(&state.page_feed_secret, page.page, viewer.id)
-            )
-        };
-        Self {
-            viewer: Some(viewer.email.clone()),
-            rss_url,
+    async fn of(state: &AppState, page: PageRef, access: &Access) -> Self {
+        let secret = state.page_feed_secret.as_str();
+        match access {
+            Access::Viewer(viewer) => Self {
+                viewer: Some(viewer.email.clone()),
+                password: false,
+                rss_url: if secret.is_empty() {
+                    RSS_URL.to_owned()
+                } else {
+                    format!(
+                        "{RSS_URL}?viewer={}&t={}",
+                        viewer.id,
+                        feed_token(secret, page.page, viewer.id)
+                    )
+                },
+            },
+            Access::Password { session } => Self {
+                viewer: None,
+                password: true,
+                rss_url: password_feed_url(state, page, secret, session.as_deref())
+                    .await
+                    .unwrap_or_else(|| RSS_URL.to_owned()),
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+/// The page-password feed link for `session`. Cut from the stored hash, so the
+/// page has to be read for it; without one the plain feed URL still works in
+/// this browser.
+async fn password_feed_url(
+    state: &AppState,
+    page: PageRef,
+    secret: &str,
+    session: Option<&str>,
+) -> Option<String> {
+    if secret.is_empty() {
+        return None;
+    }
+    let session = session?;
+    let pool = state.db.as_ref()?;
+    match crate::storage::page_access::password::session_hash(pool, page, session).await {
+        Ok(hash) => {
+            hash.map(|h| format!("{RSS_URL}?t={}", password_feed_token(secret, page.page, &h)))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "page-password feed link not built");
+            None
         }
     }
 }
@@ -225,7 +261,7 @@ pub async fn index(
                 view,
                 branding,
                 og,
-                reader: Reader::of(&state, page_ref, &access),
+                reader: Reader::of(&state, page_ref, &access).await,
             },
             tr,
         )
@@ -432,7 +468,7 @@ pub async fn incident(
             incident: IncidentDetailView::from_incident(&inc, now, tr),
             generated_at: now,
             og,
-            reader: Reader::of(&state, page_ref, &access),
+            reader: Reader::of(&state, page_ref, &access).await,
         },
         tr,
     );
@@ -535,7 +571,7 @@ pub async fn archive(
                 .map(|cursor| archive_path(tab, Some(&cursor))),
             robots,
             og,
-            reader: Reader::of(&state, page_ref, &access),
+            reader: Reader::of(&state, page_ref, &access).await,
         },
         tr,
     );

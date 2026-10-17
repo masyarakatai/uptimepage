@@ -1,14 +1,17 @@
 {% import "_register.html" as reg %}
 <div role="tabpanel" id="panel-access" aria-labelledby="tab-access" data-panel="access" class="space-y-6" hidden
-     data-access="{{ access_json }}" data-locked="{{ lock.is_some() }}">
+     data-access="{{ access_json }}" data-password="{{ password_json }}"
+     data-subscribers="{{ subscribers.len() }}" data-subscribers-with-password="{{ subscribers_with_password }}"
+     data-viewers-active="{{ viewers_active }}"
+     data-locked="{{ lock.is_some() }}">
 
   {% if let Some(lock) = lock %}
   <div class="sticker-card overflow-hidden">
     <h2 class="card-band panel-label">on the Team plan</h2>
     <div class="space-y-4 p-5">
       <ul class="list-inside list-disc space-y-1 text-sm">
-        <li>Make a page private: only addresses or domains you list can open it.</li>
-        <li>People sign in with a code sent by email, and can save a passkey to skip the code next time.</li>
+        <li>Make a page private: only people you let in can open it.</li>
+        <li>People sign in with a code sent to an address or domain you list, or with one password you share. Email sign-ins can save a passkey to skip the code next time.</li>
         <li>See who opened the page and when, and block anyone at once.</li>
       </ul>
       {% include "settings/_team_cta.html" %}
@@ -28,17 +31,22 @@
       <legend class="float-left mb-3 w-full"><span class="form-legend">ways in</span></legend>
       <div class="clear-both space-y-2">
         <div class="check-type-cards access-ways">
-          <span class="check-type-card check-type-card--static check-type-card--on">
+          <label class="check-type-card">
+            <input type="checkbox" id="access-way-email" class="sr-only">
             <span class="check-type-card__name">email code</span>
             <span class="check-type-card__desc">people on the list get a one-time code by email</span>
-          </span>
-          {% call reg::chooser_card_locked("password", "one password you share with the people who need it", "soon", "quiet") %}{% endcall %}
+          </label>
+          <label class="check-type-card">
+            <input type="checkbox" id="access-way-password" class="sr-only">
+            <span class="check-type-card__name">password</span>
+            <span class="check-type-card__desc">one password you share with the people who need it</span>
+          </label>
         </div>
-        <p class="font-mono text-xs text-quiet"># the only way in today</p>
+        <p class="font-mono text-xs text-quiet" data-access-ways-hint></p>
       </div>
     </fieldset>
 
-    <fieldset class="border-t border-[color:var(--theme-line)] pt-6">
+    <fieldset class="border-t border-[color:var(--theme-line)] pt-6" data-access-email>
       <legend class="float-left mb-3 w-full"><span class="form-legend">email code</span></legend>
       <div class="clear-both space-y-5">
         <div class="space-y-3">
@@ -72,7 +80,28 @@
       </div>
     </fieldset>
 
-    <fieldset class="border-t border-[color:var(--theme-line)] pt-6">
+    <fieldset class="border-t border-[color:var(--theme-line)] pt-6" data-access-password>
+      <legend class="float-left mb-3 w-full"><span class="form-legend">password</span></legend>
+      <div class="clear-both space-y-3">
+        <p class="font-mono text-sm text-body" data-password-stored hidden></p>
+        <div class="space-y-2">
+          <label for="access-password" class="block text-xs text-muted" data-password-label>Password</label>
+          <div class="flex max-w-[40rem] flex-wrap gap-2">
+            <input id="access-password" type="password" autocomplete="new-password" spellcheck="false"
+                   class="field min-w-0 flex-[1_1_16rem] font-mono text-sm">
+            <button type="button" id="access-password-show" class="btn-ghost inline-flex min-h-10 shrink-0 items-center px-3 py-1.5 text-[0.8rem] whitespace-nowrap">[ show ]</button>
+            <button type="button" id="access-password-generate" class="btn-ghost inline-flex min-h-10 shrink-0 items-center px-3 py-1.5 text-[0.8rem] whitespace-nowrap">[ generate ]</button>
+            <button type="button" id="access-password-copy" class="btn-ghost inline-flex min-h-10 shrink-0 items-center px-3 py-1.5 text-[0.8rem] whitespace-nowrap">[ copy ]</button>
+          </div>
+          <p class="text-xs text-muted" data-password-weak hidden>Short passwords are easy to guess. <button type="button" class="row-link" data-password-generate>generate</button> makes a strong one.</p>
+          <p class="text-xs text-muted">Stored as a hash, so it can only be replaced, never shown. Copy it before you save.</p>
+          <p class="text-xs text-muted" data-password-replace hidden>Saving a new one signs out everyone who opened the page with the old one. Clear the field to keep the current one.</p>
+        </div>
+        <p class="font-mono text-xs text-quiet"># password visitors are anonymous: nobody to block one by one · change the password to shut everyone out</p>
+      </div>
+    </fieldset>
+
+    <fieldset class="border-t border-[color:var(--theme-line)] pt-6" data-access-sessions>
       <legend class="float-left mb-3 w-full"><span class="form-legend">sessions</span></legend>
       <div class="clear-both">
         <span class="mb-1.5 block text-xs text-muted">Stay signed in on a device for</span>
@@ -82,7 +111,7 @@
           <label class="sm-rail__seg"><input type="radio" name="access_session" value="90" class="sr-only">90 days</label>
           <label class="sm-rail__seg"><input type="radio" name="access_session" value="" class="sr-only">until signed out</label>
         </div>
-        <p class="mt-1 text-xs text-muted">Applies to email sign-ins. A session not used for a year ends on its own.</p>
+        <p class="mt-1 text-xs text-muted" data-access-sessions-hint></p>
       </div>
     </fieldset>
   </div>
@@ -94,6 +123,13 @@
         <span class="font-mono text-xs text-muted" data-viewer-count></span>
       </div>
       <p class="px-4 pb-2 font-mono text-xs text-quiet"># people appear here after their first sign-in · block and unblock apply at once</p>
+      <div class="px-4 pb-3" data-password-line hidden>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[color:var(--theme-line)] pt-3 text-sm">
+          <span class="font-mono text-xs text-body">password</span>
+          <span class="font-mono text-xs text-muted" data-password-line-stats></span>
+          <button type="button" class="row-link row-link--danger -mx-2 ml-auto inline-flex min-h-10 items-center px-2" data-password-sign-out>sign them all out</button>
+        </div>
+      </div>
       <div class="overflow-x-auto">
         <table class="w-full text-left text-sm">
           <thead class="table-head bg-[color:var(--theme-surface-sunk)]">

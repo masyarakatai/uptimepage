@@ -1,5 +1,6 @@
 //! Signing in to a private status page, on the page's own host: an emailed
-//! code (or the link beside it in the same mail), then an optional passkey.
+//! code (or the link beside it in the same mail), then an optional passkey;
+//! or the page password the owner shared.
 //!
 //! Every answer to an address is the same whether or not the list covers it,
 //! and the mail goes out from a spawned task so timing says nothing either.
@@ -8,9 +9,10 @@
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::extract::{Form, Query, State};
-use axum::http::header::{HOST, USER_AGENT};
+use axum::http::header::{HOST, RETRY_AFTER, USER_AGENT};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tower_cookies::cookie::SameSite;
@@ -23,14 +25,17 @@ use webauthn_rs_proto::ResidentKeyRequirement;
 
 use crate::app::AppState;
 use crate::auth::fingerprint;
-use crate::domain::{AccessEventKind, AccessEventMethod, PageAccess, PageRef, normalize_email};
+use crate::domain::{
+    AccessEventKind, AccessEventMethod, MAX_PAGE_PASSWORD_CHARS, PageAccess, PageRef,
+    normalize_email,
+};
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
 use crate::public_status::access::{
     Access, same_origin, session_clear_cookie, session_cookie, session_set_cookie,
 };
-use crate::request::client_ip::ClientIp;
+use crate::request::client_ip::{ClientIp, network_key};
 use crate::request::host::{
     is_subdomain_public_request, published_page_origin, resolve_status_page,
 };
@@ -38,6 +43,7 @@ use crate::request::json::Json;
 use crate::robots::mark_private;
 use crate::storage::page_access::codes::{self, CODE_TTL_MINUTES, CodeOutcome};
 use crate::storage::page_access::events::{self, NewEvent};
+use crate::storage::page_access::password::{self, TryOutcome};
 use crate::storage::page_access::{passkeys, sessions, viewers};
 use crate::storage::status_pages;
 use crate::templates::filters;
@@ -68,6 +74,14 @@ pub struct AccessPage {
     pub next: String,
     /// The passkey button and the save offer.
     pub passkeys: bool,
+    /// The ways in the sign-in screen offers.
+    pub email_way: bool,
+    pub password_way: bool,
+    /// The page host, as the password form's username: a password manager
+    /// keys its saved entry on it, so it keeps one per page.
+    pub username: String,
+    /// Shown above the password field: a wrong password, or the wait.
+    pub password_error: String,
     /// The step's interpolated lines, filled in by [`Self::respond`].
     pub title: String,
     pub lead: String,
@@ -101,15 +115,35 @@ impl AccessPage {
             error: "",
             next,
             passkeys: false,
+            email_way: true,
+            password_way: false,
+            username: String::new(),
+            password_error: String::new(),
             title: String::new(),
             lead: String::new(),
         }
+    }
+
+    /// The sign-in screen's ways in, as the owner set them.
+    fn ways(mut self, state: &AppState, access: &PageAccess, headers: &HeaderMap) -> Self {
+        self.email_way = access.settings.email_enabled;
+        self.password_way = access.settings.password_enabled;
+        self.passkeys = passkeys_on(state, access, headers);
+        self.username = headers
+            .get(HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        self
     }
 
     fn respond(mut self, status: StatusCode) -> Response {
         let tr = self.tr;
         let page = self.branding.display_name.clone();
         match self.step {
+            "email" if !self.email_way && self.password_way => {
+                self.lead = tr.t_args("access-lead-password", [("page", page.into())])
+            }
             "email" => self.lead = tr.t_args("access-lead", [("page", page.into())]),
             "code" => {
                 self.lead = tr.t_args(
@@ -159,20 +193,22 @@ pub async fn sign_in_screen(
     access: &PageAccess,
     next: &str,
 ) -> Response {
-    let mut view = AccessPage::build(state, headers, page, "email").await;
-    view.passkeys = passkeys_on(state, access, headers);
+    let mut view = AccessPage::build(state, headers, page, "email")
+        .await
+        .ways(state, access, headers);
     if let Some(next) = crate::auth::url::safe_redirect_target(next) {
         view.next = next.to_owned();
     }
     view.respond(StatusCode::UNAUTHORIZED)
 }
 
-/// Passkeys for a page live on the page's own host. A path-based deploy
-/// serves the page from the app host, where they would sit beside the app's
-/// own passkeys and each sign-in screen would offer the other's, so the page
-/// offers the email code alone there.
+/// Passkeys shortcut the email code, so they stop with it. They live on the
+/// page's own host: a path-based deploy serves the page from the app host,
+/// where they would sit beside the app's own passkeys and each sign-in screen
+/// would offer the other's, so the page offers the email code alone there.
 fn passkeys_on(state: &AppState, access: &PageAccess, headers: &HeaderMap) -> bool {
-    access.settings.passkeys_enabled
+    access.settings.email_enabled
+        && access.settings.passkeys_enabled
         && state.db.is_some()
         && is_subdomain_public_request(&state.request_state(), headers)
 }
@@ -209,10 +245,12 @@ struct Requester {
     ua_hash: Option<String>,
 }
 
+/// Keyed by network, so every per-IP limit here counts an IPv6 client's
+/// whole /64 as one.
 fn requester(state: &AppState, ip: std::net::IpAddr, headers: &HeaderMap) -> Requester {
     let salt = state.cfg.auth.fingerprint_salt.as_str();
     Requester {
-        ip_hash: fingerprint::hash_fingerprint(salt, &ip.to_string()),
+        ip_hash: fingerprint::hash_fingerprint(salt, &network_key(ip).to_string()),
         ua_hash: fingerprint::hash_fingerprint(
             salt,
             headers
@@ -278,9 +316,10 @@ pub async fn request_code(
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let mut view = AccessPage::build(&state, &headers, page, "email").await;
+    let mut view = AccessPage::build(&state, &headers, page, "email")
+        .await
+        .ways(&state, &access, &headers);
     view.next = safe_next(&form.next, view.branding.home);
-    view.passkeys = passkeys_on(&state, &access, &headers);
     let Some(email) = normalize_email(&form.email) else {
         view.error = "access-bad-email";
         view.email = form.email.trim().chars().take(254).collect();
@@ -613,7 +652,7 @@ async fn open_session(
     let created = sessions::create(
         pool,
         page,
-        viewer,
+        sessions::Opener::Email(viewer),
         access.settings.session_days,
         who.ip_hash.as_deref(),
         who.ua_hash.as_deref(),
@@ -625,12 +664,148 @@ async fn open_session(
     })?;
     cookies.add(session_set_cookie(
         &created.cookie,
-        access.settings.session_days,
+        created.session_days,
         state.cfg.auth.session.cookie_secure,
     ));
     metrics::counter!(crate::metric_names::PAGE_ACCESS_SIGN_INS, "method" => method.as_db_str())
         .increment(1);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The page password
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordForm {
+    #[serde(default)]
+    pub password: Option<SecretString>,
+    #[serde(default)]
+    pub next: String,
+}
+
+/// `POST /access/password`. Each try claims one of the network's wrong-try
+/// slots before argon2 runs, so a parallel burst gets no more checks than a
+/// slow one; a right password hands its slot back. No page-wide lockout: that
+/// would hand anyone a switch that locks out every real visitor.
+pub async fn submit_password(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    cookies: Cookies,
+    Form(form): Form<PasswordForm>,
+) -> Response {
+    if !same_origin(&headers) {
+        return forbidden();
+    }
+    let (page, access) = match private_page(&state, &headers).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let mut view = AccessPage::build(&state, &headers, page, "email")
+        .await
+        .ways(&state, &access, &headers);
+    let next = safe_next(&form.next, view.branding.home);
+    view.next = next.clone();
+    if !access.settings.password_enabled {
+        return view.respond(StatusCode::UNAUTHORIZED);
+    }
+    let Ok(pool) = state.require_db() else {
+        return view.respond(StatusCode::SERVICE_UNAVAILABLE);
+    };
+    let presented = form.password.unwrap_or_else(|| SecretString::from(""));
+    // Never a match, so it neither runs argon2 nor spends one of the
+    // network's tries.
+    if presented.expose_secret().is_empty()
+        || presented.expose_secret().chars().count() > MAX_PAGE_PASSWORD_CHARS
+    {
+        view.password_error = view.tr.t("access-password-wrong");
+        return view.respond(StatusCode::UNAUTHORIZED);
+    }
+    let who = requester(&state, ip, &headers);
+    let claim = match password::claim_try(
+        pool,
+        page,
+        who.ip_hash.as_deref(),
+        who.ua_hash.as_deref(),
+    )
+    .await
+    {
+        Ok(TryOutcome::Claimed(claim)) => claim,
+        Ok(TryOutcome::Throttled { retry_after_secs }) => {
+            metrics::counter!(crate::metric_names::PAGE_ACCESS_SIGN_IN_REFUSED, "reason" => "password_throttled")
+                .increment(1);
+            let minutes = (retry_after_secs + 59) / 60;
+            view.password_error = view
+                .tr
+                .t_args("access-password-throttled", [("minutes", minutes.into())]);
+            let mut resp = view.respond(StatusCode::TOO_MANY_REQUESTS);
+            resp.headers_mut()
+                .insert(RETRY_AFTER, retry_after_secs.into());
+            return resp;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "page password: try not claimed");
+            return view.respond(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    let hash = match password::live_hash(pool, page).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(error = %e, "page password: hash not read");
+            return view.respond(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    let right = match &hash {
+        Some(h) => crate::security::page_password::verify(presented, h.clone()).await,
+        None => false,
+    };
+    let opened = match hash.as_deref().filter(|_| right) {
+        Some(h) => {
+            password::open_session(
+                pool,
+                page,
+                h,
+                claim,
+                session_cookie(&headers).as_deref(),
+                who.ip_hash.as_deref(),
+                who.ua_hash.as_deref(),
+            )
+            .await
+        }
+        None => Ok(None),
+    };
+    let created = match opened {
+        Ok(Some(created)) => created,
+        Ok(None) => {
+            metrics::counter!(crate::metric_names::PAGE_ACCESS_SIGN_IN_REFUSED, "reason" => "wrong_password")
+                .increment(1);
+            view.password_error = view.tr.t("access-password-wrong");
+            return view.respond(StatusCode::UNAUTHORIZED);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "page password: session not opened");
+            return view.respond(StatusCode::SERVICE_UNAVAILABLE);
+        }
+    };
+    cookies.add(session_set_cookie(
+        &created.cookie,
+        created.session_days,
+        state.cfg.auth.session.cookie_secure,
+    ));
+    metrics::counter!(crate::metric_names::PAGE_ACCESS_SIGN_INS, "method" => AccessEventMethod::Password.as_db_str())
+        .increment(1);
+    events::record_quietly(
+        pool,
+        NewEvent {
+            method: Some(AccessEventMethod::Password),
+            ip_hash: who.ip_hash.as_deref(),
+            user_agent_hash: who.ua_hash.as_deref(),
+            ..NewEvent::new(page, AccessEventKind::SignedIn)
+        },
+    )
+    .await;
+    Redirect::to(&next).into_response()
 }
 
 // ---------------------------------------------------------------------------

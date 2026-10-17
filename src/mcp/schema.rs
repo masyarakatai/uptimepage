@@ -1076,13 +1076,21 @@ pub struct StatusPageList {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PageAccessArg {
-    /// Private when true: only the addresses and domains in `rules` can open
-    /// the page, by signing in on it with a code sent to their email. False
-    /// makes it public again and keeps the list for next time.
+    /// Private when true: only people a way in lets through can open the
+    /// page: the addresses and domains in `rules`, by a code sent to their
+    /// email, or anyone with the page password. False makes it public again
+    /// and keeps the list and the password for next time.
     pub protected: bool,
+    /// Keep a sign-in, by email or password, for 7, 30 or 90 days. Omit to
+    /// keep it until sign-out.
+    #[serde(default)]
+    pub session_days: Option<i32>,
     #[serde(default)]
     pub email: PageEmailAccessArg,
-    /// Who can open it, up to 500 entries. Read back, these are customer data.
+    #[serde(default)]
+    pub password: PagePasswordAccessArg,
+    /// Who can get an email code, up to 500 entries. Read back, these are
+    /// customer data.
     #[serde(default)]
     pub rules: Vec<PageAccessRuleArg>,
 }
@@ -1091,7 +1099,7 @@ pub struct PageAccessArg {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PageEmailAccessArg {
-    /// Defaults to true; a private page needs it.
+    /// Defaults to true. A private page needs it or the password.
     #[serde(default = "yes")]
     pub enabled: bool,
     /// Let viewers save a passkey after an email sign-in. Defaults to true.
@@ -1101,9 +1109,6 @@ pub struct PageEmailAccessArg {
     /// Omit to never ask.
     #[serde(default)]
     pub recheck_days: Option<i32>,
-    /// Keep a sign-in for 7, 30 or 90 days. Omit to keep it until sign-out.
-    #[serde(default)]
-    pub session_days: Option<i32>,
 }
 
 fn yes() -> bool {
@@ -1116,9 +1121,24 @@ impl Default for PageEmailAccessArg {
             enabled: true,
             passkeys_enabled: true,
             recheck_days: None,
-            session_days: None,
         }
     }
+}
+
+/// The page password way in. The password itself never passes through here:
+/// it is set in the app, the API or Terraform.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PagePasswordAccessArg {
+    /// Anyone with the page password can open the page. Turning it on needs
+    /// one already set; turning it off keeps it and signs out everyone who
+    /// came in with it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Refused: a credential is never passed as a tool argument.
+    #[serde(default, skip_serializing)]
+    #[schemars(skip)]
+    pub value: Option<serde::de::IgnoredAny>,
 }
 
 /// One access list entry.
@@ -1149,10 +1169,25 @@ pub struct PageViewerItem {
     pub status: String,
 }
 
+/// How the page password is used. Password visitors are anonymous, so this is
+/// all there is to see of them.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PagePasswordUse {
+    pub enabled: bool,
+    /// Devices signed in with it now.
+    pub sessions: i64,
+    /// Last sign-in with it, RFC 3339, if any.
+    pub last_sign_in: Option<String>,
+    /// Wrong passwords tried in the last 24 hours.
+    pub wrong_tries_24h: i64,
+}
+
 /// `list_status_page_viewers` result.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PageViewerList {
     pub viewers: Vec<PageViewerItem>,
+    /// `null` for a page never made private.
+    pub password: Option<PagePasswordUse>,
 }
 
 /// `get_status_page` argument.

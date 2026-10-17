@@ -9,9 +9,10 @@ use rmcp::service::RequestContext;
 
 use crate::auth::scope::Scope;
 use crate::domain::{
-    AccessRule, AccessRuleKind, AccessSpec, AccessWrite, EmailAccessSpec, NewStatusPage,
-    NewStatusPageComponent, OrgId, PageAccess, PageRef, StatusPage, StatusPageComponentUpdate,
-    StatusPageId, StatusPageUpdate, WriteSource, validate_slug,
+    AccessError, AccessRule, AccessRuleKind, AccessSpec, AccessWrite, EmailAccessSpec,
+    NewStatusPage, NewStatusPageComponent, OrgId, PageAccess, PageRef, PasswordAccessSpec,
+    StatusPage, StatusPageComponentUpdate, StatusPageId, StatusPageUpdate, WriteSource,
+    validate_slug,
 };
 use crate::public_status::curation::{clean_curation, clean_curation_patch, validate_name};
 use crate::quotas::ratelimit::RateLimitCategory;
@@ -22,8 +23,8 @@ use crate::mcp::confirm::require_confirmation;
 use crate::mcp::error::{McpToolError, codes, config_error};
 use crate::mcp::schema::{
     AddComponentsArgs, ComponentOutcome, ComponentUpdated, ComponentsAdded, CreateStatusPageArgs,
-    NewComponentArg, PageAccessArg, PageAccessRuleArg, PageEmailAccessArg, StatusPageWritten,
-    UpdateComponentArgs, UpdateStatusPageArgs,
+    NewComponentArg, PageAccessArg, PageAccessRuleArg, PageEmailAccessArg, PagePasswordAccessArg,
+    StatusPageWritten, UpdateComponentArgs, UpdateStatusPageArgs,
 };
 
 use super::McpServer;
@@ -105,23 +106,35 @@ impl McpServer {
         org: OrgId,
         page: StatusPageId,
     ) -> Result<Option<PageAccessArg>, McpToolError> {
+        Ok(self
+            .stored_access(org, page)
+            .await?
+            .as_ref()
+            .map(access_arg))
+    }
+
+    async fn stored_access(
+        &self,
+        org: OrgId,
+        page: StatusPageId,
+    ) -> Result<Option<PageAccess>, McpToolError> {
         let pool = self.require_pool()?;
-        let access = crate::storage::page_access::settings::load(pool, PageRef { page, org })
+        crate::storage::page_access::settings::load(pool, PageRef { page, org })
             .await
-            .map_err(|e| McpToolError::internal(format!("page access: {e}")))?;
-        Ok(access.as_ref().map(access_arg))
+            .map_err(|e| McpToolError::internal(format!("page access: {e}")))
     }
 
     /// The access write an argument asks for, validated against the plan.
-    /// `current` is the page's access now: a page already private stays
-    /// editable while held for a plan that lost private pages.
+    /// `stored` is the page's access now: a page already private stays
+    /// editable while held for a plan that lost private pages, and its stored
+    /// password is what turning the password on uses, since none is ever
+    /// passed here.
     async fn access_write(
         &self,
         auth: &McpAuth,
         arg: Option<&PageAccessArg>,
-        current: Option<&PageAccessArg>,
+        stored: Option<&PageAccess>,
     ) -> Result<Option<AccessWrite>, McpToolError> {
-        let already_private = current.is_some_and(|a| a.protected);
         let Some(arg) = arg else { return Ok(None) };
         let plan = self
             .state
@@ -129,11 +142,18 @@ impl McpServer {
             .limit_for_org(auth.org)
             .await
             .map_err(|e| McpToolError::internal(format!("plan: {e}")))?;
-        let access = access_spec(arg)?
-            .validate(plan.private_pages_enabled || already_private)
-            .map_err(|e| McpToolError::invalid_argument(e.to_string()))?;
+        let valid = access_spec(arg)?
+            .validate(plan.private_pages_enabled, stored)
+            .map_err(|e| match e {
+                AccessError::PasswordRequired => McpToolError::invalid_argument(
+                    "this page has no password yet: set the password in the app, the API or \
+                     Terraform, then turn it on here",
+                ),
+                other => McpToolError::invalid_argument(other.to_string()),
+            })?;
         Ok(Some(AccessWrite {
-            access,
+            access: valid.access,
+            password_hash: None,
             actor: Some(auth.user_id),
         }))
     }
@@ -246,10 +266,16 @@ impl McpServer {
                 "nothing to change; pass name, new_slug, enabled or access",
             ));
         }
-        let current = self.page_access(auth.org, page.id).await?;
-        let was_private = current.as_ref().is_some_and(|a| a.protected);
+        let stored = self.stored_access(auth.org, page.id).await?;
+        let was_private = stored.as_ref().is_some_and(PageAccess::is_private);
+        let password_was_on = stored
+            .as_ref()
+            .is_some_and(|a| a.is_private() && a.settings.password_enabled);
+        let email_was_on = stored
+            .as_ref()
+            .is_some_and(|a| a.is_private() && a.settings.email_enabled);
         let access = self
-            .access_write(auth, args.access.as_ref(), current.as_ref())
+            .access_write(auth, args.access.as_ref(), stored.as_ref())
             .await?;
 
         let mut effects = Vec::new();
@@ -276,6 +302,19 @@ impl McpServer {
                 (true, false) => "make it public: anyone with the URL can read it".to_string(),
                 (false, false) => "keep it public and store its access list".to_string(),
             });
+            if password_was_on && w.access.is_private() && !w.access.settings.password_enabled {
+                effects.push(
+                    "turn the page password off, signing out everyone who came in with it"
+                        .to_string(),
+                );
+            }
+            if email_was_on && w.access.is_private() && !w.access.settings.email_enabled {
+                effects.push(
+                    "turn the email code off, signing out everyone who signed in by email and \
+                     ending their subscriptions"
+                        .to_string(),
+                );
+            }
         }
         require_confirmation(
             ctx,
@@ -562,11 +601,15 @@ fn access_arg(a: &PageAccess) -> PageAccessArg {
     let spec = AccessSpec::from(a);
     PageAccessArg {
         protected: spec.protected,
+        session_days: spec.session_days,
         email: PageEmailAccessArg {
             enabled: spec.email.enabled,
             passkeys_enabled: spec.email.passkeys_enabled,
             recheck_days: spec.email.recheck_days,
-            session_days: spec.email.session_days,
+        },
+        password: PagePasswordAccessArg {
+            enabled: spec.password.enabled,
+            value: None,
         },
         rules: spec
             .rules
@@ -580,6 +623,12 @@ fn access_arg(a: &PageAccess) -> PageAccessArg {
 }
 
 fn access_spec(arg: &PageAccessArg) -> Result<AccessSpec, McpToolError> {
+    if arg.password.value.is_some() {
+        return Err(McpToolError::invalid_argument(
+            "a page password is never passed as a tool argument: set it in the app, the API or \
+             Terraform, then turn `password.enabled` on here",
+        ));
+    }
     let rules = arg
         .rules
         .iter()
@@ -598,33 +647,42 @@ fn access_spec(arg: &PageAccessArg) -> Result<AccessSpec, McpToolError> {
         .collect::<Result<Vec<_>, McpToolError>>()?;
     Ok(AccessSpec {
         protected: arg.protected,
+        session_days: arg.session_days,
         email: EmailAccessSpec {
             enabled: arg.email.enabled,
             passkeys_enabled: arg.email.passkeys_enabled,
             recheck_days: arg.email.recheck_days,
-            session_days: arg.email.session_days,
+        },
+        password: PasswordAccessSpec {
+            enabled: arg.password.enabled,
+            value: None,
         },
         rules,
     })
 }
 
-/// The list as the confirmation reads it, capped so a long one stays a prompt.
+/// The ways in as the confirmation reads them, the list capped so a long one
+/// stays a prompt.
 fn who_can_open(access: &PageAccess) -> String {
     const SHOWN: usize = 10;
-    let mut names: Vec<String> = access
-        .rules
-        .iter()
-        .take(SHOWN)
-        .map(|r| match r.kind {
-            AccessRuleKind::Domain => format!("anyone at {}", sanitize_prompt(&r.value)),
-            AccessRuleKind::Address => sanitize_prompt(&r.value),
-        })
-        .collect();
-    if access.rules.len() > SHOWN {
-        names.push(format!("{} more", access.rules.len() - SHOWN));
+    let mut ways = Vec::new();
+    if access.settings.email_enabled {
+        let mut names: Vec<String> = access
+            .rules
+            .iter()
+            .take(SHOWN)
+            .map(|r| match r.kind {
+                AccessRuleKind::Domain => format!("anyone at {}", sanitize_prompt(&r.value)),
+                AccessRuleKind::Address => sanitize_prompt(&r.value),
+            })
+            .collect();
+        if access.rules.len() > SHOWN {
+            names.push(format!("{} more", access.rules.len() - SHOWN));
+        }
+        ways.push(format!("{}, after signing in by email", names.join(", ")));
     }
-    format!(
-        "only {} can open it, after signing in by email",
-        names.join(", ")
-    )
+    if access.settings.password_enabled {
+        ways.push("anyone with the page password".to_owned());
+    }
+    format!("only {} can open it", ways.join("; or "))
 }

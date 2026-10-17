@@ -1,6 +1,6 @@
 # Cookie Policy
 
-**Last updated:** 2026-10-13
+**Last updated:** 2026-10-17
 
 ## What Cookies We Use
 
@@ -62,7 +62,7 @@ A status page its owner has made private sets these, on that page's own address 
 
 | Name | Purpose | Duration | Required? |
 |---|---|---|---|
-| `_up_page` | Keeps you signed in to that one page | The period the page's owner chose (7, 30 or 90 days), or until you sign out, at most 400 days | Yes, to read a private page |
+| `_up_page` | Keeps you signed in to that one page, by email or with its password | The period the page's owner chose (7, 30 or 90 days), or until you sign out, at most 400 days | Yes, to read a private page |
 | `_up_page_code` | Binds the sign-in code we email you to the browser that asked for it | 20 minutes | Only while signing in |
 | `_up_page_confirm` | Ties the sign-in link you opened to the button you press on it | 20 minutes | Only while signing in |
 

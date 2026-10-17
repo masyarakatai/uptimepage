@@ -172,7 +172,7 @@ pub async fn list_pages(
     request_body = CreatePageRequest,
     responses(
         (status = 201, body = StatusPageView),
-        (status = 400, body = ApiError, description = "SLUG_INVALID / name invalid"),
+        (status = 400, body = ApiError, description = "SLUG_INVALID / name invalid / ACCESS_INVALID / PASSWORD_REQUIRED / INVALID_PAGE_PASSWORD"),
         (status = 403, body = ApiError, description = "PRIVATE_PAGES_DISABLED: the plan does not include private pages"),
         (status = 422, body = ApiError, description = "SLUG_TAKEN or the per-org page cap reached"),
     ),
@@ -192,7 +192,7 @@ pub async fn create_page(
     // race backstop, mapped to the same quota error with the real plan id.
     state.quotas.check_can_create_status_page(org, None).await?;
     let plan = state.quotas.limit_for_org(org).await?;
-    let access = access_write(req.access, plan.private_pages_enabled, user)?;
+    let access = access_write(req.access, plan.private_pages_enabled, None, user).await?;
     let max = i64::from(plan.max_status_pages);
     let page = state
         .status_page_store
@@ -240,7 +240,7 @@ pub async fn get_page(
     request_body = UpdatePageRequest,
     responses(
         (status = 200, body = StatusPageView),
-        (status = 400, body = ApiError, description = "SLUG_INVALID / BRANDING_INVALID / ACCESS_INVALID"),
+        (status = 400, body = ApiError, description = "SLUG_INVALID / BRANDING_INVALID / ACCESS_INVALID / PASSWORD_REQUIRED (password on with none sent or stored) / INVALID_PAGE_PASSWORD (empty or over 128 characters)"),
         (status = 403, body = ApiError, description = "PRIVATE_PAGES_DISABLED: the plan does not include private pages, and the page is not private already"),
         (status = 404, body = ApiError),
         (status = 422, body = ApiError, description = "SLUG_TAKEN"),
@@ -257,11 +257,14 @@ pub async fn update_page(
     let access = match req.access {
         Some(spec) => {
             let plan = state.quotas.limit_for_org(org).await?;
-            let may_be_private = plan.private_pages_enabled
-                || page_access(&state, org, StatusPageId(id))
-                    .await?
-                    .is_some_and(|a| a.is_private());
-            access_write(Some(spec), may_be_private, user)?
+            let stored = page_access(&state, org, StatusPageId(id)).await?;
+            access_write(
+                Some(spec),
+                plan.private_pages_enabled,
+                stored.as_ref(),
+                user,
+            )
+            .await?
         }
         None => None,
     };
@@ -323,29 +326,37 @@ pub async fn update_page(
     Ok(Json(view(&state, page, access.as_ref())))
 }
 
-/// The access write a request asks for, validated against the plan.
-fn access_write(
+/// The access write a request asks for, validated against the plan and the
+/// page's access now, with any new password hashed.
+async fn access_write(
     spec: Option<AccessSpec>,
-    may_be_private: bool,
+    plan_allows: bool,
+    stored: Option<&PageAccess>,
     actor: UserId,
 ) -> Result<Option<AccessWrite>> {
     let Some(spec) = spec else { return Ok(None) };
-    let access = spec.validate(may_be_private).map_err(access_error)?;
+    let valid = spec.validate(plan_allows, stored).map_err(access_error)?;
+    let password_hash = match valid.password {
+        Some(p) => Some(crate::security::page_password::hash(p.into_secret()).await?),
+        None => None,
+    };
     Ok(Some(AccessWrite {
-        access,
+        access: valid.access,
+        password_hash,
         actor: Some(actor),
     }))
 }
 
 pub(crate) fn access_error(e: AccessError) -> AppError {
-    match e {
+    let code = match e {
         AccessError::NotOnPlan => {
-            AppError::forbidden_code(codes::PRIVATE_PAGES_DISABLED, e.to_string())
+            return AppError::forbidden_code(codes::PRIVATE_PAGES_DISABLED, e.to_string());
         }
-        other => {
-            AppError::bad_request_field(codes::ACCESS_INVALID, other.to_string(), other.field())
-        }
-    }
+        AccessError::PasswordRequired => codes::PASSWORD_REQUIRED,
+        AccessError::InvalidPassword => codes::INVALID_PAGE_PASSWORD,
+        _ => codes::ACCESS_INVALID,
+    };
+    AppError::bad_request_field(code, e.to_string(), e.field())
 }
 
 async fn page_access(
@@ -740,6 +751,85 @@ pub async fn viewer_history(
             })
             .collect(),
     }))
+}
+
+/// The page password as the owner sees it. Never the password itself, which
+/// is stored as a hash and can only be replaced.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PagePasswordView {
+    pub enabled: bool,
+    /// When the stored password was set, or `null` while there is none.
+    #[schema(nullable = true)]
+    pub set_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who set it, while they have an account.
+    #[schema(nullable = true)]
+    pub set_by: Option<String>,
+    /// Devices signed in with it now.
+    pub sessions: i64,
+    #[schema(nullable = true)]
+    pub last_sign_in_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Wrong tries in the last 24 hours.
+    pub failed_last_24h: i64,
+    /// Subscriptions made with it that the email list does not cover: what a
+    /// new password or turning it off ends.
+    pub subscriptions: i64,
+}
+
+#[utoipa::path(
+    get, path = "/api/v1/status-pages/{id}/access/password", tag = "status-pages",
+    summary = "The page password's use: devices signed in, last sign-in, wrong tries",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = PagePasswordView), (status = 404, body = ApiError)),
+)]
+pub async fn page_password(
+    State(state): State<AppState>,
+    Authorized(org, _): Authorized<StatusPageRead>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PagePasswordView>> {
+    let page = load(&state, org, id).await?;
+    let pool = state.require_db()?;
+    let page_ref = PageRef { page: page.id, org };
+    let line = match crate::storage::page_access::settings::load(pool, page_ref).await? {
+        Some(access) => {
+            crate::storage::page_access::password::summary(pool, page_ref, &access).await?
+        }
+        None => Default::default(),
+    };
+    Ok(Json(line.into()))
+}
+
+impl From<crate::storage::page_access::password::PasswordSummary> for PagePasswordView {
+    fn from(s: crate::storage::page_access::password::PasswordSummary) -> Self {
+        Self {
+            enabled: s.enabled,
+            set_at: s.set_at,
+            set_by: s.set_by,
+            sessions: s.sessions,
+            last_sign_in_at: s.last_sign_in_at,
+            failed_last_24h: s.failed_last_24h,
+            subscriptions: s.subscriptions,
+        }
+    }
+}
+
+#[utoipa::path(
+    post, path = "/api/v1/status-pages/{id}/access/password/sign-out", tag = "status-pages",
+    summary = "Sign out every device signed in with the page password",
+    description = "Ends the password sessions that exist now. The password still works, so \
+                   anyone who knows it can sign in again; change it to shut them out.",
+    params(("id" = Uuid, Path)),
+    responses((status = 204, description = "Signed out"), (status = 404, body = ApiError)),
+)]
+pub async fn sign_out_password_sessions(
+    State(state): State<AppState>,
+    OwnerAuthorized(org, _): OwnerAuthorized<StatusPageWrite>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    let page = load(&state, org, id).await?;
+    let pool = state.require_db()?;
+    crate::storage::page_access::password::end_sessions(pool, org, page.id, user).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

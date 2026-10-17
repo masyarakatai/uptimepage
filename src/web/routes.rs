@@ -344,6 +344,10 @@ pub fn routes(state: AppState) -> Router {
             .route("/access/request", post(views::page_access::request_code))
             .route("/access/code", post(views::page_access::submit_code))
             .route(
+                "/access/password",
+                post(views::page_access::submit_password),
+            )
+            .route(
                 "/access/verify",
                 get(views::page_access::verify_landing).post(views::page_access::verify_confirm),
             )

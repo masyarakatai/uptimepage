@@ -416,6 +416,14 @@ pub fn build_router(state: AppState, shutdown: CancellationToken) -> Router {
             "/status-pages/{id}/access/viewers/{viewer_id}/history",
             get(handlers::status_page::viewer_history),
         )
+        .route(
+            "/status-pages/{id}/access/password",
+            get(handlers::status_page::page_password),
+        )
+        .route(
+            "/status-pages/{id}/access/password/sign-out",
+            post(handlers::status_page::sign_out_password_sessions),
+        )
         .route("/orgs/{id}/usage", get(handlers::usage::get_org_usage))
         .route(
             "/account/holds",
