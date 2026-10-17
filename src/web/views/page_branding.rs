@@ -1,4 +1,5 @@
-//! Operator-controlled branding, resolved for rendering.
+//! Operator-controlled branding, resolved for rendering on every page-host view:
+//! the status page, its sign-in screen, subscribe, and shared monitor links.
 
 use axum::http::HeaderMap;
 
@@ -19,13 +20,13 @@ pub struct BrandingView {
     /// Pre-sanitised HTML (markdown → ammonia allow-list). Rendered with the
     /// `safe` filter; it is the *only* unescaped value on the page.
     pub about_html: Option<String>,
-    /// Already passed through [`safe_brand_color`]; safe to interpolate into
+    /// Already passed through `safe_brand_color`; safe to interpolate into
     /// the `:root` `<style>` block verbatim.
     pub brand_color: String,
     pub brand_text: &'static str,
     pub logo_url: Option<String>,
     pub show_powered_by: bool,
-    /// The Licenses and Source code footer links. See [`enforce_source_links`].
+    /// The Licenses and Source code footer links. See `enforce_source_links`.
     pub show_source_links: bool,
     pub style: &'static str,
     /// Where the status page lives on this host: every self-link and its
@@ -34,7 +35,7 @@ pub struct BrandingView {
     pub hide_from_search: bool,
     /// Operator's own site. The header brand links here when set, else [`Self::home`].
     pub website_url: Option<String>,
-    /// Whether that link passes ranking signal. See [`enforce_follow_link`].
+    /// Whether that link passes ranking signal. See `enforce_follow_link`.
     pub follow_website_link: bool,
 }
 
@@ -64,7 +65,7 @@ impl BrandingView {
         }
     }
 
-    pub(super) fn from_org(o: &OrgBranding, cfg: &PublicStatusConfig, home: &'static str) -> Self {
+    fn from_org(o: &OrgBranding, cfg: &PublicStatusConfig, home: &'static str) -> Self {
         let display_name = o.resolved_display_name().to_owned();
         let about_html = o
             .branding
@@ -173,21 +174,21 @@ pub(crate) fn status_home(state: &AppState, headers: &HeaderMap) -> &'static str
 /// White-label is Pro-only: on SaaS a plan without white-label always shows the
 /// "powered by" badge, whatever the page stored. Self-host (marketing off) and
 /// white-label plans keep the stored preference.
-pub(super) fn enforce_powered_by(stored: bool, saas: bool, white_label: bool) -> bool {
+fn enforce_powered_by(stored: bool, saas: bool, white_label: bool) -> bool {
     if saas && !white_label { true } else { stored }
 }
 
 /// The links go with the enforced badge on SaaS. A self-host operator running
 /// modified code owes its network users the source (AGPL-3.0 section 13), so
 /// the toggle never removes them there.
-pub(super) fn enforce_source_links(saas: bool, show_powered_by: bool) -> bool {
+fn enforce_source_links(saas: bool, show_powered_by: bool) -> bool {
     !saas || show_powered_by
 }
 
 /// Hosted signup is open, so a followed link needs a plan that sells
 /// white-label. Self-host has nobody to police, and a page kept out of search
 /// passes nothing either way.
-pub(super) fn enforce_follow_link(saas: bool, white_label: bool, hide_from_search: bool) -> bool {
+fn enforce_follow_link(saas: bool, white_label: bool, hide_from_search: bool) -> bool {
     if hide_from_search {
         return false;
     }
@@ -199,7 +200,7 @@ pub(super) fn enforce_follow_link(saas: bool, white_label: bool, hide_from_searc
 /// own `^#[0-9a-fA-F]{6}$` predicate and returns `default` on any mismatch, so
 /// the value interpolated into the `<style>` block can never break out of the
 /// CSS rule even if an upstream layer's predicate is later widened.
-pub fn safe_brand_color(raw: Option<&str>, default: &str) -> String {
+fn safe_brand_color(raw: Option<&str>, default: &str) -> String {
     fn is_strict_hex(s: &str) -> bool {
         let b = s.as_bytes();
         b.len() == 7 && b[0] == b'#' && b[1..].iter().all(u8::is_ascii_hexdigit)
@@ -214,7 +215,7 @@ pub fn safe_brand_color(raw: Option<&str>, default: &str) -> String {
 /// ratio against the brand. Threshold-by-luminance breaks for mid-tone
 /// brands like Twitter blue or Slack yellow (white passes AA-Large but fails
 /// AA on small text).
-pub fn safe_brand_text_for(brand_hex: &str) -> &'static str {
+fn safe_brand_text_for(brand_hex: &str) -> &'static str {
     const WHITE: &str = "#ffffff";
     const DARK: &str = "#0f172a";
     const L_WHITE: f32 = 1.0;
@@ -267,9 +268,133 @@ static ABOUT_SANITIZER: std::sync::LazyLock<ammonia::Builder<'static>> =
 /// Renders `public_about` markdown to HTML, then strips everything outside a
 /// small allow-list. The parser output is never trusted: ammonia is the
 /// boundary, not pulldown-cmark.
-pub fn render_about(markdown: &str) -> String {
+fn render_about(markdown: &str) -> String {
     let parser = pulldown_cmark::Parser::new(markdown);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, parser);
     ABOUT_SANITIZER.clean(&html).to_string()
+}
+
+#[cfg(test)]
+impl BrandingView {
+    /// Acme's page under the default config, served at `/`.
+    pub(crate) fn sample(branding: PublicOrgBranding) -> Self {
+        Self::from_org(
+            &OrgBranding {
+                name: "Acme".into(),
+                slug: "acme".into(),
+                branding,
+            },
+            &PublicStatusConfig::default(),
+            "/",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn powered_by_forced_for_saas_non_white_label() {
+        // SaaS free: badge shown even if the page tried to hide it.
+        assert!(enforce_powered_by(false, true, false));
+        assert!(enforce_powered_by(true, true, false));
+        // SaaS white-label (Pro): stored preference honoured.
+        assert!(!enforce_powered_by(false, true, true));
+        // Self-host: unrestricted, stored preference honoured.
+        assert!(!enforce_powered_by(false, false, false));
+    }
+
+    #[test]
+    fn source_links_follow_the_badge_only_on_saas() {
+        assert!(enforce_source_links(true, true));
+        assert!(!enforce_source_links(true, false));
+        assert!(enforce_source_links(false, true));
+        assert!(enforce_source_links(false, false));
+    }
+
+    #[test]
+    fn safe_brand_color_accepts_strict_hex_only() {
+        assert_eq!(safe_brand_color(Some("#a1B2c3"), "#000000"), "#a1B2c3");
+        for bad in [
+            "blue",
+            "#abc",
+            "#3b82f",
+            "#3b82f60",
+            "#zzzzzz",
+            "  #3b82f6",
+            "red; } body { display: none }",
+        ] {
+            assert_eq!(
+                safe_brand_color(Some(bad), "#3b82f6"),
+                "#3b82f6",
+                "should reject {bad:?}"
+            );
+        }
+        assert_eq!(safe_brand_color(None, "#3b82f6"), "#3b82f6");
+    }
+
+    #[test]
+    fn brand_text_picks_white_on_very_dark_brands() {
+        for dark in ["#000000", "#1e3a8a", "#064e3b", "#4c1d95", "#7c2d12"] {
+            assert_eq!(
+                safe_brand_text_for(dark),
+                "#ffffff",
+                "{dark} should pair with white"
+            );
+        }
+    }
+
+    #[test]
+    fn brand_text_picks_dark_on_anything_brighter() {
+        // Pastels, mid-tones (Twitter blue, Slack yellow, Tailwind 500s) all
+        // give better contrast against near-black than white per WCAG.
+        for bright in [
+            "#ffffff", "#ffee99", "#facc15", "#bef264", "#fde68a", "#1d9bf0", "#3b82f6", "#06b6d4",
+            "#22c55e", "#ecb22e",
+        ] {
+            assert_eq!(
+                safe_brand_text_for(bright),
+                "#0f172a",
+                "{bright} should pair with near-black"
+            );
+        }
+    }
+
+    #[test]
+    fn brand_text_falls_back_to_white_on_malformed() {
+        for bad in ["", "blue", "#fff", "#zzzzzz"] {
+            assert_eq!(safe_brand_text_for(bad), "#ffffff");
+        }
+    }
+
+    #[test]
+    fn render_about_strips_disallowed_and_keeps_allowlist() {
+        let html = render_about("**bold** _em_ <script>alert(1)</script>\n\n- a\n- b");
+        assert!(html.contains("<strong>bold</strong>"));
+        assert!(html.contains("<em>em</em>"));
+        assert!(html.contains("<li>a</li>"));
+        assert!(!html.contains("<script"));
+        assert!(!html.contains("alert(1)"));
+    }
+
+    #[test]
+    fn render_about_adds_rel_to_links() {
+        let html = render_about("[x](https://example.com)");
+        assert!(html.contains("href=\"https://example.com\""));
+        assert!(html.contains("rel=\"noopener nofollow\""));
+    }
+
+    #[test]
+    fn follow_link_needs_white_label_on_hosted_and_nothing_on_self_host() {
+        // Hosted: the plan decides.
+        assert!(!enforce_follow_link(true, false, false));
+        assert!(enforce_follow_link(true, true, false));
+        // Self-host: no open signup to police, so the operator's own link follows.
+        assert!(enforce_follow_link(false, false, false));
+        // A page kept out of search passes nothing, whatever the plan.
+        assert!(!enforce_follow_link(true, true, true));
+        assert!(!enforce_follow_link(false, false, true));
+    }
 }

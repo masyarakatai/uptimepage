@@ -1,4 +1,3 @@
-use super::branding::*;
 use super::incident_display::*;
 use super::og::*;
 use super::view::*;
@@ -8,7 +7,6 @@ use crate::public_status::urls::*;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use uuid::Uuid;
 
-use crate::config::PublicStatusConfig;
 use crate::domain::OverallStatus;
 use crate::domain::{
     DayState, Downtime, IncidentImpact, IncidentSeverity, IncidentStatusPhase,
@@ -19,26 +17,7 @@ use crate::domain::{
 use crate::i18n::Tr;
 use crate::public_status::history::HistoryEntry;
 use crate::public_status::{HistoryMarker, MarkerKind};
-use crate::storage::orgs::OrgBranding;
-
-#[test]
-fn powered_by_forced_for_saas_non_white_label() {
-    // SaaS free: badge shown even if the page tried to hide it.
-    assert!(enforce_powered_by(false, true, false));
-    assert!(enforce_powered_by(true, true, false));
-    // SaaS white-label (Pro): stored preference honoured.
-    assert!(!enforce_powered_by(false, true, true));
-    // Self-host: unrestricted, stored preference honoured.
-    assert!(!enforce_powered_by(false, false, false));
-}
-
-#[test]
-fn source_links_follow_the_badge_only_on_saas() {
-    assert!(enforce_source_links(true, true));
-    assert!(!enforce_source_links(true, false));
-    assert!(enforce_source_links(false, true));
-    assert!(enforce_source_links(false, false));
-}
+use crate::web::views::page_branding::BrandingView;
 
 fn sample_page() -> PublicStatusPage {
     PublicStatusPage {
@@ -79,18 +58,6 @@ fn all_tab() -> HistoryRequest {
     }
 }
 
-fn sample_branding() -> BrandingView {
-    BrandingView::from_org(
-        &OrgBranding {
-            name: "Acme".into(),
-            slug: "acme".into(),
-            branding: PublicOrgBranding::default(),
-        },
-        &PublicStatusConfig::default(),
-        "/",
-    )
-}
-
 #[test]
 fn full_page_renders_chrome_and_components() {
     let view = build_view(
@@ -104,7 +71,7 @@ fn full_page_renders_chrome_and_components() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -318,7 +285,7 @@ fn empty_page_renders_with_zero_components() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -358,7 +325,7 @@ fn active_incident_banner_renders_when_present() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -397,7 +364,7 @@ fn maintenance_card_renders_when_present() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -549,7 +516,7 @@ fn german_page_renders_german_chrome() {
         reader: Reader::default(),
         tr,
         view: build_view(&sample_page(), &[], &Default::default(), all_tab(), tr),
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -674,7 +641,7 @@ fn incident_detail_renders() {
     let detail = IncidentDetailView::from_incident(&inc, Utc::now(), Tr::default());
     let html = IncidentDetailPage {
         tr: Tr::default(),
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         incident: detail,
         generated_at: Utc::now(),
         reader: Reader::default(),
@@ -696,7 +663,7 @@ fn a_recovering_incident_reads_as_monitoring_without_the_ongoing_badge() {
     let page = |inc: &PublicIncident| {
         IncidentDetailPage {
             tr: Tr::default(),
-            branding: sample_branding(),
+            branding: BrandingView::sample(PublicOrgBranding::default()),
             incident: IncidentDetailView::from_incident(inc, Utc::now(), Tr::default()),
             generated_at: Utc::now(),
             reader: Reader::default(),
@@ -732,7 +699,7 @@ fn incident_detail_renders_published_postmortem() {
     });
     let html = IncidentDetailPage {
         tr: Tr::default(),
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         incident: IncidentDetailView::from_incident(&inc, Utc::now(), Tr::default()),
         generated_at: Utc::now(),
         reader: Reader::default(),
@@ -749,7 +716,7 @@ fn incident_detail_renders_published_postmortem() {
     plain.postmortem = None;
     let html2 = IncidentDetailPage {
         tr: Tr::default(),
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         incident: IncidentDetailView::from_incident(&plain, Utc::now(), Tr::default()),
         generated_at: Utc::now(),
         reader: Reader::default(),
@@ -758,90 +725,6 @@ fn incident_detail_renders_published_postmortem() {
     .render()
     .unwrap();
     assert!(!html2.contains("Postmortem"));
-}
-
-fn branding_with(b: PublicOrgBranding) -> BrandingView {
-    BrandingView::from_org(
-        &OrgBranding {
-            name: "Acme".into(),
-            slug: "acme".into(),
-            branding: b,
-        },
-        &PublicStatusConfig::default(),
-        "/",
-    )
-}
-
-#[test]
-fn safe_brand_color_accepts_strict_hex_only() {
-    assert_eq!(safe_brand_color(Some("#a1B2c3"), "#000000"), "#a1B2c3");
-    for bad in [
-        "blue",
-        "#abc",
-        "#3b82f",
-        "#3b82f60",
-        "#zzzzzz",
-        "  #3b82f6",
-        "red; } body { display: none }",
-    ] {
-        assert_eq!(
-            safe_brand_color(Some(bad), "#3b82f6"),
-            "#3b82f6",
-            "should reject {bad:?}"
-        );
-    }
-    assert_eq!(safe_brand_color(None, "#3b82f6"), "#3b82f6");
-}
-
-#[test]
-fn brand_text_picks_white_on_very_dark_brands() {
-    for dark in ["#000000", "#1e3a8a", "#064e3b", "#4c1d95", "#7c2d12"] {
-        assert_eq!(
-            safe_brand_text_for(dark),
-            "#ffffff",
-            "{dark} should pair with white"
-        );
-    }
-}
-
-#[test]
-fn brand_text_picks_dark_on_anything_brighter() {
-    // Pastels, mid-tones (Twitter blue, Slack yellow, Tailwind 500s) all
-    // give better contrast against near-black than white per WCAG.
-    for bright in [
-        "#ffffff", "#ffee99", "#facc15", "#bef264", "#fde68a", "#1d9bf0", "#3b82f6", "#06b6d4",
-        "#22c55e", "#ecb22e",
-    ] {
-        assert_eq!(
-            safe_brand_text_for(bright),
-            "#0f172a",
-            "{bright} should pair with near-black"
-        );
-    }
-}
-
-#[test]
-fn brand_text_falls_back_to_white_on_malformed() {
-    for bad in ["", "blue", "#fff", "#zzzzzz"] {
-        assert_eq!(safe_brand_text_for(bad), "#ffffff");
-    }
-}
-
-#[test]
-fn render_about_strips_disallowed_and_keeps_allowlist() {
-    let html = render_about("**bold** _em_ <script>alert(1)</script>\n\n- a\n- b");
-    assert!(html.contains("<strong>bold</strong>"));
-    assert!(html.contains("<em>em</em>"));
-    assert!(html.contains("<li>a</li>"));
-    assert!(!html.contains("<script"));
-    assert!(!html.contains("alert(1)"));
-}
-
-#[test]
-fn render_about_adds_rel_to_links() {
-    let html = render_about("[x](https://example.com)");
-    assert!(html.contains("href=\"https://example.com\""));
-    assert!(html.contains("rel=\"noopener nofollow\""));
 }
 
 #[test]
@@ -853,7 +736,7 @@ fn branding_renders_logo_about_and_color() {
         all_tab(),
         Tr::default(),
     );
-    let branding = branding_with(PublicOrgBranding {
+    let branding = BrandingView::sample(PublicOrgBranding {
         public_display_name: Some("Acme Public".into()),
         public_about: Some("**hi** there".into()),
         public_brand_color: Some("#ff0000".into()),
@@ -890,7 +773,7 @@ fn og_tags_render_with_image_when_marketing_origin_set() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta {
             title: "Acme Status".into(),
             description: "Live operational status for Acme.".into(),
@@ -1000,7 +883,7 @@ fn og_tags_fall_back_to_summary_when_image_empty() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta {
             title: "Acme Status".into(),
             description: "Live operational status for Acme.".into(),
@@ -1033,7 +916,7 @@ fn powered_by_shown_by_default() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -1048,7 +931,7 @@ fn powered_by_shown_by_default() {
 fn footer_source_links_follow_their_flag() {
     let branding = |show_source_links| BrandingView {
         show_source_links,
-        ..sample_branding()
+        ..BrandingView::sample(PublicOrgBranding::default())
     };
     let status = |b: BrandingView| {
         StatusFullPage {
@@ -1102,7 +985,7 @@ fn malicious_brand_color_cannot_escape_style_rule() {
         all_tab(),
         Tr::default(),
     );
-    let branding = branding_with(PublicOrgBranding {
+    let branding = BrandingView::sample(PublicOrgBranding {
         public_brand_color: Some("red; } body { display: none } /*".into()),
         ..PublicOrgBranding::default()
     });
@@ -1204,7 +1087,7 @@ fn archive_page(
     let tr = Tr::default();
     IncidentArchivePage {
         tr,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         heading: tab.t(tr, "archive-heading"),
         empty: tab.t(tr, "archive-empty"),
         tabs: super::past::tab_links(ARCHIVE_URL, "", tab, tr),
@@ -1280,7 +1163,7 @@ fn status_url_puts_the_page_where_the_deploy_serves_it() {
 
 #[test]
 fn only_the_cursorless_archive_page_on_the_default_tab_is_indexable() {
-    let branding = sample_branding();
+    let branding = BrandingView::sample(PublicOrgBranding::default());
     assert_eq!(
         archive_robots(HistoryTab::All, None, &branding),
         "index,follow"
@@ -1298,7 +1181,7 @@ fn only_the_cursorless_archive_page_on_the_default_tab_is_indexable() {
 #[test]
 fn only_a_plan_that_sells_white_label_follows_the_operators_link() {
     let page = |follow: bool| {
-        let mut branding = branding_with(PublicOrgBranding {
+        let mut branding = BrandingView::sample(PublicOrgBranding {
             public_website_url: Some("https://acme.example".into()),
             ..Default::default()
         });
@@ -1325,18 +1208,6 @@ fn only_a_plan_that_sells_white_label_follows_the_operators_link() {
 }
 
 #[test]
-fn follow_link_needs_white_label_on_hosted_and_nothing_on_self_host() {
-    // Hosted: the plan decides.
-    assert!(!enforce_follow_link(true, false, false));
-    assert!(enforce_follow_link(true, true, false));
-    // Self-host: no open signup to police, so the operator's own link follows.
-    assert!(enforce_follow_link(false, false, false));
-    // A page kept out of search passes nothing, whatever the plan.
-    assert!(!enforce_follow_link(true, true, true));
-    assert!(!enforce_follow_link(false, false, true));
-}
-
-#[test]
 fn the_header_brand_falls_back_to_the_status_page_root() {
     let html = StatusFullPage {
         reader: Reader::default(),
@@ -1348,7 +1219,7 @@ fn the_header_brand_falls_back_to_the_status_page_root() {
             all_tab(),
             Tr::default(),
         ),
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()
@@ -1359,7 +1230,7 @@ fn the_header_brand_falls_back_to_the_status_page_root() {
 
 #[test]
 fn hiding_a_page_from_search_takes_every_page_with_it() {
-    let branding = branding_with(PublicOrgBranding {
+    let branding = BrandingView::sample(PublicOrgBranding {
         public_hide_from_search: true,
         ..Default::default()
     });
@@ -1411,7 +1282,7 @@ fn branding_defaults_when_all_fields_null() {
         all_tab(),
         Tr::default(),
     );
-    let branding = branding_with(PublicOrgBranding::default());
+    let branding = BrandingView::sample(PublicOrgBranding::default());
     let html = StatusFullPage {
         reader: Reader::default(),
         tr: Tr::default(),
@@ -1606,7 +1477,7 @@ fn the_status_page_loads_the_script_that_keeps_rows_open() {
         reader: Reader::default(),
         tr: Tr::default(),
         view,
-        branding: sample_branding(),
+        branding: BrandingView::sample(PublicOrgBranding::default()),
         og: OgMeta::default(),
     }
     .render()

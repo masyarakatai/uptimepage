@@ -6,6 +6,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::error::AppError;
+use crate::error::public::PublicAppError;
+use crate::robots::mark_private;
 use crate::templates::filters;
 
 #[derive(Template, WebTemplate)]
@@ -28,6 +30,38 @@ pub struct UnavailablePage {
 
 pub async fn not_found() -> Response {
     (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
+}
+
+/// Maps a `PublicAppError` to an HTML response for the rendered routes —
+/// avoids leaking the JSON envelope into the browser.
+pub(crate) fn render_public_error(err: PublicAppError) -> Response {
+    match err {
+        PublicAppError::SignInRequired => {
+            let mut resp =
+                (StatusCode::UNAUTHORIZED, NotFoundPage { active_tab: "" }).into_response();
+            mark_private(&mut resp);
+            resp
+        }
+        PublicAppError::NotFound => {
+            (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
+        }
+        PublicAppError::InvalidDays | PublicAppError::BadRequest(_) => {
+            (StatusCode::BAD_REQUEST, NotFoundPage { active_tab: "" }).into_response()
+        }
+        PublicAppError::Unavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            UnavailablePage { active_tab: "" },
+        )
+            .into_response(),
+        PublicAppError::Internal(e) => {
+            tracing::error!(error = %e, "public status page internal error");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                UnavailablePage { active_tab: "" },
+            )
+                .into_response()
+        }
+    }
 }
 
 /// Wrapper that re-renders `AppError` as an HTML error page instead of

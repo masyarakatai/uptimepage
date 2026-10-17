@@ -50,7 +50,7 @@ use crate::security::redaction::redact_check_for_public;
 use crate::storage::TimeRange;
 use crate::templates::filters;
 use crate::web::error::WebResult;
-use crate::web::views::public_status::{BrandingView, resolve_branding};
+use crate::web::views::page_branding::{BrandingView, resolve_branding};
 use crate::web::views::targets_detail::{
     CustomWindow, DEFAULT_RANGE, DetailParams, INCIDENT_DEFAULT_RANGE, INCIDENT_RANGE_KEYS,
     IncidentRow, KpiTrend, LiveDataCache, PingTally, RANGE_KEYS, ResultRow, SUBTAB_INCIDENTS,

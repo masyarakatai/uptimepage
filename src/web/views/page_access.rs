@@ -42,7 +42,8 @@ use crate::storage::page_access::{passkeys, sessions, viewers};
 use crate::storage::status_pages;
 use crate::templates::filters;
 
-use super::public_status::{BrandingView, resolve_branding};
+use super::page_branding::{BrandingView, resolve_branding, status_home};
+use crate::web::error::render_public_error;
 
 /// Binds an emailed code to the browser that asked for it. Scoped to the
 /// sign-in paths; nothing else on the page needs it.
@@ -184,21 +185,17 @@ async fn private_page(
 ) -> Result<(PageRef, std::sync::Arc<PageAccess>), Response> {
     let page = resolve_status_page(&state.request_state(), headers)
         .await
-        .map_err(not_found)?;
+        .map_err(render_public_error)?;
     let access = state
         .page_gate
         .settings(state.db.as_ref(), page)
         .await
-        .map_err(not_found)?;
+        .map_err(render_public_error)?;
     if !access.is_private() {
-        let home = super::public_status::status_home_for(state, headers);
+        let home = status_home(state, headers);
         return Err(Redirect::to(home).into_response());
     }
     Ok((page, access))
-}
-
-fn not_found(err: PublicAppError) -> Response {
-    super::public_status::render_public_error(err)
 }
 
 fn forbidden() -> Response {
@@ -723,7 +720,7 @@ pub async fn verify_confirm(
     clear_nonce(&cookies, CONFIRM_NONCE_COOKIE, "/access/verify");
     match codes::consume_link(pool, page, form.token.trim()).await {
         Ok(Some(email)) => {
-            let home = super::public_status::status_home_for(&state, &headers);
+            let home = status_home(&state, &headers);
             sign_in(
                 &state, &headers, &cookies, page, &access, &email, &who, home,
             )
@@ -756,10 +753,10 @@ pub async fn sign_out(
     if !same_origin(&headers) {
         return forbidden();
     }
-    let home = super::public_status::status_home_for(&state, &headers);
+    let home = status_home(&state, &headers);
     let page = match resolve_status_page(&state.request_state(), &headers).await {
         Ok(p) => p,
-        Err(err) => return not_found(err),
+        Err(err) => return render_public_error(err),
     };
     if let (Ok(pool), Some(cookie)) = (state.require_db(), session_cookie(&headers)) {
         match sessions::delete(pool, page, &cookie).await {
@@ -830,7 +827,7 @@ pub async fn passkey_offer(
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    let home = super::public_status::status_home_for(&state, &headers);
+    let home = status_home(&state, &headers);
     let next = safe_next(&q.next, home);
     let signed_in = matches!(
         state
@@ -1129,7 +1126,7 @@ pub async fn login_finish(
         },
     )
     .await;
-    let home = super::public_status::status_home_for(&state, &headers);
+    let home = status_home(&state, &headers);
     Ok(Json(SignedIn {
         redirect: safe_next(&body.next, home),
     }))

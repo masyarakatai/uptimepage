@@ -28,6 +28,7 @@ use crate::storage::status_pages;
 use crate::storage::subscribers::{self, CONFIRM_TTL_HOURS};
 use crate::templates::filters;
 use crate::web::error::WebResult;
+use crate::web::views::page_branding::status_home;
 
 #[derive(Template, WebTemplate)]
 #[template(path = "public/subscribe_notice.html")]
@@ -156,7 +157,7 @@ pub async fn subscribe(
             return Ok(SubscribeNotice::subscribed_as(tr, &viewer.email));
         }
         Ok(Access::SignInRequired(_)) => {
-            let home = crate::web::views::public_status::status_home_for(&state, &headers);
+            let home = status_home(&state, &headers);
             return Ok(Redirect::to(home).into_response());
         }
         Err(_) => return Ok(invalid_page(tr)),

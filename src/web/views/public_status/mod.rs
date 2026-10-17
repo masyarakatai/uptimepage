@@ -25,9 +25,9 @@ use crate::request::host::{
 };
 use crate::robots::{self, mark_private};
 use crate::templates::filters;
-use crate::web::error::{NotFoundPage, UnavailablePage};
+use crate::web::error::render_public_error;
+use crate::web::views::page_branding::{BrandingView, resolve_branding, status_home};
 
-mod branding;
 mod incident_display;
 mod og;
 mod past;
@@ -35,9 +35,6 @@ mod past;
 mod tests;
 mod view;
 
-pub use branding::{
-    BrandingView, render_about, resolve_branding, safe_brand_color, safe_brand_text_for,
-};
 pub use og::OgMeta;
 pub use past::{HistoryTab, PastEntry, PastEvents, PastItem, PhaseChip, TabLink};
 pub use view::{
@@ -172,7 +169,7 @@ pub async fn index(
     Query(params): Query<StatusParams>,
 ) -> Response {
     let fragment = params.fragment.unwrap_or(0) != 0;
-    let home = status_home_for(&state, &headers);
+    let home = status_home(&state, &headers);
     let (page_ref, access) = match readable(&state, &headers, home, fragment).await {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -289,12 +286,6 @@ fn privately(mut resp: Response, access: &Access) -> Response {
         mark_private(&mut resp);
     }
     resp
-}
-
-/// Where this host serves the page: `/` on a page's own host, `/status` on a
-/// path-based deploy.
-pub fn status_home_for(state: &AppState, headers: &HeaderMap) -> &'static str {
-    branding::status_home(state, headers)
 }
 
 fn with_language(page: impl IntoResponse, tr: Tr) -> Response {
@@ -572,38 +563,6 @@ fn bucket_by_month(entries: Vec<HistoryEntry>, now: DateTime<Utc>, tr: Tr) -> Ve
         .collect()
 }
 
-/// Maps a `PublicAppError` to an HTML response for the rendered routes —
-/// avoids leaking the JSON envelope into the browser.
-pub(crate) fn render_public_error(err: PublicAppError) -> Response {
-    match err {
-        PublicAppError::SignInRequired => {
-            let mut resp =
-                (StatusCode::UNAUTHORIZED, NotFoundPage { active_tab: "" }).into_response();
-            mark_private(&mut resp);
-            resp
-        }
-        PublicAppError::NotFound => {
-            (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
-        }
-        PublicAppError::InvalidDays | PublicAppError::BadRequest(_) => {
-            (StatusCode::BAD_REQUEST, NotFoundPage { active_tab: "" }).into_response()
-        }
-        PublicAppError::Unavailable => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            UnavailablePage { active_tab: "" },
-        )
-            .into_response(),
-        PublicAppError::Internal(e) => {
-            tracing::error!(error = %e, "public status page internal error");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                UnavailablePage { active_tab: "" },
-            )
-                .into_response()
-        }
-    }
-}
-
 /// Absolute `rel=canonical` for the page a fragment duplicates. `None` when no
 /// origin is known, leaving the fragment its `noindex` alone.
 fn canonical_link(
@@ -623,7 +582,7 @@ fn canonical_link(
     if origin.is_empty() {
         return None;
     }
-    let home = branding::status_home(state, headers);
+    let home = status_home(state, headers);
     let home = home.strip_suffix('/').unwrap_or(home);
     header::HeaderValue::from_str(&format!("<{origin}{home}>; rel=\"canonical\"")).ok()
 }

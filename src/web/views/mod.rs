@@ -27,6 +27,7 @@ pub mod on_call_roster;
 pub mod on_call_shifts;
 pub mod organizations;
 pub mod page_access;
+pub mod page_branding;
 pub mod pages;
 pub mod public_status;
 pub mod region_display;

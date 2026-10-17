@@ -6,7 +6,7 @@ use crate::app::AppState;
 use crate::domain::StatusPageId;
 use crate::request::host::published_page_origin;
 
-use super::branding::BrandingView;
+use crate::web::views::page_branding::BrandingView;
 
 /// OG/Twitter card metadata for the public status surface. Empty `url` /
 /// `image` / `site_name` mean "skip that tag" — fine for self-hosted setups
