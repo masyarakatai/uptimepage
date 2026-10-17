@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -28,8 +28,14 @@ use crate::storage::traits::{
     TargetStore,
 };
 
-/// The embedded Postgres migrations, shared with the integration tests.
-pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
+/// The embedded Postgres migrations, shared with the integration tests. One
+/// this build does not know was applied by a newer build, so it boots anyway:
+/// a failed deploy recovers by starting the previous image on that database.
+pub static MIGRATOR: LazyLock<sqlx::migrate::Migrator> = LazyLock::new(|| {
+    let mut migrator = sqlx::migrate!("./migrations/postgres");
+    migrator.set_ignore_missing(true);
+    migrator
+});
 
 /// Org-scoped Postgres-backed target store. Every query binds the `org`
 /// passed by the caller (resolved from the request's `CurrentOrg`) so reads,
