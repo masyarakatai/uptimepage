@@ -15,7 +15,7 @@
 use crate::request::json::Json;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -34,14 +34,12 @@ use crate::pagination::cursor::HistoryCursor;
 use crate::pagination::page::{
     CursorPage, CursorPageOfPublicIncident, CursorPageOfPublicMaintenance,
 };
-use crate::public_status::access::{Access, mark_private};
+use crate::public_status::access::Access;
 use crate::public_status::badge::{component_badge, overall_badge, render_badge};
 use crate::public_status::source::FeedLinks;
 use crate::public_status::{IncidentListQuery, MaintenanceListQuery};
 use crate::request::host::{ResolvedStatusPage, resolve_status_page};
-
-const NOINDEX: HeaderValue = HeaderValue::from_static("noindex");
-const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
+use crate::robots::{NOINDEX, X_ROBOTS_TAG, mark_private};
 
 /// A status page the request may read: resolved from the host, then past the
 /// access gate. A private page with no session that may read it is a 401.

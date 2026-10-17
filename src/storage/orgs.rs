@@ -21,7 +21,7 @@ use crate::storage::count_sql;
 use crate::storage::locks::{
     account_lock_key, advisory_xact_lock, membership_lock_key, signup_lock_key, user_lock_key,
 };
-use crate::storage::status_pages::PAGE_SERVED;
+use crate::storage::page_sql::PAGE_SERVED;
 
 /// Returns the id of the single live (non-soft-deleted) organisation, or
 /// `None` if zero or more than one exist. Used by the path-based public

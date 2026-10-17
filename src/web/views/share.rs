@@ -45,11 +45,11 @@ use crate::error::public::PublicAppError;
 use crate::public_status::urls::page_origin;
 use crate::request::host::{is_subdomain_public_request, resolve_status_page};
 use crate::request::range::{RangeQuery, latency_bucket_seconds};
+use crate::robots;
 use crate::security::redaction::redact_check_for_public;
 use crate::storage::TimeRange;
 use crate::templates::filters;
 use crate::web::error::WebResult;
-use crate::web::robots;
 use crate::web::views::public_status::{BrandingView, resolve_branding};
 use crate::web::views::targets_detail::{
     CustomWindow, DEFAULT_RANGE, DetailParams, INCIDENT_DEFAULT_RANGE, INCIDENT_RANGE_KEYS,

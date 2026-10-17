@@ -28,13 +28,14 @@ use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
 use crate::public_status::access::{
-    Access, mark_private, same_origin, session_clear_cookie, session_cookie, session_set_cookie,
+    Access, same_origin, session_clear_cookie, session_cookie, session_set_cookie,
 };
 use crate::request::client_ip::ClientIp;
 use crate::request::host::{
     is_subdomain_public_request, published_page_origin, resolve_status_page,
 };
 use crate::request::json::Json;
+use crate::robots::mark_private;
 use crate::storage::page_access::codes::{self, CODE_TTL_MINUTES, CodeOutcome};
 use crate::storage::page_access::events::{self, NewEvent};
 use crate::storage::page_access::{passkeys, sessions, viewers};

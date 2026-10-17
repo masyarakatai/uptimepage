@@ -33,6 +33,7 @@ pub mod pipeline;
 pub mod public_status;
 pub mod quotas;
 pub mod request;
+pub(crate) mod robots;
 pub mod router;
 pub mod scheduler;
 pub mod security;

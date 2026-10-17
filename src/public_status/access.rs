@@ -7,9 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::http::header::{CACHE_CONTROL, COOKIE, HOST, ORIGIN};
-use axum::http::{HeaderMap, HeaderName, HeaderValue};
-use axum::response::Response;
+use axum::http::HeaderMap;
+use axum::http::header::{COOKIE, HOST, ORIGIN};
 use moka::future::Cache;
 use moka::sync::Cache as SyncCache;
 use sqlx::PgPool;
@@ -33,17 +32,6 @@ const UNLIMITED_COOKIE_DAYS: i64 = 400;
 
 const SETTINGS_TTL: Duration = Duration::from_secs(10);
 const TOUCH_DEBOUNCE: Duration = Duration::from_secs(60);
-
-/// A private response is the visitor's alone: no shared cache keeps it, and
-/// no search engine indexes it.
-pub fn mark_private(resp: &mut Response) {
-    resp.headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
-    resp.headers_mut().insert(
-        HeaderName::from_static("x-robots-tag"),
-        HeaderValue::from_static("noindex"),
-    );
-}
 
 #[derive(Debug, Clone)]
 pub struct Viewer {

@@ -13,7 +13,7 @@ use crate::error::Result;
 use crate::i18n::Tr;
 use crate::security::sha256_hex;
 use crate::security::token_hash::generate_raw_token;
-use crate::storage::status_pages::{
+use crate::storage::page_sql::{
     PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME, PAGE_SERVED,
 };
 

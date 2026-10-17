@@ -5,6 +5,8 @@ use serde::Serialize;
 use thiserror::Error;
 use utoipa::ToSchema;
 
+use crate::robots::mark_private;
+
 /// Top-level envelope for every 4xx/5xx response on the public surface.
 ///
 /// Deliberately narrower than [`crate::error::ApiError`]: no `field`,
@@ -98,7 +100,7 @@ impl IntoResponse for PublicAppError {
         )
             .into_response();
         if matches!(self, Self::SignInRequired) {
-            crate::public_status::access::mark_private(&mut resp);
+            mark_private(&mut resp);
         }
         resp
     }

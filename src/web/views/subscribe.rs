@@ -20,11 +20,11 @@ use crate::domain::{NewSubscriber, PageRef, SubscriberChannel};
 use crate::email::{EmailAddress, EmailTemplate, TransactionalEmail};
 use crate::http_outbound::post_bytes_with_headers;
 use crate::i18n::Tr;
-use crate::public_status::access::{Access, mark_private, same_origin};
+use crate::public_status::access::{Access, same_origin};
 use crate::request::host::resolve_status_page;
-use crate::storage::status_pages::{
-    self, PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME,
-};
+use crate::robots::mark_private;
+use crate::storage::page_sql::{PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME};
+use crate::storage::status_pages;
 use crate::storage::subscribers::{self, CONFIRM_TTL_HOURS};
 use crate::templates::filters;
 use crate::web::error::WebResult;

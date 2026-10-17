@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::domain::Locale;
 use crate::error::Result;
 use crate::storage::admin::not_held_sql;
-use crate::storage::status_pages::{
+use crate::storage::page_sql::{
     PAGE_CUSTOM_DOMAIN_PUBLISHED, PAGE_PLAN_JOIN, PAGE_PUBLIC_NAME, PAGE_SERVED,
 };
 use crate::storage::subscribers::{

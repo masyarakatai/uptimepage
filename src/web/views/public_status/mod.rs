@@ -18,14 +18,14 @@ use crate::domain::AssetSlot;
 use crate::domain::{PageRef, StatusPageId};
 use crate::error::public::PublicAppError;
 use crate::i18n::Tr;
-use crate::public_status::access::{Access, feed_token, mark_private};
+use crate::public_status::access::{Access, feed_token};
 use crate::public_status::history::{HistoryEntry, HistoryPage, merge};
 use crate::request::host::{
     is_subdomain_public_request, published_page_origin, resolve_status_page,
 };
+use crate::robots::{self, mark_private};
 use crate::templates::filters;
 use crate::web::error::{NotFoundPage, UnavailablePage};
-use crate::web::robots;
 
 mod branding;
 mod incident_display;

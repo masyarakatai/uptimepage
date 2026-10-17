@@ -47,6 +47,7 @@ src/
 ├── pagination/       page envelopes + opaque cursors shared by every list surface
 ├── text.rs           one-line and length-capped text shaping for outbound channels
 ├── duration.rs       two-unit duration split shared by the console and status page formatters
+├── robots.rs         X-Robots-Tag values + the no-store, noindex marking of private responses
 ├── i18n.rs           status page and subscriber email messages in each page language
 │
 │   services and stores

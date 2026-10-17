@@ -31,6 +31,7 @@ pub mod org_ttl;
 pub mod orgs;
 pub mod page_access;
 pub mod page_assets;
+pub mod page_sql;
 pub mod partitions;
 pub mod passkeys;
 pub mod postgres;
