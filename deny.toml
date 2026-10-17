@@ -50,6 +50,14 @@ ignore = [
     # private key for it to leak. No upgrade exists. Revisit on webauthn-rs
     # 0.6 stable.
     "RUSTSEC-2023-0071",
+    # `zip` 3 — symlink targets and SUID bits on `extract()`. Build-only, via
+    # utoipa-swagger-ui's build script, which never calls `extract()`: it
+    # writes the regular files of the pinned Swagger UI release archive into
+    # OUT_DIR. Nothing unzips at runtime. utoipa-swagger-ui 10 still requires
+    # zip 8; revisit when juhaku/utoipa#1645 (zip 9) ships in a release.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 
 # ── Licenses: explicit allow-list. Anything outside the list fails CI. ──────
