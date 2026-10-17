@@ -242,8 +242,8 @@ pub fn default_recovery_period_secs_for_kind(kind: &str) -> u32 {
     }
 }
 
-/// Check-interval picker presets: the fast group for probes, the slow one for
-/// certificate and registration expiry.
+/// Check-interval picker presets, minutes then hours. Every probed kind picks
+/// from both, minus the presets under its [`IntervalHints::min`].
 pub const FAST_INTERVAL_PRESETS: [u64; 8] = [30, 60, 120, 300, 600, 900, 1_800, 3_600];
 pub const SLOW_INTERVAL_PRESETS: [u64; 3] = [21_600, 43_200, 86_400];
 

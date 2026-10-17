@@ -355,13 +355,49 @@ fn form_surfaces_plan_interval_floor_and_presets() {
     .unwrap();
     // Client mirror of the API floor (no hardcoded 60 in the markup).
     assert!(html.contains(r#"data-min-interval="60""#));
-    // The plan floor drops the 30s preset from the fast rail.
+    // The plan floor drops the 30s preset.
     assert!(!html.contains(r#"name="interval_s" value="30""#));
     assert!(html.contains(r#"name="interval_s" value="60" class="sr-only" checked"#));
-    // Both cadence rails render; the slow one starts hidden on http.
-    assert!(html.contains(r#"data-interval-rail="fast""#));
-    assert!(html.contains(r#"data-interval-rail="slow" hidden"#));
-    assert!(html.contains(r#"name="interval_s" value="86400""#));
+    // Probes reach the hour presets too.
+    assert!(html.contains(r#"name="interval_s" value="86400" class="sr-only">"#));
+    assert!(html.contains(r#"data-interval-hint="slow" hidden"#));
+}
+
+#[test]
+fn every_kind_shares_one_rail_trimmed_to_its_picker() {
+    let offered = |kind: &'static str| -> Vec<u64> {
+        let mut form = empty_create_form();
+        form.min_interval_s = 30;
+        assert!(apply_kind_param(&mut form, kind));
+        form.interval_options()
+            .iter()
+            .filter(|o| o.offered)
+            .map(|o| o.secs)
+            .collect()
+    };
+    assert_eq!(
+        offered("http"),
+        [
+            30, 60, 120, 300, 600, 900, 1_800, 3_600, 21_600, 43_200, 86_400
+        ]
+    );
+    assert_eq!(
+        offered("flow"),
+        [300, 600, 900, 1_800, 3_600, 21_600, 43_200, 86_400]
+    );
+    assert_eq!(offered("tls_cert"), [21_600, 43_200, 86_400]);
+
+    // Hidden, not dropped, so switching to http can still reveal 30s.
+    let mut form = empty_create_form();
+    form.min_interval_s = 30;
+    assert!(apply_kind_param(&mut form, "flow"));
+    let html = FormPage {
+        active_tab: "targets",
+        form,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains(r#"name="interval_s" value="30" class="sr-only" disabled"#));
 }
 
 #[test]
@@ -418,8 +454,9 @@ fn expiry_kinds_open_on_the_suggested_cadence_not_the_floor() {
     assert_eq!(form.interval_s, 86_400);
     // Hourly stays legal, it is just not something the picker offers.
     let offered: Vec<u64> = form
-        .interval_options_slow()
+        .interval_options()
         .iter()
+        .filter(|o| o.offered)
         .map(|o| o.secs)
         .collect();
     assert_eq!(offered, [43_200, 86_400]);
@@ -435,7 +472,7 @@ fn expiry_kinds_open_on_the_suggested_cadence_not_the_floor() {
 #[test]
 fn a_stored_cadence_below_the_suggestions_survives_an_edit() {
     let mut form = empty_create_form();
-    form.check_type = "domain_expiry";
+    form.check_type = "tls_cert";
     form.interval_s = 3_600;
     form.carried_over = true;
     let html = FormPage {
@@ -444,11 +481,18 @@ fn a_stored_cadence_below_the_suggestions_survives_an_edit() {
     }
     .render()
     .unwrap();
-    assert!(html.contains(r#"name="interval_s" value="3600" class="sr-only" checked"#));
+    assert!(html.contains(r#"name="interval_s" value="3600" class="sr-only" checked>"#));
     // Pinned, so the client leaves it alone.
     assert!(html.contains(r#"data-interval-touched="1""#));
     assert!(html.contains(r#"data-recovery-touched="1""#));
     assert!(html.contains(r#"data-interval="3600""#));
+
+    // Under the kind floor it could not be saved again, so nothing is checked
+    // and the client lands on the suggestion.
+    let mut form = empty_create_form();
+    form.check_type = "domain_expiry";
+    form.interval_s = 3_600;
+    assert!(form.interval_options().iter().all(|o| !o.selected));
 }
 
 #[test]

@@ -22,8 +22,7 @@ import { parseDuration } from "./_duration.js";
     const DURATION_HELP = (label, lo, hi) =>
         `${label} must be between ${lo} and ${hi}. Use a number of seconds, or a unit: 90s, 15m, 2h, 30d.`;
 
-    // Per-kind interval floors, mirrored from the API via data-kind-floors —
-    // the slow/fast rail split and defaults all derive from them.
+    // Per-kind interval floors, mirrored from the API via data-kind-floors.
     let KIND_MIN_INTERVAL = {};
     try {
         KIND_MIN_INTERVAL = JSON.parse(form.dataset.kindFloors || "{}");
@@ -46,47 +45,40 @@ import { parseDuration } from "./_duration.js";
     const floorLabel = (s) =>
         s % 3600 === 0 ? `${s / 3600}h` : s % 60 === 0 ? `${s / 60}m` : `${s}s`;
 
-    // Remember each rail's last cadence so switching kinds back restores it
-    // (checking a radio in one rail auto-unchecks the other's — shared name).
-    form.querySelectorAll("[data-interval-rail]").forEach((rail) => {
-        const cur = rail.querySelector("input[name='interval_s']:checked");
-        if (cur) rail.dataset.last = cur.value;
-    });
+    // Probes and expiry checks share the rail but not a cadence. Each group
+    // holds what was chosen for it, the rendered value and then hand picks
+    // only, so neither an automatic pick nor the other group's carries over.
+    const pickGroup = (kind) => (isSlowKind(kind) ? "slow" : "fast");
+    const chosen = {};
 
     function applyKindIntervalDefaults(kind) {
-        const want = isSlowKind(kind) ? "slow" : "fast";
-        const floor = pickerFloor(kind);
-        let active = null;
-        form.querySelectorAll("[data-interval-rail]").forEach((rail) => {
-            const on = rail.dataset.intervalRail === want;
-            rail.hidden = !on;
-            if (on) active = rail;
+        const rail = form.querySelector("[data-interval-rail]");
+        if (!rail) return;
+        const group = pickGroup(kind);
+        form.querySelectorAll("[data-interval-hint]").forEach((p) => {
+            p.hidden = p.dataset.intervalHint !== group;
         });
-        if (!active) return;
+        const floor = pickerFloor(kind);
         // A cadence this monitor already runs stays pickable, or opening its
         // form would silently re-point it at a preset.
         const stored = form.dataset.interval;
         const keeps = (o) => o.value === stored && Number(o.value) >= kindFloor(kind);
         let firstValid = null;
-        active.querySelectorAll("input[name='interval_s']").forEach((o) => {
+        rail.querySelectorAll("input[name='interval_s']").forEach((o) => {
             const below = Number(o.value) < floor && !keeps(o);
             o.disabled = below;
             const seg = o.closest(".sm-rail__seg");
             if (seg) seg.classList.toggle("hidden", below);
             if (!below && !firstValid) firstValid = o;
         });
-        const wanted = active.querySelector(`input[name='interval_s'][value='${suggested(kind)}']`);
-        // Kinds sharing a rail would otherwise inherit the previous kind's pick.
+        const option = (secs) => secs && rail.querySelector(`input[name='interval_s'][value='${secs}']`);
+        const wanted = option(suggested(kind));
+        const kept = option(chosen[group]);
+        // Kinds share the rail, so they would otherwise inherit the previous kind's pick.
         const inherited = form.dataset.mode === "create" && !form.dataset.intervalTouched;
-        if (inherited && wanted && !wanted.disabled) {
-            wanted.checked = true;
-            return;
-        }
-        const cur = active.querySelector("input[name='interval_s']:checked");
-        if (cur && !cur.disabled) return;
-        const last = active.querySelector(`input[name='interval_s'][value='${active.dataset.last}']`);
-        const def = [last, wanted, firstValid].find((o) => o && !o.disabled);
-        if (def) def.checked = true;
+        const order = inherited ? [wanted, kept, firstValid] : [kept, wanted, firstValid];
+        const pick = order.find((o) => o && !o.disabled);
+        if (pick) pick.checked = true;
     }
 
     // A heartbeat's cadence rail is hidden, so the form owns the value: the
@@ -167,8 +159,7 @@ import { parseDuration } from "./_duration.js";
 
     form.addEventListener("change", (evt) => {
         if (evt.target.name === "interval_s") {
-            const rail = evt.target.closest("[data-interval-rail]");
-            if (rail) rail.dataset.last = evt.target.value;
+            chosen[pickGroup(currentCheckType())] = evt.target.value;
             form.dataset.intervalTouched = "1";
             return;
         }
@@ -208,6 +199,7 @@ import { parseDuration } from "./_duration.js";
     if (dnsMatch) showDnsMatch(dnsMatch.value);
 
     const initialKind = currentCheckType();
+    chosen[pickGroup(initialKind)] = form.querySelector("input[name='interval_s']:checked")?.value;
     applyKindIntervalDefaults(initialKind);
     applyPassiveKind(initialKind);
     applyFlowRegions(initialKind);

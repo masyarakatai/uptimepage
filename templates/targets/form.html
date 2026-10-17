@@ -578,28 +578,16 @@
       <legend class="float-left mb-3 w-full"><span class="form-legend">schedule</span></legend>
       <div class="clear-both">
         <span class="mb-1.5 block text-xs text-muted">Check every</span>
-        <div data-interval-rail="fast"{% if form.slow_kind() %} hidden{% endif %}>
-          <div class="sm-rail sm-rail--wide" role="radiogroup" aria-label="Check interval">
-            {% for o in form.interval_options_fast() %}
-            <label class="sm-rail__seg">
-              <input type="radio" name="interval_s" value="{{ o.secs }}" class="sr-only"{% if o.selected %} checked{% endif %}>
-              {{ o.label }}
-            </label>
-            {% endfor %}
-          </div>
-          <p class="mt-1 text-xs text-muted">1–5&nbsp;min for production, 10–30&nbsp;min for low-priority or many monitors.</p>
+        <div class="sm-rail sm-rail--wide" role="radiogroup" aria-label="Check interval" data-interval-rail>
+          {% for o in form.interval_options() %}
+          <label class="sm-rail__seg{% if !o.offered %} hidden{% endif %}">
+            <input type="radio" name="interval_s" value="{{ o.secs }}" class="sr-only"{% if o.selected %} checked{% endif %}{% if !o.offered %} disabled{% endif %}>
+            {{ o.label }}
+          </label>
+          {% endfor %}
         </div>
-        <div data-interval-rail="slow"{% if !form.slow_kind() %} hidden{% endif %}>
-          <div class="sm-rail sm-rail--wide" role="radiogroup" aria-label="Check interval">
-            {% for o in form.interval_options_slow() %}
-            <label class="sm-rail__seg">
-              <input type="radio" name="interval_s" value="{{ o.secs }}" class="sr-only"{% if o.selected %} checked{% endif %}>
-              {{ o.label }}
-            </label>
-            {% endfor %}
-          </div>
-          <p class="mt-1 text-xs text-muted">Expiry moves slowly — daily is plenty; hourly when one is close.</p>
-        </div>
+        <p class="mt-1 text-xs text-muted" data-interval-hint="fast"{% if form.slow_kind() %} hidden{% endif %}>1–5&nbsp;min for production, 10–30&nbsp;min for low-priority or many monitors. Hours only for what can wait: at 12&nbsp;h with 2&nbsp;fails, an outage takes up to a day to open an incident.</p>
+        <p class="mt-1 text-xs text-muted" data-interval-hint="slow"{% if !form.slow_kind() %} hidden{% endif %}>Expiry moves slowly: daily is plenty, faster only when one is close.</p>
       </div>
     </fieldset>
 

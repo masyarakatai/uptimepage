@@ -177,6 +177,8 @@ pub struct IntervalChoice {
     pub secs: u64,
     pub label: String,
     pub selected: bool,
+    /// Rendered either way so a kind switch can reveal it.
+    pub offered: bool,
 }
 
 impl FormModel {
@@ -235,8 +237,8 @@ impl FormModel {
         serde_json::to_string(&CheckSpec::PASSIVE_KINDS).unwrap_or_else(|_| "[]".into())
     }
 
-    /// Whether the selected kind sits on the slow cadence group (the API
-    /// enforces an hourly floor for certificate / registration expiry).
+    /// Certificate / registration expiry, which the API floors at an hour and
+    /// the schedule hint speaks to on its own.
     pub fn slow_kind(&self) -> bool {
         crate::domain::min_interval_secs_for_kind(self.check_type) >= 3_600
     }
@@ -286,27 +288,24 @@ impl FormModel {
         serde_json::Value::Object(holds).to_string()
     }
 
-    /// Check-interval presets for http/tcp/ping/dns, filtered by the plan floor.
-    pub fn interval_options_fast(&self) -> Vec<IntervalChoice> {
-        self.interval_group(&FAST_INTERVAL_PRESETS, !self.slow_kind())
-    }
-
-    /// Check-interval presets for tls_cert/domain_expiry.
-    pub fn interval_options_slow(&self) -> Vec<IntervalChoice> {
-        self.interval_group(&SLOW_INTERVAL_PRESETS, self.slow_kind())
-    }
-
-    /// An off-preset stored value is preserved as its own option in the
-    /// active group, so editing an API-created monitor keeps its cadence.
-    fn interval_group(&self, presets: &[u64], active: bool) -> Vec<IntervalChoice> {
+    /// Every preset the plan floor allows; those under the kind's picker start
+    /// hidden. An off-preset stored value is preserved as its own option, so
+    /// editing an API-created monitor keeps its cadence, unless the kind floor
+    /// has since risen past it, which the client also drops.
+    pub fn interval_options(&self) -> Vec<IntervalChoice> {
         let picker_min = crate::domain::interval_hints_for_kind(self.check_type).min;
-        let mut values: Vec<u64> = presets
+        let kind_floor = crate::domain::min_interval_secs_for_kind(self.check_type);
+        let stored = (self.interval_s >= kind_floor).then_some(self.interval_s);
+        let mut values: Vec<u64> = FAST_INTERVAL_PRESETS
             .iter()
+            .chain(&SLOW_INTERVAL_PRESETS)
             .copied()
-            .filter(|s| *s >= self.min_interval_s && (!active || *s >= picker_min))
+            .filter(|s| *s >= self.min_interval_s)
             .collect();
-        if active && !values.contains(&self.interval_s) {
-            values.push(self.interval_s);
+        if let Some(secs) = stored
+            && !values.contains(&secs)
+        {
+            values.push(secs);
             values.sort_unstable();
         }
         values
@@ -314,7 +313,8 @@ impl FormModel {
             .map(|secs| IntervalChoice {
                 secs,
                 label: exact_duration(secs),
-                selected: active && secs == self.interval_s,
+                selected: stored == Some(secs),
+                offered: stored == Some(secs) || secs >= picker_min,
             })
             .collect()
     }
