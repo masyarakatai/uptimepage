@@ -28,40 +28,49 @@ pub struct UnavailablePage {
     pub active_tab: &'static str,
 }
 
+#[derive(Template, WebTemplate)]
+#[template(path = "error/4xx.html")]
+struct ClientErrorPage {
+    active_tab: &'static str,
+    code: u16,
+    reason: &'static str,
+}
+
 pub async fn not_found() -> Response {
     (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
+}
+
+/// The page whose heading names `status`.
+fn error_page(status: StatusCode) -> Response {
+    match status {
+        StatusCode::NOT_FOUND => (status, NotFoundPage { active_tab: "" }).into_response(),
+        StatusCode::SERVICE_UNAVAILABLE => {
+            (status, UnavailablePage { active_tab: "" }).into_response()
+        }
+        _ if status.is_client_error() => (
+            status,
+            ClientErrorPage {
+                active_tab: "",
+                code: status.as_u16(),
+                reason: status.canonical_reason().unwrap_or("Client Error"),
+            },
+        )
+            .into_response(),
+        _ => (status, InternalErrorPage { active_tab: "" }).into_response(),
+    }
 }
 
 /// Maps a `PublicAppError` to an HTML response for the rendered routes —
 /// avoids leaking the JSON envelope into the browser.
 pub(crate) fn render_public_error(err: PublicAppError) -> Response {
-    match err {
-        PublicAppError::SignInRequired => {
-            let mut resp =
-                (StatusCode::UNAUTHORIZED, NotFoundPage { active_tab: "" }).into_response();
-            mark_private(&mut resp);
-            resp
-        }
-        PublicAppError::NotFound => {
-            (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
-        }
-        PublicAppError::InvalidDays | PublicAppError::BadRequest(_) => {
-            (StatusCode::BAD_REQUEST, NotFoundPage { active_tab: "" }).into_response()
-        }
-        PublicAppError::Unavailable => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            UnavailablePage { active_tab: "" },
-        )
-            .into_response(),
-        PublicAppError::Internal(e) => {
-            tracing::error!(error = %e, "public status page internal error");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                UnavailablePage { active_tab: "" },
-            )
-                .into_response()
-        }
+    if let PublicAppError::Internal(e) = &err {
+        tracing::error!(error = %e, "public status page internal error");
     }
+    let mut resp = error_page(err.status());
+    if matches!(err, PublicAppError::SignInRequired) {
+        mark_private(&mut resp);
+    }
+    resp
 }
 
 /// Wrapper that re-renders `AppError` as an HTML error page instead of
@@ -84,10 +93,13 @@ impl std::fmt::Display for WebError {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
-        match self.0 {
-            AppError::NotFound { .. } | AppError::Gone { .. } => {
-                (StatusCode::NOT_FOUND, NotFoundPage { active_tab: "" }).into_response()
-            }
+        match &self.0 {
+            AppError::NotFound { .. }
+            | AppError::Gone { .. }
+            | AppError::Forbidden
+            | AppError::ForbiddenCoded { .. }
+            | AppError::Unauthorized
+            | AppError::SessionRequired => {}
             AppError::BadRequest { .. }
             | AppError::Conflict { .. }
             | AppError::Unprocessable { .. }
@@ -97,37 +109,14 @@ impl IntoResponse for WebError {
             | AppError::PayloadTooLarge { .. }
             | AppError::UnsupportedMediaType { .. } => {
                 tracing::warn!(error = %self.0, "web handler rejected request");
-                (
-                    StatusCode::BAD_REQUEST,
-                    InternalErrorPage { active_tab: "" },
-                )
-                    .into_response()
-            }
-            AppError::Unauthorized | AppError::SessionRequired => (
-                StatusCode::UNAUTHORIZED,
-                InternalErrorPage { active_tab: "" },
-            )
-                .into_response(),
-            AppError::Forbidden | AppError::ForbiddenCoded { .. } => {
-                (StatusCode::FORBIDDEN, NotFoundPage { active_tab: "" }).into_response()
             }
             AppError::ServiceUnavailable { .. } => {
                 tracing::warn!(error = %self.0, "web handler unavailable");
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    InternalErrorPage { active_tab: "" },
-                )
-                    .into_response()
             }
             AppError::Internal { code, log } => {
                 tracing::error!(error_code = code, detail = %log, "web handler failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    InternalErrorPage { active_tab: "" },
-                )
-                    .into_response()
             }
-            ref err @ (AppError::Config(_)
+            err @ (AppError::Config(_)
             | AppError::Io(_)
             | AppError::BindAddr { .. }
             | AppError::Other(_)) => {
@@ -136,13 +125,9 @@ impl IntoResponse for WebError {
                 // top of a ClickHouse / Postgres / reqwest error surfaces
                 // the underlying line, not just our wrapper string.
                 tracing::error!(error = ?err, "web handler failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    InternalErrorPage { active_tab: "" },
-                )
-                    .into_response()
             }
         }
+        error_page(self.0.status())
     }
 }
 
@@ -158,9 +143,56 @@ mod tests {
             NotFoundPage { active_tab: "" }.render().unwrap(),
             InternalErrorPage { active_tab: "" }.render().unwrap(),
             UnavailablePage { active_tab: "" }.render().unwrap(),
+            ClientErrorPage {
+                active_tab: "",
+                code: 409,
+                reason: "Conflict",
+            }
+            .render()
+            .unwrap(),
         ] {
             assert!(html.starts_with("<!doctype html>"));
             assert!(html.contains("Uptimepage"));
+            assert!(
+                !html.contains("data-navmenu"),
+                "no app menu on an error page"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn html_pages_send_and_name_the_json_status() {
+        let cases: [fn() -> AppError; 13] = [
+            || AppError::not_found("X", "x"),
+            || AppError::bad_request("X", "x"),
+            || AppError::conflict("X", "x"),
+            || AppError::unprocessable("X", "x"),
+            || AppError::quota_exceeded("monitors", 5, 5, "free"),
+            || AppError::payload_too_large("X", "x"),
+            || AppError::gone("X", "x"),
+            || AppError::RateLimited {
+                scope: "x".into(),
+                retry_after_secs: 1,
+            },
+            || AppError::SessionRequired,
+            || AppError::Forbidden,
+            || AppError::service_unavailable("X", "x"),
+            || AppError::internal_with_context("X", "x"),
+            || AppError::Other(anyhow::anyhow!("x")),
+        ];
+        for case in cases {
+            let json = case().into_response().status();
+            let html = WebError::from(case()).into_response();
+            assert_eq!(html.status(), json, "{}", case());
+            let body = axum::body::to_bytes(html.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let heading = format!("</span>{} ", json.as_u16());
+            assert!(
+                String::from_utf8_lossy(&body).contains(&heading),
+                "{}: heading does not name {json}",
+                case()
+            );
         }
     }
 }

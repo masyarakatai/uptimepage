@@ -54,6 +54,10 @@ pub enum PublicAppError {
 }
 
 impl PublicAppError {
+    pub(crate) fn status(&self) -> StatusCode {
+        self.parts().0
+    }
+
     fn parts(&self) -> (StatusCode, &'static str, &'static str) {
         match self {
             Self::NotFound => (

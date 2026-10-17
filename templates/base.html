@@ -59,11 +59,9 @@
     <header class="border-b border-[color:var(--theme-line)] bg-[color:var(--theme-surface)]">
         <nav aria-label="Primary" class="container mx-auto flex items-center gap-4 px-4 py-3">
             {% include "_nav_brand.html" %}
-            {% if active_tab != "login" && active_tab != "recover" %}
-            {# Error/consent pages pass active_tab="" — no nav fetch there. #}
-            {% if active_tab != "" %}
+            {# Error and consent pages pass active_tab="": no app menu there. #}
+            {% if active_tab != "login" && active_tab != "recover" && active_tab != "" %}
             <span class="nav-root" data-nav-root hx-get="/web/partials/nav" hx-trigger="load" hx-swap="innerHTML"></span>
-            {% endif %}
             <div class="hidden items-center gap-6 lg:flex">
               {% include "nav/_primary_links.html" %}
             </div>

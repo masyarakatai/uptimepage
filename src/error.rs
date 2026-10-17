@@ -60,9 +60,7 @@ pub enum AppError {
         details: serde_json::Value,
     },
 
-    /// 410 Gone — the resource existed but is permanently gone. Used by
-    /// account recovery once the grace window has elapsed and the hard-purge
-    /// has run: the token verified, but there is nothing left to restore.
+    /// 410: the resource existed and is permanently gone.
     #[error("{message}")]
     Gone { code: &'static str, message: String },
 
@@ -269,10 +267,36 @@ impl AppError {
             plan,
         }
     }
+
+    /// The one status table: the JSON envelope and the HTML error pages both
+    /// answer with this.
+    pub fn status(&self) -> StatusCode {
+        match self {
+            Self::NotFound { .. } => StatusCode::NOT_FOUND,
+            Self::BadRequest { .. } => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::Unprocessable { .. }
+            | Self::UnprocessableDetails { .. }
+            | Self::QuotaExceeded { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Gone { .. } => StatusCode::GONE,
+            Self::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::Unauthorized | Self::SessionRequired => StatusCode::UNAUTHORIZED,
+            Self::Forbidden | Self::ForbiddenCoded { .. } => StatusCode::FORBIDDEN,
+            Self::Internal { .. }
+            | Self::Config(_)
+            | Self::Io(_)
+            | Self::BindAddr { .. }
+            | Self::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let status = self.status();
         // Rate limiting needs a `Retry-After` header alongside the JSON body,
         // so it can't go through the `(status, body)` tail used by the rest.
         if let AppError::RateLimited {
@@ -293,11 +317,7 @@ impl IntoResponse for AppError {
                 })),
                 trace_id: None,
             };
-            let mut resp = (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ApiError { error: body }),
-            )
-                .into_response();
+            let mut resp = (status, Json(ApiError { error: body })).into_response();
             if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
                 resp.headers_mut()
                     .insert(axum::http::header::RETRY_AFTER, v);
@@ -305,60 +325,37 @@ impl IntoResponse for AppError {
             return resp;
         }
 
-        let (status, body) = match self {
-            AppError::NotFound { code, message } => {
-                (StatusCode::NOT_FOUND, ApiErrorBody::new(code, message))
-            }
+        let body = match self {
+            AppError::NotFound { code, message }
+            | AppError::PayloadTooLarge { code, message }
+            | AppError::UnsupportedMediaType { code, message }
+            | AppError::Conflict { code, message }
+            | AppError::Unprocessable { code, message }
+            | AppError::Gone { code, message }
+            | AppError::ServiceUnavailable { code, message }
+            | AppError::ForbiddenCoded { code, message } => ApiErrorBody::new(code, message),
             AppError::BadRequest {
                 code,
                 message,
                 field,
-            } => (
-                StatusCode::BAD_REQUEST,
-                ApiErrorBody {
-                    code,
-                    message,
-                    field,
-                    details: None,
-                    trace_id: None,
-                },
-            ),
-            AppError::PayloadTooLarge { code, message } => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                ApiErrorBody::new(code, message),
-            ),
-            AppError::UnsupportedMediaType { code, message } => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                ApiErrorBody::new(code, message),
-            ),
-            AppError::Conflict { code, message } => {
-                (StatusCode::CONFLICT, ApiErrorBody::new(code, message))
-            }
-            AppError::Unprocessable { code, message } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                ApiErrorBody::new(code, message),
-            ),
+            } => ApiErrorBody {
+                code,
+                message,
+                field,
+                details: None,
+                trace_id: None,
+            },
             AppError::UnprocessableDetails {
                 code,
                 message,
                 details,
-            } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                ApiErrorBody {
-                    code,
-                    message,
-                    field: None,
-                    details: Some(details),
-                    trace_id: None,
-                },
-            ),
-            AppError::Gone { code, message } => {
-                (StatusCode::GONE, ApiErrorBody::new(code, message))
-            }
-            AppError::ServiceUnavailable { code, message } => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                ApiErrorBody::new(code, message),
-            ),
+            } => ApiErrorBody {
+                code,
+                message,
+                field: None,
+                details: Some(details),
+                trace_id: None,
+            },
             AppError::QuotaExceeded {
                 code,
                 message,
@@ -366,58 +363,39 @@ impl IntoResponse for AppError {
                 current,
                 limit,
                 plan,
-            } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                ApiErrorBody {
-                    code,
-                    message,
-                    field: None,
-                    details: Some(serde_json::json!({
-                        "quota": quota,
-                        "current": current,
-                        "limit": limit,
-                        "plan": plan,
-                    })),
-                    trace_id: None,
-                },
-            ),
+            } => ApiErrorBody {
+                code,
+                message,
+                field: None,
+                details: Some(serde_json::json!({
+                    "quota": quota,
+                    "current": current,
+                    "limit": limit,
+                    "plan": plan,
+                })),
+                trace_id: None,
+            },
             // Handled above with a Retry-After header; unreachable here but
             // the match must stay exhaustive.
             AppError::RateLimited { .. } => unreachable!("RateLimited returns early"),
-            AppError::Unauthorized => (
-                StatusCode::UNAUTHORIZED,
-                ApiErrorBody::new(codes::UNAUTHORIZED, "authentication required"),
-            ),
-            AppError::SessionRequired => (
-                StatusCode::UNAUTHORIZED,
-                ApiErrorBody::new(
-                    codes::SESSION_REQUIRED,
-                    "this endpoint requires a browser session, not an API token",
-                ),
-            ),
-            AppError::Forbidden => (
-                StatusCode::FORBIDDEN,
-                ApiErrorBody::new(codes::FORBIDDEN, "access denied"),
-            ),
-            AppError::ForbiddenCoded { code, message } => {
-                (StatusCode::FORBIDDEN, ApiErrorBody::new(code, message))
+            AppError::Unauthorized => {
+                ApiErrorBody::new(codes::UNAUTHORIZED, "authentication required")
             }
+            AppError::SessionRequired => ApiErrorBody::new(
+                codes::SESSION_REQUIRED,
+                "this endpoint requires a browser session, not an API token",
+            ),
+            AppError::Forbidden => ApiErrorBody::new(codes::FORBIDDEN, "access denied"),
             AppError::Internal { code, log } => {
                 tracing::error!(error_code = code, detail = %log, "request failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorBody::new(code, "internal error"),
-                )
+                ApiErrorBody::new(code, "internal error")
             }
             ref err @ (AppError::Config(_)
             | AppError::Io(_)
             | AppError::BindAddr { .. }
             | AppError::Other(_)) => {
                 tracing::error!(error = %err, "request failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorBody::new(codes::INTERNAL, "internal error"),
-                )
+                ApiErrorBody::new(codes::INTERNAL, "internal error")
             }
         };
         if status.is_client_error() {
