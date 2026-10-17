@@ -1815,6 +1815,33 @@ async fn the_password_form_works_beside_an_app_session_cookie() {
 
 #[tokio::test]
 #[ignore = "needs live Postgres (DATABASE_URL)"]
+async fn the_subscribe_form_works_beside_an_app_session_cookie() {
+    let Some(rig) = rig().await else { return };
+    rig.set_ways(true, true, Some(PASSWORD)).await;
+    let member = common::session_cookie(&rig.pool, rig.owner).await;
+    let visitor = rig.password_sign_in(PASSWORD).await;
+    let subscribe = |cookie: String, email: &'static str| {
+        let rig = &rig;
+        async move {
+            rig.post_form(
+                "/subscribe",
+                Some(&cookie),
+                &[("channel", "email"), ("email", email)],
+            )
+            .await
+        }
+    };
+    let private = subscribe(format!("{member}; {visitor}"), "j.smith@gmail.example").await;
+    assert_eq!(private.status, StatusCode::OK, "{}", private.body);
+
+    rig.set_public().await;
+    let public = subscribe(member, "m.jones@gmail.example").await;
+    assert_eq!(public.status, StatusCode::OK, "{}", public.body);
+    rig.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "needs live Postgres (DATABASE_URL)"]
 async fn a_password_visitor_subscribes_by_email_until_the_password_changes() {
     let Some(rig) = rig().await else { return };
     rig.set_ways(true, true, Some(PASSWORD)).await;

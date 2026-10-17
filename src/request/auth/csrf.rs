@@ -36,12 +36,14 @@ pub const CSRF_HEADER_VALUE: &str = "uptimepage";
 /// who is also a signed-in user. `/auth/magic-link/verify` carries its own
 /// double-submit nonce and `/auth/magic-link/code` a SameSite=Lax cookie a
 /// cross-site POST cannot send; the others authenticate via an HMAC query
-/// token. The private status page forms answer to the page's own session,
-/// sign-in nonce or password, never the app's, and refuse a cross-origin POST
+/// token. The status page forms answer to the page's own session, sign-in
+/// nonce or password, never the app's; on a public page `/subscribe` asks for
+/// nothing at all. A private page's forms refuse a cross-origin POST
 /// themselves.
 const TOKEN_AUTHENTICATED_PATHS: &[&str] = &[
     "/alert-channel/stop",
     "/incident/ack",
+    "/subscribe",
     "/subscribe/unsubscribe",
     "/auth/magic-link/verify",
     "/auth/magic-link/code",
