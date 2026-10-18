@@ -28,10 +28,18 @@ pub fn canonical_host_strict(host: &str) -> Result<String, idna::Errors> {
 
 /// [`canonical_host_strict`] with `_` allowed, for DNS query names: `_dmarc`,
 /// `s1._domainkey` and `_sip._tcp` are ordinary owner names but not hostnames.
+/// A leftmost `*` label names a wildcard record (RFC 4592), which answers a
+/// query for that literal name; `*` anywhere else is refused.
 pub fn canonical_dns_name(name: &str) -> Result<String, idna::Errors> {
     const STD3_WITH_UNDERSCORE: AsciiDenyList =
         AsciiDenyList::new(true, "!\"#$%&'()*+,/:;<=>?@[\\]^`{|}~");
-    strict_to_ascii(name, STD3_WITH_UNDERSCORE)
+    let Some(rest) = name.trim_end_matches('.').strip_prefix("*.") else {
+        return strict_to_ascii(name, STD3_WITH_UNDERSCORE);
+    };
+    // A one-letter stand-in keeps the length checks counting the `*` label and
+    // passes the bidi rule beside a right-to-left label, where `_` would not.
+    let canon = strict_to_ascii(&format!("a.{rest}"), STD3_WITH_UNDERSCORE)?;
+    Ok(format!("*{}", &canon[1..]))
 }
 
 fn strict_to_ascii(name: &str, deny: AsciiDenyList) -> Result<String, idna::Errors> {
@@ -70,11 +78,17 @@ mod tests {
     }
 
     #[test]
-    fn dns_name_differs_from_strict_only_by_underscore() {
+    fn dns_name_differs_from_strict_by_underscore_and_leftmost_wildcard() {
         assert!(canonical_host_strict("_dmarc.example.com").is_err());
         assert_eq!(
             canonical_dns_name("_dmarc.example.com").unwrap(),
             "_dmarc.example.com"
+        );
+        assert!(canonical_host_strict("*.example.com").is_err());
+        assert_eq!(canonical_dns_name("*.Bähn.de").unwrap(), "*.xn--bhn-qla.de");
+        assert_eq!(
+            canonical_dns_name("*.مثال.com").unwrap(),
+            "*.xn--mgbh0fb.com"
         );
         for b in (0u8..=0x7f).filter(|&b| b != b'_') {
             let name = format!("a{}b.example.com", b as char);

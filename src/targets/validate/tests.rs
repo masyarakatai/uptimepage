@@ -714,13 +714,16 @@ fn dns_domain(spec: CheckSpec) -> String {
 }
 
 #[test]
-fn dns_names_accept_underscore_labels_and_keep_the_other_rules() {
+fn dns_names_accept_underscore_and_leftmost_wildcard_labels_and_keep_the_other_rules() {
     use crate::domain::DnsRecordType;
 
     let canon = |input: &str| {
         let mut spec = dns_spec(input, DnsRecordType::Txt);
         canonicalize_check(&mut spec).map(|()| dns_domain(spec))
     };
+    let name_of_len =
+        |len: usize| format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(len - 192));
+    let wildcard_253 = format!("*.{}", name_of_len(251));
 
     for (input, want) in [
         ("_dmarc.example.com", "_dmarc.example.com"),
@@ -732,18 +735,28 @@ fn dns_names_accept_underscore_labels_and_keep_the_other_rules() {
             "_ACME-challenge.Example.COM.",
             "_acme-challenge.example.com",
         ),
+        ("*.Example.COM.", "*.example.com"),
+        ("*._tcp.example.com", "*._tcp.example.com"),
+        (&wildcard_253, &wildcard_253),
     ] {
         assert_eq!(canon(input).unwrap(), want, "canonicalising {input:?}");
     }
 
     let label = "a".repeat(64);
-    let over_253 = format!("{0}.{0}.{0}.{1}", "a".repeat(63), "a".repeat(62));
+    let over_253 = name_of_len(254);
+    let wildcard_over_253 = format!("*.{}", name_of_len(252));
     for input in [
         "-lead.example.com",
         "a..b.example.com",
         "exa mple.com",
         &format!("{label}.example.com"),
         &over_253,
+        "a.*.example.com",
+        "*a.example.com",
+        "*.*.example.com",
+        "*",
+        "*.",
+        &wildcard_over_253,
     ] {
         assert!(canon(input).is_err(), "{input:?} accepted");
     }

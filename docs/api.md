@@ -318,7 +318,9 @@ Resolves `domain` and reads the answers. `record_type` is one of `A`, `AAAA`,
 `CNAME`, `MX`, `NS`, `TXT`, `SOA`, `PTR`, `CAA`, `SRV`. Surrounding whitespace
 and a trailing dot on the domain are tolerated, and so are underscore labels, so `_dmarc.example.com`,
 `s1._domainkey.example.com` and `_sip._tcp.example.com` can be watched;
-host-based checks still refuse them. A `PTR` check takes either the address
+host-based checks still refuse them. A leftmost `*` label queries the wildcard
+record itself, the one that answers for names that do not exist in the zone;
+`*` anywhere else is refused. A `PTR` check takes either the address
 (`192.0.2.1`, `2001:db8::1`), which is looked up as its `in-addr.arpa` or
 `ip6.arpa` name, or that reverse name itself; every other record type refuses
 an address with `400 INVALID_DNS_PARAMS`. `resolver` takes `ip` or `ip:port`

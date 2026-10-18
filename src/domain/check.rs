@@ -565,7 +565,8 @@ impl DnsRecordType {
 pub struct DnsCheck {
     /// Name to resolve (FQDN; surrounding whitespace and a trailing dot
     /// tolerated). Underscore labels such
-    /// as `_dmarc` are accepted. A PTR lookup also takes an IP address and
+    /// as `_dmarc` are accepted, and so is a leftmost `*` label, which
+    /// queries the wildcard record. A PTR lookup also takes an IP address and
     /// queries its reverse name; other types refuse one.
     #[schema(example = "api.example.com")]
     pub domain: String,

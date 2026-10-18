@@ -300,6 +300,13 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_name_queries_the_wildcard_owner() {
+        let name = query_name(&lookup("*.example.com", DnsRecordType::A)).unwrap();
+        assert!(name.is_wildcard());
+        assert_eq!(name.to_ascii(), "*.example.com");
+    }
+
+    #[test]
     fn ptr_on_an_address_queries_its_reverse_name() {
         let name = |domain| {
             query_name(&lookup(domain, DnsRecordType::Ptr))
