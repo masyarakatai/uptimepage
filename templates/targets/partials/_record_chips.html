@@ -1,0 +1,13 @@
+{# A DNS reading's records as chips, the ones past the first few behind a
+   toggle. Expects `d`, and `chips_id`: the toggle's id where a live poll
+   re-renders it, empty where nothing does. -#}
+{% for c in d.shown_chips() %}{% include "targets/partials/_record_chip.html" %}{% endfor %}
+{% if !d.more_chips().is_empty() %}
+<details{% if !chips_id.is_empty() %} id="{{ chips_id }}" data-keep-open{% endif %} class="group/chips open:basis-full">
+  <summary class="facts-toggle btn-ghost flex w-fit px-1.5 py-0.5 font-mono text-xs text-muted group-open/chips:hidden">[ +{{ d.more_chips().len() }} more ]</summary>
+  <div class="flex flex-wrap items-center gap-2">
+    {% for c in d.more_chips() %}{% include "targets/partials/_record_chip.html" %}{% endfor %}
+    <button type="button" data-details-close class="btn-ghost px-1.5 py-0.5 font-mono text-xs text-muted">[ show fewer ]</button>
+  </div>
+</details>
+{% endif %}

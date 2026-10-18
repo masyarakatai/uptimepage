@@ -543,6 +543,7 @@ mod tests {
                 network: None,
                 diagnostic: None,
                 error: None,
+                details: None,
             },
             response_headers_preview: vec![],
             response_body_snippet: None,

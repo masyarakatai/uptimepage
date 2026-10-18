@@ -561,6 +561,16 @@ pub trait ResultsStore: Send + Sync {
         offset: usize,
         region: Option<&str>,
     ) -> Result<Vec<(String, CheckResult)>>;
+    /// Each region's newest result that carries `details` over a window, so a
+    /// failed run that read nothing leaves the last facts in place. `region`
+    /// scopes to one region when set.
+    async fn latest_details_by_region(
+        &self,
+        org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        region: Option<&str>,
+    ) -> Result<Vec<(String, CheckResult)>>;
     /// Recent results for many targets in one query, each row tagged with its
     /// region (the `CheckResult` carries `target_id` and `org_id`). Returns at
     /// most `per_target_limit` newest rows per `(target, region)`. Rows are

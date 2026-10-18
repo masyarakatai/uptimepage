@@ -32,6 +32,7 @@ fn result(target_id: Uuid, org_id: Uuid, status: CheckStatus, duration_ms: u32) 
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

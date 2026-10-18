@@ -181,6 +181,8 @@
     {% include "targets/partials/detail_live_kpi_cards.html" %}
   </section>
 
+  {% include "targets/partials/_check_facts.html" %}
+
   {# Passive checks carry no latency, so the charts would just draw zero. #}
   {% if kind != "HEARTBEAT" && kind != "MANUAL" %}
   {# A browser journey has no per-phase network timing, so the breakdown would be
@@ -321,5 +323,6 @@
   </section>
 
   <script defer src="{{ "js/ui/collapsible.js"|asset }}"></script>
+  <script defer src="{{ "js/public/keep_open.js"|asset }}"></script>
 </section>
 {% endblock %}

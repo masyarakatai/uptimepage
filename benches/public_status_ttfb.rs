@@ -127,6 +127,7 @@ fn ok_result(target_id: Uuid, org_id: Uuid, secs_ago: i64) -> CheckResult {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

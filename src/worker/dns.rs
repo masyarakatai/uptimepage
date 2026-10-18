@@ -4,12 +4,11 @@ use std::time::Instant;
 use chrono::Utc;
 use hickory_resolver::TokioResolver;
 use hickory_resolver::proto::rr::{Name, Record};
-use serde::Serialize;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::domain::dns_record::{ExpectedRecord, expected_record, mx_host_key, record_key};
-use crate::domain::{CheckResult, CheckStatus, DnsCheck, DnsRecordType};
+use crate::domain::{CheckDetails, CheckResult, CheckStatus, DnsCheck, DnsDetails, DnsRecordType};
 use crate::http_client::{HttpClients, build_single_resolver};
 
 pub async fn execute_dns_check(
@@ -26,23 +25,15 @@ pub async fn execute_dns_check(
 
     match outcome {
         Ok(Ok(verdict)) => CheckResult {
-            target_id,
-            org_id,
-            timestamp: started_at,
-            status: verdict.status,
-            duration_ms,
             dns_ms: Some(duration_ms.min(u16::MAX as u32) as u16),
-            connect_ms: None,
-            tls_ms: None,
-            ttfb_ms: None,
-            response_code: None,
-            response_size: Some(verdict.details_json.len() as u32),
-            network: None,
-            diagnostic: None,
-            error: match verdict.status {
-                CheckStatus::Up => None,
-                _ => Some(verdict.details_json),
-            },
+            ..CheckResult::graded(
+                target_id,
+                org_id,
+                started_at,
+                duration_ms,
+                verdict.status,
+                verdict.details,
+            )
         },
         Ok(Err(err)) => CheckResult {
             target_id,
@@ -59,6 +50,7 @@ pub async fn execute_dns_check(
             network: None,
             diagnostic: None,
             error: Some(err.to_string()),
+            details: None,
         },
         Err(_) => {
             CheckResult::error_with_elapsed(target_id, org_id, started_at, duration_ms, "timeout")
@@ -69,7 +61,7 @@ pub async fn execute_dns_check(
 #[derive(Debug)]
 pub struct DnsVerdict {
     pub status: CheckStatus,
-    pub details_json: String,
+    pub details: CheckDetails,
 }
 
 async fn run_check(check: &DnsCheck, clients: &HttpClients) -> anyhow::Result<DnsVerdict> {
@@ -115,8 +107,12 @@ fn query_name(check: &DnsCheck) -> anyhow::Result<Name> {
 // answers can be copied into an exact set as they are.
 fn classify(check: &DnsCheck, records: &[Record]) -> DnsVerdict {
     let queried = check.record_type.wire();
-    let (own, chain): (Vec<&Record>, Vec<&Record>) =
+    let (mut own, chain): (Vec<&Record>, Vec<&Record>) =
         records.iter().partition(|r| r.record_type() == queried);
+    // A resolver rotates its answers. Sorted, every rotation stores one
+    // reading, and regions that got the same set read alike. The chain keeps
+    // its order: it is the path the name took.
+    own.sort_by_cached_key(|r| r.data.to_string());
     let shown = |rs: &[&Record]| rs.iter().map(|r| r.data.to_string()).collect::<Vec<_>>();
     let (answers, aliases) = (shown(&own), shown(&chain));
     let diff = check
@@ -139,47 +135,32 @@ fn classify(check: &DnsCheck, records: &[Record]) -> DnsVerdict {
         CheckStatus::Up
     };
 
-    // The diff leads: an alert cuts the text short, and what changed is the
-    // part worth keeping.
-    #[derive(Serialize)]
-    struct Details<'a> {
-        domain: &'a str,
-        record_type: &'a str,
-        #[serde(flatten)]
-        diff: Option<SetDiff<'a>>,
-        answers: &'a [String],
-        #[serde(skip_serializing_if = "<[String]>::is_empty")]
-        aliases: &'a [String],
-        expected_contains: Option<&'a str>,
-        matched: Option<bool>,
-    }
-    let details_json = serde_json::to_string(&Details {
-        domain: &check.domain,
-        record_type: check.record_type.as_str(),
-        diff,
-        answers: &answers,
-        aliases: &aliases,
-        expected_contains: check.expected_contains.as_deref(),
-        matched,
-    })
-    .expect("infallible serialize for fixed struct");
+    let (missing, unexpected) = diff.map(|d| (d.missing, d.unexpected)).unzip();
     DnsVerdict {
         status,
-        details_json,
+        details: CheckDetails::Dns(DnsDetails {
+            domain: check.domain.clone(),
+            record_type: check.record_type,
+            missing,
+            unexpected,
+            answers,
+            aliases,
+            expected_contains: check.expected_contains.clone(),
+            matched,
+        }),
     }
 }
 
 /// Expected records no answer carries, and answers nothing expected, each in
-/// the first spelling it arrived in.
-#[derive(Serialize)]
-struct SetDiff<'a> {
-    missing: Vec<&'a str>,
-    unexpected: Vec<&'a str>,
+/// the first spelling its own list gives it.
+struct SetDiff {
+    missing: Vec<String>,
+    unexpected: Vec<String>,
 }
 
-impl<'a> SetDiff<'a> {
+impl SetDiff {
     // `answers` is `own` as displayed, one for one.
-    fn of(
+    fn of<'a>(
         record_type: DnsRecordType,
         expected: &'a [String],
         own: &[&Record],
@@ -220,12 +201,15 @@ impl<'a> SetDiff<'a> {
                 Some(key) => {
                     got.remove(&key);
                 }
-                None => missing.push(*shown),
+                None => missing.push((*shown).to_owned()),
             }
         }
         Self {
             missing,
-            unexpected: got.into_values().map(|(shown, _)| shown).collect(),
+            unexpected: got
+                .into_values()
+                .map(|(shown, _)| shown.to_owned())
+                .collect(),
         }
     }
 }
@@ -285,7 +269,7 @@ mod tests {
     }
 
     fn details(v: &DnsVerdict) -> serde_json::Value {
-        serde_json::from_str(&v.details_json).unwrap()
+        serde_json::from_str(&v.details.error_json()).unwrap()
     }
 
     #[test]
@@ -356,9 +340,9 @@ mod tests {
     fn details_matched_is_null_when_no_expectation() {
         let v = judge(&check(None), &[]);
         assert!(
-            v.details_json.contains("\"matched\":null"),
+            v.details.error_json().contains("\"matched\":null"),
             "got: {}",
-            v.details_json
+            v.details.error_json()
         );
     }
 
@@ -366,9 +350,9 @@ mod tests {
     fn details_matched_is_true_when_substring_present() {
         let v = judge(&check(Some("192.0.2.1")), &["192.0.2.1"]);
         assert!(
-            v.details_json.contains("\"matched\":true"),
+            v.details.error_json().contains("\"matched\":true"),
             "got: {}",
-            v.details_json
+            v.details.error_json()
         );
     }
 
@@ -376,9 +360,9 @@ mod tests {
     fn details_matched_is_false_when_substring_absent() {
         let v = judge(&check(Some("203.0.113.7")), &["192.0.2.1"]);
         assert!(
-            v.details_json.contains("\"matched\":false"),
+            v.details.error_json().contains("\"matched\":false"),
             "got: {}",
-            v.details_json
+            v.details.error_json()
         );
     }
 
@@ -557,8 +541,28 @@ mod tests {
     fn substring_details_carry_no_set_diff() {
         let v = judge(&check(Some("192.0.2.1")), &["192.0.2.1"]);
         assert_eq!(
-            v.details_json,
+            v.details.error_json(),
             r#"{"domain":"example.com","record_type":"A","answers":["192.0.2.1"],"expected_contains":"192.0.2.1","matched":true}"#
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_documents_no_records() {
+        let v = judge(&check(None), &[]);
+        assert_eq!(v.status, CheckStatus::Down);
+        assert_eq!(
+            v.details.error_json(),
+            r#"{"domain":"example.com","record_type":"A","answers":[],"expected_contains":null,"matched":null}"#
+        );
+    }
+
+    #[test]
+    fn a_missed_substring_documents_the_answers() {
+        let v = judge(&check(Some("203.0.113.7")), &["192.0.2.1"]);
+        assert_eq!(v.status, CheckStatus::Down);
+        assert_eq!(
+            v.details.error_json(),
+            r#"{"domain":"example.com","record_type":"A","answers":["192.0.2.1"],"expected_contains":"203.0.113.7","matched":false}"#
         );
     }
 
@@ -566,8 +570,26 @@ mod tests {
     fn the_set_diff_leads_the_details() {
         let v = judge(&exact(DnsRecordType::A, &["192.0.2.1"]), &["192.0.2.9"]);
         assert_eq!(
-            v.details_json,
+            v.details.error_json(),
             r#"{"domain":"example.com","record_type":"A","missing":["192.0.2.1"],"unexpected":["192.0.2.9"],"answers":["192.0.2.9"],"expected_contains":null,"matched":false}"#
+        );
+    }
+
+    #[test]
+    fn answers_are_sorted_whatever_order_they_arrive_in() {
+        let check = exact(DnsRecordType::A, &["192.0.2.1"]);
+        let first = judge(&check, &["192.0.2.9", "192.0.2.1", "192.0.2.5"]);
+        let rotated = judge(&check, &["192.0.2.5", "192.0.2.9", "192.0.2.1"]);
+        assert_eq!(first.details, rotated.details);
+        let d = details(&first);
+        assert_eq!(
+            d["answers"],
+            serde_json::json!(["192.0.2.1", "192.0.2.5", "192.0.2.9"])
+        );
+        assert_eq!(d["missing"], serde_json::json!([]));
+        assert_eq!(
+            d["unexpected"],
+            serde_json::json!(["192.0.2.5", "192.0.2.9"])
         );
     }
 

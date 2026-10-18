@@ -1,5 +1,6 @@
-// The status region refreshes by swapping its markup, which would close every
-// row a visitor opened. Rows marked data-keep-open are reopened by id.
+// A live poll that swaps markup (the status page's status region, the monitor
+// page's check facts) would close every row a visitor opened. Rows marked
+// data-keep-open are reopened by id.
 (function () {
     "use strict";
 

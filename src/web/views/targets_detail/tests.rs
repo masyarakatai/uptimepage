@@ -157,6 +157,8 @@ fn sample_page() -> DetailPage {
         heartbeat: None,
         manual: None,
         manual_set_by: None,
+        facts: None,
+        facts_oob: false,
     }
 }
 
@@ -638,6 +640,7 @@ fn drawer_check_rows_render_region_column_and_expand() {
             vec![DiagnosticEvidence::BlockPage],
         )),
         error: Some("connection refused".into()),
+        details: None,
     };
     let rows: Arc<[ResultRow]> = Arc::from(vec![ResultRow {
         server_name: Some("edge.example.net".into()),
@@ -1105,6 +1108,8 @@ fn sample_live() -> DetailLive {
         ribbon_oob: true,
         liveness: None,
         liveness_oob: true,
+        facts: None,
+        facts_oob: true,
     }
 }
 
@@ -1934,6 +1939,7 @@ fn failed_row(network: Option<crate::domain::NetworkPath>) -> ResultRow {
         network,
         diagnostic: None,
         error: Some("connection refused".into()),
+        details: None,
     })
 }
 
@@ -1945,6 +1951,166 @@ fn owner_rows(rows: Vec<ResultRow>) -> String {
     }
     .render()
     .unwrap()
+}
+
+fn graded(status: CheckStatus, details: crate::domain::CheckDetails) -> CheckResult {
+    CheckResult::graded(
+        Uuid::nil(),
+        Uuid::nil(),
+        "2026-05-13T12:00:00Z".parse().unwrap(),
+        26,
+        status,
+        details,
+    )
+}
+
+/// A row as the owner's drawer builds it.
+fn graded_row(status: CheckStatus, details: crate::domain::CheckDetails) -> ResultRow {
+    ResultRow::with_region(String::new(), graded(status, details))
+}
+
+fn line_text(row: &ResultRow) -> String {
+    row.reading_line()
+        .unwrap()
+        .into_iter()
+        .map(|s| s.text)
+        .collect()
+}
+
+fn exact_set_miss() -> crate::domain::CheckDetails {
+    crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::A,
+        missing: Some(vec!["192.0.2.10".into()]),
+        unexpected: Some(vec!["192.0.2.9".into()]),
+        answers: vec!["192.0.2.1".into(), "192.0.2.9".into()],
+        aliases: Vec::new(),
+        expected_contains: None,
+        matched: Some(false),
+    })
+}
+
+#[test]
+fn the_owner_line_names_the_records_that_failed() {
+    let row = graded_row(CheckStatus::Down, exact_set_miss());
+    assert_eq!(
+        line_text(&row),
+        "A records −192.0.2.10 +192.0.2.9 · acme.com"
+    );
+    let html = owner_rows(vec![row]);
+    assert!(
+        html.contains(r#"A records <span class="text-state-bad">−192.0.2.10</span> <span class="text-state-bad">+192.0.2.9</span> · acme.com</td>"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"<span class="text-muted">records:</span>"#));
+    assert!(html.contains("record-chip--missing"));
+    assert!(html.contains("record-chip--unexpected"));
+}
+
+#[test]
+fn the_share_view_keeps_the_plain_error() {
+    let html = DetailCheckRows {
+        results: Arc::from(vec![ResultRow::from(graded(
+            CheckStatus::Down,
+            exact_set_miss(),
+        ))]),
+        show_region: false,
+        owner_view: false,
+    }
+    .render()
+    .unwrap();
+    assert!(html.contains("A records changed: 1 missing, 1 unexpected · acme.com"));
+    for value in ["192.0.2.10", "192.0.2.9", "record-chip", "records:"] {
+        assert!(!html.contains(value), "{value} in {html}");
+    }
+}
+
+#[test]
+fn a_missed_substring_line_names_what_was_looked_for() {
+    let details = crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::Txt,
+        missing: None,
+        unexpected: None,
+        answers: vec!["v=spf1 -all".into(), "verify=1".into()],
+        aliases: Vec::new(),
+        expected_contains: Some("v=spf9".into()),
+        matched: Some(false),
+    });
+    let row = graded_row(CheckStatus::Down, details);
+    assert_eq!(
+        line_text(&row),
+        "TXT acme.com: none of 2 records contains v=spf9"
+    );
+    assert!(
+        owner_rows(vec![row])
+            .contains("a record containing <span class=\"text-state-bad\">v=spf9</span>")
+    );
+}
+
+#[test]
+fn an_expiring_certificate_line_adds_its_issuer() {
+    let details = crate::domain::CheckDetails::TlsCert(crate::domain::TlsCertDetails {
+        days_remaining: 3,
+        not_after: "2026-05-16T23:59:59Z".parse().unwrap(),
+        subject_common_name: "acme.com".into(),
+        issuer_common_name: "R3".into(),
+    });
+    let row = graded_row(CheckStatus::Degraded, details);
+    assert!(line_text(&row).ends_with(" · by R3"), "{}", line_text(&row));
+    let html = owner_rows(vec![row]);
+    assert!(html.contains(r#"<span class="text-muted">certificate:</span>"#));
+    assert!(html.contains(r#"<span class="record-chip">by R3</span>"#));
+}
+
+#[test]
+fn only_a_failing_row_in_the_owner_drawer_carries_a_reading() {
+    assert!(
+        graded_row(CheckStatus::Up, exact_set_miss())
+            .facts
+            .is_none()
+    );
+    assert!(
+        ResultRow::from(graded(CheckStatus::Down, exact_set_miss()))
+            .facts
+            .is_none()
+    );
+    assert!(
+        graded_row(CheckStatus::Down, exact_set_miss())
+            .facts
+            .is_some()
+    );
+}
+
+#[test]
+fn a_long_diff_folds_and_a_lone_record_reads_singular() {
+    let many: Vec<String> = (1..=9).map(|n| format!("192.0.2.{n}")).collect();
+    let details = crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::A,
+        missing: Some(Vec::new()),
+        unexpected: Some(many.clone()),
+        answers: many,
+        aliases: Vec::new(),
+        expected_contains: None,
+        matched: Some(false),
+    });
+    assert!(line_text(&graded_row(CheckStatus::Down, details)).ends_with(" +3 more · acme.com"));
+
+    let lone = crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::Txt,
+        missing: None,
+        unexpected: None,
+        answers: vec!["v=spf1 -all".into()],
+        aliases: Vec::new(),
+        expected_contains: Some("v=spf9".into()),
+        matched: Some(false),
+    });
+    assert_eq!(
+        line_text(&graded_row(CheckStatus::Down, lone)),
+        "TXT acme.com: the only record lacks v=spf9"
+    );
 }
 
 #[test]
@@ -1978,4 +2144,259 @@ fn a_failure_without_a_path_shows_no_network_lines() {
     for label in ["server IP:", "tried:", "final URL:", "dns "] {
         assert!(!html.contains(label), "{label} in {html}");
     }
+}
+
+fn facts_card(
+    kind: super::facts::FactsKind,
+    rows: Vec<(&str, CheckStatus, crate::domain::CheckDetails)>,
+) -> super::facts::CheckFacts {
+    let now = chrono::Utc::now();
+    let rows = rows
+        .into_iter()
+        .map(|(region, status, details)| {
+            let result = CheckResult::graded(Uuid::nil(), Uuid::nil(), now, 5, status, details);
+            (region.to_string(), result)
+        })
+        .collect();
+    super::facts::CheckFacts::fold(kind, rows, now, &[])
+}
+
+fn cert_details(not_after: chrono::DateTime<chrono::Utc>) -> crate::domain::CheckDetails {
+    crate::domain::CheckDetails::TlsCert(crate::domain::TlsCertDetails {
+        days_remaining: 0,
+        not_after,
+        subject_common_name: "app.acme.com".into(),
+        issuer_common_name: "R11".into(),
+    })
+}
+
+#[test]
+fn a_certificate_monitor_shows_what_it_read() {
+    let mut p = sample_page();
+    p.kind = "TLS";
+    let expiry = chrono::Utc::now() + chrono::Duration::days(84) + chrono::Duration::hours(1);
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Cert,
+        vec![("default", CheckStatus::Up, cert_details(expiry))],
+    ));
+    let html = p.render().unwrap();
+    assert!(
+        html.contains(r#"<section id="check-facts" class="space-y-2">"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"<p class="dashboard-kpi-card__label">expires in</p>"#));
+    assert!(html.contains(r#">84<span class="dashboard-kpi-card__unit"> days</span>"#));
+    assert!(html.contains(">Issued to</p>"));
+    assert!(html.contains("app.acme.com"));
+    assert!(html.contains("by R11"));
+    assert!(html.contains(">Checked</p>"));
+    assert!(html.contains("from default"));
+    assert!(!html.contains(">Read by</p>"));
+    assert!(html.contains(r#"id="check-facts-raw" data-keep-open"#));
+    assert!(html.contains("&#34;type&#34;: &#34;tls_cert&#34;"));
+    assert!(!html.contains(r#"<p class="mb-1.5 flag-label">default</p>"#));
+    assert!(html.contains("js/public/keep_open"));
+    let kpi = html.find(r#"id="detail-live-kpi""#).unwrap();
+    assert!(kpi < html.find(r#"id="check-facts""#).unwrap());
+}
+
+#[test]
+fn regions_reading_two_certificates_lead_with_the_worse() {
+    let mut p = sample_page();
+    p.kind = "TLS";
+    let soon = chrono::Utc::now() + chrono::Duration::days(3) + chrono::Duration::hours(1);
+    let later = chrono::Utc::now() + chrono::Duration::days(41) + chrono::Duration::hours(1);
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Cert,
+        vec![
+            ("eu-central", CheckStatus::Up, cert_details(later)),
+            ("eu-north", CheckStatus::Up, cert_details(later)),
+            ("ap-south", CheckStatus::Down, cert_details(soon)),
+        ],
+    ));
+    let html = p.render().unwrap();
+    assert!(html.contains(
+        r#"dashboard-kpi-card__value dashboard-kpi-card__value--bad">3<span class="dashboard-kpi-card__unit"> days</span>"#
+    ));
+    assert!(html.contains("ap-south · <time"));
+    assert!(html.contains(">Elsewhere</p>"));
+    assert!(!html.contains(">elsewhere "));
+    assert!(html.contains(">eu-central, eu-north · <time"));
+    assert!(html.contains(">Read by</p>"));
+    assert!(html.contains("2 certificates seen"));
+}
+
+#[test]
+fn a_dns_monitor_shows_its_answers_and_what_moved() {
+    let mut p = sample_page();
+    p.kind = "DNS";
+    let records = |answers: &[&str], missing: &[&str], unexpected: &[&str]| {
+        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+            domain: "app.acme.com".into(),
+            record_type: crate::domain::DnsRecordType::A,
+            missing: Some(owned(missing)),
+            unexpected: Some(owned(unexpected)),
+            answers: owned(answers),
+            aliases: vec!["edge.cdn.example.net.".into()],
+            expected_contains: None,
+            matched: Some(missing.is_empty() && unexpected.is_empty()),
+        })
+    };
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Dns,
+        vec![
+            (
+                "eu-central",
+                CheckStatus::Up,
+                records(&["192.0.2.1"], &[], &[]),
+            ),
+            (
+                "us-east",
+                CheckStatus::Down,
+                records(&["192.0.2.9"], &["192.0.2.1"], &["192.0.2.9"]),
+            ),
+        ],
+    ));
+    let html = p.render().unwrap();
+    assert!(html.contains(">A app.acme.com</p>"));
+    assert!(html.contains(r#">2<span class="dashboard-kpi-card__unit"> answer sets</span>"#));
+    assert!(html.contains(">not the expected set</p>"));
+    assert!(html.contains("via edge.cdn.example.net."));
+    let worst = html.find(r#"text-state-bad">us-east<span"#).unwrap();
+    let fine = html.find(">eu-central<span").unwrap();
+    assert!(worst < fine, "the failing region leads");
+    assert!(html.contains(r#"<span class="record-chip record-chip--unexpected" title="answered, but not in the expected set"><span aria-hidden="true">+&nbsp;</span><span class="sr-only">answered, but not in the expected set: </span><span class="record-chip__value">192.0.2.9</span></span>"#));
+    assert!(html.contains(r#"<span class="record-chip record-chip--missing" title="expected, but not answered"><span aria-hidden="true">−&nbsp;</span><span class="sr-only">expected, but not answered: </span><span class="record-chip__value">192.0.2.1</span></span>"#));
+    assert!(html.contains(
+        r#"<span class="record-chip "><span class="record-chip__value">192.0.2.1</span></span>"#
+    ));
+    assert!(html.contains(r#"<span class="sr-only"> (down)</span>"#));
+}
+
+#[test]
+fn an_empty_answer_says_so_beside_what_it_lacked() {
+    let mut p = sample_page();
+    p.kind = "DNS";
+    let details = crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::A,
+        missing: Some(vec!["192.0.2.1".into()]),
+        unexpected: Some(Vec::new()),
+        answers: Vec::new(),
+        aliases: Vec::new(),
+        expected_contains: None,
+        matched: Some(false),
+    });
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Dns,
+        vec![("default", CheckStatus::Down, details)],
+    ));
+    let html = p.render().unwrap();
+    assert!(html.contains(r#">0<span class="dashboard-kpi-card__unit"> records</span>"#));
+    assert!(html.contains(">no A records</span>"));
+    assert!(html.contains("record-chip--missing"));
+}
+
+#[test]
+fn a_long_record_list_folds_behind_a_toggle() {
+    let mut p = sample_page();
+    p.kind = "DNS";
+    let answers: Vec<String> = (1..=17).map(|n| format!("record-{n:02}")).collect();
+    let details = crate::domain::CheckDetails::Dns(crate::domain::DnsDetails {
+        domain: "acme.com".into(),
+        record_type: crate::domain::DnsRecordType::Txt,
+        missing: None,
+        unexpected: None,
+        answers,
+        aliases: Vec::new(),
+        expected_contains: Some("v=spf9".into()),
+        matched: Some(false),
+    });
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Dns,
+        vec![("default", CheckStatus::Down, details)],
+    ));
+    let html = p.render().unwrap();
+    assert!(html.contains(r#">17<span class="dashboard-kpi-card__unit"> records</span>"#));
+    assert!(html.contains(">none contains v=spf9</p>"));
+    assert!(html.contains(r#"id="check-facts-chips-default" data-keep-open"#));
+    assert!(html.contains("[ +11 more ]"));
+    let more = html.find("record-17").unwrap();
+    let close = html.find("data-details-close").unwrap();
+    assert!(more < close, "show fewer follows the last record");
+}
+
+#[test]
+fn a_domain_monitor_shows_its_registration() {
+    let mut p = sample_page();
+    p.kind = "DOMAIN";
+    let details = crate::domain::CheckDetails::DomainExpiry(crate::domain::DomainExpiryDetails {
+        domain: "acme.com".into(),
+        days_remaining: 0,
+        expiration_date: chrono::Utc::now()
+            + chrono::Duration::days(200)
+            + chrono::Duration::hours(1),
+        registrar: Some("Gandi SAS".into()),
+    });
+    p.facts = Some(facts_card(
+        super::facts::FactsKind::Domain,
+        vec![("default", CheckStatus::Up, details)],
+    ));
+    let html = p.render().unwrap();
+    assert!(html.contains(r#">200<span class="dashboard-kpi-card__unit"> days</span>"#));
+    assert!(html.contains(">Registrar</p>"));
+    assert!(html.contains("Gandi SAS"));
+    assert!(html.contains("for acme.com"));
+}
+
+#[test]
+fn a_card_with_nothing_read_says_so() {
+    let mut p = sample_page();
+    p.facts = Some(facts_card(super::facts::FactsKind::Cert, Vec::new()));
+    let html = p.render().unwrap();
+    assert!(html.contains(">Certificate</p>"));
+    assert!(html.contains("# nothing read yet"));
+    assert!(!html.contains("check-facts-raw"));
+}
+
+#[test]
+fn an_http_monitor_has_no_facts_card() {
+    let html = sample_page().render().unwrap();
+    assert!(!html.contains(r#"id="check-facts""#));
+}
+
+#[test]
+fn live_partial_seams_stay_bare_with_a_facts_card() {
+    let mut live = sample_live();
+    live.facts = Some(facts_card(
+        super::facts::FactsKind::Cert,
+        vec![("default", CheckStatus::Up, cert_details(chrono::Utc::now()))],
+    ));
+    let html = live.render().unwrap();
+    assert!(
+        html.contains("</div><section id=\"check-facts\" hx-swap-oob=\"true\""),
+        "{html}"
+    );
+    assert!(html.contains("</section><span id=\"detail-status-badge\""));
+    assert!(html.ends_with("</span>"));
+}
+
+#[test]
+fn a_degraded_expiry_monitor_names_its_warning_window() {
+    let banner = |kind: &'static str| {
+        let mut p = sample_page();
+        p.kind = kind;
+        p.last_status = "degraded";
+        p.render().unwrap()
+    };
+    assert!(banner("TLS").contains(
+        "The certificate expires inside its warning window, or some regions cannot read it."
+    ));
+    assert!(banner("DOMAIN").contains(
+        "The registration expires inside its warning window, or some regions cannot look it up."
+    ));
+    let http = banner("HTTP");
+    assert!(http.contains("Response times are elevated"));
+    assert!(!http.contains("warning window"));
 }

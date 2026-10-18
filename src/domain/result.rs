@@ -5,6 +5,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::check_details::{CheckDetails, lenient_details};
+
 /// Prefix on the `error` field of a result that repeats an earlier answer
 /// instead of a fresh probe: a domain-expiry cache hit, or a check skipped by
 /// an open circuit breaker. Internal annotation — every renderer must strip it
@@ -45,6 +47,14 @@ pub struct CheckResult {
     #[schema(nullable = true)]
     pub diagnostic: Option<CheckDiagnostic>,
     pub error: Option<String>,
+    /// What a certificate, DNS or domain check read, up results included.
+    #[serde(
+        default,
+        deserialize_with = "lenient_details",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schema(nullable = true)]
+    pub details: Option<CheckDetails>,
 }
 
 impl CheckResult {
@@ -67,7 +77,39 @@ impl CheckResult {
             response_code: None,
             response_size: None,
             error: Some(format!("{BREAKER_SKIP_PREFIX}{reason}")),
+            details: None,
             ..self.clone()
+        }
+    }
+
+    /// A verdict read off what the check saw. A result that is not up repeats
+    /// the details document as its `error`, which alerts and incident samples
+    /// read.
+    pub fn graded(
+        target_id: Uuid,
+        org_id: Uuid,
+        timestamp: DateTime<Utc>,
+        duration_ms: u32,
+        status: CheckStatus,
+        details: CheckDetails,
+    ) -> Self {
+        let document = details.error_json();
+        Self {
+            target_id,
+            org_id,
+            timestamp,
+            status,
+            duration_ms,
+            dns_ms: None,
+            connect_ms: None,
+            tls_ms: None,
+            ttfb_ms: None,
+            response_code: None,
+            response_size: Some(document.len() as u32),
+            network: None,
+            diagnostic: None,
+            error: (status != CheckStatus::Up).then_some(document),
+            details: Some(details),
         }
     }
 
@@ -93,6 +135,7 @@ impl CheckResult {
             network: None,
             diagnostic: None,
             error: Some(reason.into()),
+            details: None,
         }
     }
 
@@ -633,6 +676,89 @@ mod tests {
         assert!(!only_ip.is_empty());
     }
 
+    fn dns_details() -> CheckDetails {
+        CheckDetails::Dns(crate::domain::DnsDetails {
+            domain: "example.com".into(),
+            record_type: crate::domain::DnsRecordType::A,
+            missing: None,
+            unexpected: None,
+            answers: vec!["192.0.2.1".into()],
+            aliases: Vec::new(),
+            expected_contains: None,
+            matched: None,
+        })
+    }
+
+    #[test]
+    fn a_result_from_an_agent_without_details_still_reads() {
+        let result: CheckResult = serde_json::from_value(sample_json()).unwrap();
+        assert!(result.details.is_none());
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("details").is_none(), "{json}");
+    }
+
+    #[test]
+    fn details_of_an_unknown_type_drop_alone() {
+        let mut json = sample_json();
+        json["details"] = serde_json::json!({"type": "smtp", "banner": "220 ready"});
+        let result: CheckResult = serde_json::from_value(json).unwrap();
+        assert!(result.details.is_none());
+        assert_eq!(result.error.as_deref(), Some("unexpected status 404"));
+    }
+
+    #[test]
+    fn details_survive_the_agent_wire() {
+        let result = CheckResult::graded(
+            Uuid::nil(),
+            Uuid::nil(),
+            Utc::now(),
+            3,
+            CheckStatus::Up,
+            dns_details(),
+        );
+        let back: CheckResult =
+            serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
+        assert_eq!(back.details, Some(dns_details()));
+    }
+
+    #[test]
+    fn a_graded_result_repeats_its_details_as_the_error_only_when_not_up() {
+        let graded = |status| {
+            CheckResult::graded(
+                Uuid::nil(),
+                Uuid::nil(),
+                Utc::now(),
+                3,
+                status,
+                dns_details(),
+            )
+        };
+        let document = dns_details().error_json();
+
+        let up = graded(CheckStatus::Up);
+        assert_eq!(up.error, None);
+        assert_eq!(up.details, Some(dns_details()));
+        assert_eq!(up.response_size, Some(document.len() as u32));
+
+        let down = graded(CheckStatus::Down);
+        assert_eq!(down.error, Some(document));
+        assert_eq!(down.details, Some(dns_details()));
+    }
+
+    #[test]
+    fn a_breaker_skip_read_nothing() {
+        let mut result = CheckResult::graded(
+            Uuid::nil(),
+            Uuid::nil(),
+            Utc::now(),
+            3,
+            CheckStatus::Down,
+            dns_details(),
+        );
+        result.error = Some("timeout".into());
+        assert!(result.repeated_by_breaker().details.is_none());
+    }
+
     #[test]
     fn days_remaining_ladder_breaks_at_warn_and_critical() {
         let status = |days| CheckStatus::from_days_remaining(days, 30, 7);
@@ -660,6 +786,7 @@ mod tests {
             network: None,
             diagnostic: None,
             error: error.map(str::to_owned),
+            details: None,
         }
     }
 

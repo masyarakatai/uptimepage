@@ -15,6 +15,9 @@
 </div>
 {% else if last_status == "degraded" %}
 <div class="alert-card alert-card--warn" role="alert" aria-live="polite">
-  <strong>Monitor is degraded.</strong> Response times are elevated or partial failures are occurring.
+  <strong>Monitor is degraded.</strong>
+  {%- if kind == "TLS" %} The certificate expires inside its warning window, or some regions cannot read it.
+  {%- else if kind == "DOMAIN" %} The registration expires inside its warning window, or some regions cannot look it up.
+  {%- else %} Response times are elevated or partial failures are occurring.{% endif %}
 </div>
 {% endif %}

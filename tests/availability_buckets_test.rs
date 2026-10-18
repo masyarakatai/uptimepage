@@ -31,6 +31,7 @@ fn check(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>, status: CheckStatus
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

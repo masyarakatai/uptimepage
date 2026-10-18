@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::domain::agent_wire::{FlowRunRecord, StepOutcome};
 use crate::domain::quota::RetentionDays;
-use crate::domain::{CheckResult, HeartbeatPingRecord};
+use crate::domain::{CheckDetails, CheckResult, HeartbeatPingRecord};
 use crate::error::Result;
 use crate::metric_names;
 use crate::storage::org_ttl::OrgTtlDays;
@@ -132,6 +132,7 @@ struct CheckResultRow<'a> {
     dns_answer: Vec<Ipv6Addr>,
     dns_ttl: Option<u32>,
     error: Option<&'a str>,
+    details: Option<String>,
     diagnostic_kind: Option<&'a str>,
     diagnostic_confidence: Option<&'a str>,
     diagnostic_provider: Option<&'a str>,
@@ -168,6 +169,7 @@ impl<'a> CheckResultRow<'a> {
                 .unwrap_or_default(),
             dns_ttl: dns.map(|d| d.ttl_secs),
             error: r.error.as_deref(),
+            details: r.details.as_ref().map(CheckDetails::stored_json),
             diagnostic_kind: r.diagnostic.as_ref().map(|d| d.kind.as_str()),
             diagnostic_confidence: r.diagnostic.as_ref().map(|d| d.confidence.as_str()),
             diagnostic_provider: r

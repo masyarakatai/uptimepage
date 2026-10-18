@@ -29,6 +29,7 @@ fn sample_result() -> CheckResult {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

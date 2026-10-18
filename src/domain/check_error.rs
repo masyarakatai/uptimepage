@@ -2,7 +2,7 @@
 //! shared by the web views, the JSON API, and MCP, plus the bounded
 //! classification of that same code for operator metrics.
 
-use crate::domain::{is_breaker_skip, strip_served_stale};
+use crate::domain::{DnsDetails, expiry_words, is_breaker_skip, strip_served_stale};
 
 pub fn humanize_check_error(raw: &str) -> String {
     let raw = match strip_served_stale(raw) {
@@ -10,6 +10,9 @@ pub fn humanize_check_error(raw: &str) -> String {
         None => return "using last known result".into(),
     };
     if raw.starts_with('{') {
+        if let Ok(dns) = serde_json::from_str::<DnsDetails>(raw) {
+            return dns_label(&dns);
+        }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
             && let Some(days) = v.get("days_remaining").and_then(|d| d.as_i64())
         {
@@ -134,6 +137,7 @@ pub enum ErrorClass {
     BodyMatchFailed,
     BodyOverCap,
     DnsNoRecord,
+    DnsRecordMismatch,
     AddressNotAllowed,
     CertChain,
     CertExpired,
@@ -181,6 +185,7 @@ impl ErrorClass {
         Self::BodyMatchFailed,
         Self::BodyOverCap,
         Self::DnsNoRecord,
+        Self::DnsRecordMismatch,
         Self::AddressNotAllowed,
         Self::CertChain,
         Self::CertExpired,
@@ -226,6 +231,7 @@ impl ErrorClass {
             Self::BodyMatchFailed => "body_match_failed",
             Self::BodyOverCap => "body_over_cap",
             Self::DnsNoRecord => "dns_no_record",
+            Self::DnsRecordMismatch => "dns_record_mismatch",
             Self::AddressNotAllowed => "address_not_allowed",
             Self::CertChain => "cert_chain",
             Self::CertExpired => "cert_expired",
@@ -279,6 +285,8 @@ impl ErrorClass {
             // the page, like a failed match.
             | Self::BodyOverCap
             | Self::DnsNoRecord
+            // The records the owner pinned are not what resolved.
+            | Self::DnsRecordMismatch
             // The target resolved to an address policy forbids probing.
             | Self::AddressNotAllowed
             | Self::CertChain
@@ -453,6 +461,13 @@ pub fn classify_check_error(raw: &str) -> ErrorClass {
 }
 
 fn classify_json(raw: &str) -> ErrorClass {
+    if let Ok(dns) = serde_json::from_str::<DnsDetails>(raw) {
+        return if dns.answers.is_empty() {
+            ErrorClass::DnsNoRecord
+        } else {
+            ErrorClass::DnsRecordMismatch
+        };
+    }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
         return ErrorClass::Other;
     };
@@ -468,14 +483,28 @@ fn classify_json(raw: &str) -> ErrorClass {
     ErrorClass::Other
 }
 
+// Counts, not values: the share page shows this line, and answers stay off
+// it like every other address.
+fn dns_label(dns: &DnsDetails) -> String {
+    let kind = dns.record_type.as_str();
+    let what = match (&dns.missing, &dns.unexpected) {
+        _ if dns.answers.is_empty() => format!("no {kind} records"),
+        (Some(missing), Some(unexpected)) => {
+            let counts: Vec<String> =
+                [(missing.len(), "missing"), (unexpected.len(), "unexpected")]
+                    .into_iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, word)| format!("{n} {word}"))
+                    .collect();
+            format!("{kind} records changed: {}", counts.join(", "))
+        }
+        _ => format!("no {kind} record has the expected value"),
+    };
+    format!("{what} · {}", dns.domain)
+}
+
 fn fmt_days_label(kind: &str, days: i64, name: &str) -> String {
-    if days < 0 {
-        format!("{kind} expired {} days ago · {name}", -days)
-    } else if days == 0 {
-        format!("{kind} expires today · {name}")
-    } else {
-        format!("{kind} expires in {days} days · {name}")
-    }
+    format!("{kind} {} · {name}", expiry_words(days))
 }
 
 #[cfg(test)]
@@ -555,6 +584,41 @@ mod tests {
         assert_eq!(
             humanize_check_error(raw),
             "domain expired 3 days ago · example.com"
+        );
+    }
+
+    // Pinned against the emitter in `worker::dns` tests.
+    const DNS_NO_RECORDS: &str = r#"{"domain":"example.com","record_type":"A","answers":[],"expected_contains":null,"matched":null}"#;
+    const DNS_SET_CHANGED: &str = r#"{"domain":"example.com","record_type":"A","missing":["192.0.2.1"],"unexpected":["192.0.2.9"],"answers":["192.0.2.9"],"expected_contains":null,"matched":false}"#;
+    const DNS_SUBSTRING_MISSED: &str = r#"{"domain":"example.com","record_type":"A","answers":["192.0.2.1"],"expected_contains":"203.0.113.7","matched":false}"#;
+
+    #[test]
+    fn words_a_dns_failure_without_its_values() {
+        assert_eq!(
+            humanize_check_error(DNS_NO_RECORDS),
+            "no A records · example.com"
+        );
+        assert_eq!(
+            humanize_check_error(DNS_SET_CHANGED),
+            "A records changed: 1 missing, 1 unexpected · example.com"
+        );
+        assert_eq!(
+            humanize_check_error(DNS_SUBSTRING_MISSED),
+            "no A record has the expected value · example.com"
+        );
+        for raw in [DNS_SET_CHANGED, DNS_SUBSTRING_MISSED] {
+            let line = humanize_check_error(raw);
+            assert!(!line.contains("192.0.2."), "{line}");
+            assert!(!line.contains("203.0.113.7"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_set_diff_names_only_the_side_that_moved() {
+        let removed = r#"{"domain":"example.com","record_type":"MX","missing":["10 mx2.example.com."],"unexpected":[],"answers":["10 mx1.example.com."],"expected_contains":null,"matched":false}"#;
+        assert_eq!(
+            humanize_check_error(removed),
+            "MX records changed: 1 missing · example.com"
         );
     }
 
@@ -749,6 +813,9 @@ mod tests {
             r#"{"days_remaining":-3,"domain":"example.com"}"#,
             ErrorClass::DomainExpiry,
         ),
+        (DNS_NO_RECORDS, ErrorClass::DnsNoRecord),
+        (DNS_SET_CHANGED, ErrorClass::DnsRecordMismatch),
+        (DNS_SUBSTRING_MISSED, ErrorClass::DnsRecordMismatch),
     ];
 
     #[test]

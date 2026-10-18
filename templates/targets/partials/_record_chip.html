@@ -1,0 +1,2 @@
+{# One DNS record. Expects `c`. -#}
+<span class="record-chip {{ c.class() }}"{% if !c.title().is_empty() %} title="{{ c.title() }}"{% endif %}>{% if !c.marker().is_empty() %}<span aria-hidden="true">{{ c.marker() }}&nbsp;</span><span class="sr-only">{{ c.title() }}: </span>{% endif %}<span class="record-chip__value">{{ c.value }}</span></span>

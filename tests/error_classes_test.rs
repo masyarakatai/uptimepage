@@ -33,6 +33,7 @@ fn failure(target_id: Uuid, org_id: Uuid, error: &str) -> CheckResult {
         network: None,
         diagnostic: None,
         error: Some(error.to_string()),
+        details: None,
     }
 }
 

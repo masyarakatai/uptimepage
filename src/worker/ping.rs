@@ -41,6 +41,7 @@ pub async fn execute_ping_check(
             network: None,
             diagnostic: None,
             error: None,
+            details: None,
         },
         Err(EchoError::Unreachable(err)) => CheckResult {
             status: CheckStatus::Down,

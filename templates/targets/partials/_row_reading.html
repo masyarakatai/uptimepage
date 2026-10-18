@@ -1,0 +1,25 @@
+{# What a failing check read, in the owner's opened drawer row. Expects `f`. -#}
+{% if let Some(d) = f.dns() %}
+<div class="mt-2 flex flex-wrap items-center gap-2">
+  <span class="text-muted">records:</span>
+  {% if d.record_count() == 0 %}<span class="font-mono text-state-bad">no {{ d.record_type }} records</span>{% endif %}
+  {% let chips_id = "" %}
+  {% include "targets/partials/_record_chips.html" %}
+</div>
+{% if let Some(want) = d.unmatched %}<div class="mt-1"><span class="text-muted mr-2">expected:</span><span class="font-mono">a record containing <span class="text-state-bad">{{ want }}</span></span></div>{% endif %}
+{% if !d.aliases.is_empty() %}<div class="mt-1"><span class="text-muted mr-2">via:</span><span class="break-all font-mono">{{ d.aliases|join(" → ") }}</span></div>{% endif %}
+{% else if let Some(c) = f.cert() %}
+<div class="mt-2 flex flex-wrap items-center gap-2">
+  <span class="text-muted">certificate:</span>
+  <span class="record-chip">{{ c.subject_name() }}</span>
+  <span class="record-chip">by {{ c.issuer_name() }}</span>
+  <span class="record-chip">until&nbsp;<time datetime="{{ c.not_after|iso_ts }}" data-tz="exact">{{ c.not_after|human_ts }}</time></span>
+</div>
+{% else if let Some(dm) = f.domain() %}
+<div class="mt-2 flex flex-wrap items-center gap-2">
+  <span class="text-muted">registration:</span>
+  <span class="record-chip">{{ dm.domain }}</span>
+  <span class="record-chip">{{ dm.registrar_name() }}</span>
+  <span class="record-chip">until&nbsp;<time datetime="{{ dm.expires_at|iso_ts }}" data-tz="exact">{{ dm.expires_at|human_ts }}</time></span>
+</div>
+{% endif %}

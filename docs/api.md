@@ -353,9 +353,10 @@ same as none. Setting both `expected_records` and `expected_contains`, a value
 not in the type's form (an A value that is not an IPv4 address, a bare number
 or address as an MX host), or one value twice is `400 INVALID_DNS_PARAMS`.
 
-The result carries `domain`, `record_type`, the `answers` list (records of
-the queried type), `expected_contains`, and `matched` so a failure shows what
-actually resolved. On an aliased name the CNAME chain that led to the answers
+Every result that got an answer carries `details` with `domain`,
+`record_type`, the `answers` list (records of the queried type),
+`expected_contains`, and `matched`, so the current records are readable while
+the check is up; a failure repeats the same document as its `error`. On an aliased name the CNAME chain that led to the answers
 is listed apart as `aliases`; `expected_contains` matches it too, an exact set
 does not.
 With `expected_records` set it also carries `missing` (expected values no
@@ -422,7 +423,7 @@ Opens a TCP connection, performs a TLS handshake against the host (accepting any
 - `days_remaining < warn_days` → `degraded`
 - otherwise → `up`
 
-`error` carries a JSON document with `days_remaining`, `not_after`, `subject_common_name`, `issuer_common_name`. A handshake failure (plain-TCP host, network error) returns `error` status with the underlying message. `warn_days` must be strictly greater than `critical_days`. Floor is `interval >= 3600` (enforced); a monitor created in the form opens at `43200` (twice daily), which leaves room for a short-lived certificate whose `warn_days` is only a day or two.
+Every result that read a certificate carries `details` with `days_remaining`, `not_after`, `subject_common_name`, `issuer_common_name`; a `degraded` or `down` result repeats that document as its `error`. A handshake failure (plain-TCP host, network error) returns `error` status with the underlying message. `warn_days` must be strictly greater than `critical_days`. Floor is `interval >= 3600` (enforced); a monitor created in the form opens at `43200` (twice daily), which leaves room for a short-lived certificate whose `warn_days` is only a day or two.
 
 ### Domain expiration
 
@@ -436,7 +437,7 @@ Opens a TCP connection, performs a TLS handshake against the host (accepting any
 }
 ```
 
-Queries the [IANA RDAP bootstrap registry](https://data.iana.org/rdap/dns.json) to find the authoritative RDAP server for the domain's TLD, then fetches `/domain/<domain>` and reads the `events[?eventAction == "expiration"]` entry. Status mapping is the same as TLS cert: `< critical_days` → `down`, `< warn_days` → `degraded`, else `up`. Non-`up` results carry a JSON `error` body with `domain`, `days_remaining`, `expiration_date`, and (when present) `registrar`.
+Queries the [IANA RDAP bootstrap registry](https://data.iana.org/rdap/dns.json) to find the authoritative RDAP server for the domain's TLD, then fetches `/domain/<domain>` and reads the `events[?eventAction == "expiration"]` entry. Status mapping is the same as TLS cert: `< critical_days` → `down`, `< warn_days` → `degraded`, else `up`. Every result that knows the expiry carries `details` with `domain`, `days_remaining`, `expiration_date`, and `registrar` (`null` when the registry names none); non-`up` results repeat that document as their `error`.
 
 The bootstrap registry is fetched lazily on the first lookup and cached for the lifetime of the process. The SSRF guard does not apply — the check's network destination is an IANA-published RDAP server, not the user-supplied domain. Floor is `interval >= 43200` (enforced, because RDAP servers rate-limit by source address); default for a new monitor is `86400` (daily). `warn_days` must be strictly greater than `critical_days`.
 
@@ -825,6 +826,7 @@ Pass the previous page's `next_cursor` as `?cursor=...` to fetch the next page; 
   - `tried_ips`: on a failed connect, the addresses the probe had for the host. No server answered, so there is no `remote_ip`.
   - `hop_url`: when redirects are followed and a later hop decided the result, that hop's URL, with credential-like query values redacted.
   - `dns`: on a down or error result, the host of the hop that decided it (the check's own host unless a redirect led elsewhere) as the probe's DNS resolver answered it right after the failure, asked past the probe's own cache and at most once a minute per host (sooner when the record's own TTL is shorter, but not more than every 10 seconds). `ttl_secs` is how long, from the result's `timestamp`, that resolver keeps the host's own record before it asks again: for a host that is an alias (CNAME), the alias, which is what moving a hostname usually changes, while the addresses behind it can refresh sooner. Public resolvers run many separate caches, so another query can see a different answer or TTL.
+- A `tls_cert`, `dns` or `domain_expiry` result that read something carries `details`, up results included: the same document a result that is not up repeats as its `error`, tagged with the check's `type`, for example `{"type":"tls_cert","days_remaining":84,"not_after":"2027-01-12T10:00:00+00:00","subject_common_name":"example.com","issuer_common_name":"R11"}`. A run that read nothing (a failed handshake, a resolver error, a timeout) and results recorded before the field existed omit it.
 - A failed HTTP result can include a machine-readable `diagnostic` such as `{"kind":"access_interference","confidence":"high","provider":"akamai","evidence":["edge_server","block_page","reference_id"],"remediations":["use_authenticated_health_endpoint","allow_monitor_through_edge_rules"]}`. This explains the failure but never replaces `status`, `response_code`, or `error`, which remain authoritative. The whole field is omitted when no supported signature matches.
 - `kind` is one of `access_interference` (a CDN, WAF, or bot-management service blocked the probe by policy, shown by its mitigation header, a challenge, or an access-denied page), `origin_unreachable` (the CDN answered with its own error page because the origin behind it did not respond), or `origin_tunnel_down` (the same, where the edge named a dead tunnel). The two origin kinds carry `provider: "cloudflare"` and a `response_code` of `502`, `520`–`524`, or `530`.
 - Bounded provider values are `akamai`, `aws_waf`, `cloudflare`, `azure_front_door`, `data_dome`, and `vercel`; `provider` is omitted when the evidence identifies a generic policy block but not a vendor.

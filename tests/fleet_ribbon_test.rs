@@ -34,6 +34,7 @@ fn result(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>, status: CheckStatu
         network: None,
         diagnostic: None,
         error: (status != CheckStatus::Up).then(|| "no response".to_string()),
+        details: None,
     }
 }
 

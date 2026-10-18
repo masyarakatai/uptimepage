@@ -6,12 +6,13 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::domain::agent_wire::StepOutcome;
-use crate::domain::{CheckResult, Incident, IncidentImpact, NetworkPath};
+use crate::domain::{CheckResult, CheckStatus, Incident, IncidentImpact, NetworkPath};
 use crate::storage::UptimeStats;
 use crate::templates::filters;
 use crate::templates::format::{fmt_human, fmt_ts};
 use crate::web::views::dashboard::KpiDelta;
 
+use super::facts::{CHIPS_SHOWN, Facts};
 use super::fmt_error_display;
 use crate::web::views::dashboard;
 
@@ -36,6 +37,16 @@ pub struct ResultRow {
     /// For a flow failure, the `step N/M · op` badge parsed off the error, so
     /// the drawer can surface which step broke. `None` for every other error.
     pub flow_step: Option<String>,
+    /// What a failing certificate, DNS or domain check read. Only the owner's
+    /// drawer fills it: the share view keeps to the error, which names no
+    /// records.
+    pub facts: Option<Facts>,
+}
+
+/// A run of the owner's error line, set apart when it is the value that failed.
+pub struct LineSegment {
+    pub text: String,
+    pub bad: bool,
 }
 
 /// Split a flow step-failure error (`step N/M op: reason`) into a compact badge
@@ -61,10 +72,62 @@ impl ResultRow {
         Some(self.timestamp + chrono::Duration::seconds(i64::from(dns.ttl_secs)))
     }
 
-    /// Row tagged with the region it ran in; an empty region label reads as `None`.
-    pub(super) fn with_region(region: String, r: CheckResult) -> Self {
+    /// The error line with the values that failed it:
+    /// `A records −192.0.2.10 +104.16.133.229 · cloudflare.com`. `None` where
+    /// the plain error already says it all.
+    pub fn reading_line(&self) -> Option<Vec<LineSegment>> {
+        let plain = |text: String| LineSegment { text, bad: false };
+        let failed = |text: String| LineSegment { text, bad: true };
+        match self.facts.as_ref()? {
+            Facts::Dns(d) if d.record_count() == 0 => None,
+            Facts::Dns(d) => {
+                if let Some(want) = &d.unmatched {
+                    let (kind, name) = (d.record_type, &d.domain);
+                    let lead = match d.record_count() {
+                        1 => format!("{kind} {name}: the only record lacks "),
+                        n => format!("{kind} {name}: none of {n} records contains "),
+                    };
+                    return Some(vec![plain(lead), failed(want.clone())]);
+                }
+                let diff = d.diff();
+                if diff.is_empty() {
+                    return None;
+                }
+                let rest = diff.len().saturating_sub(CHIPS_SHOWN);
+                let mut line = vec![plain(format!("{} records ", d.record_type))];
+                for (i, chip) in diff.into_iter().take(CHIPS_SHOWN).enumerate() {
+                    if i > 0 {
+                        line.push(plain(" ".into()));
+                    }
+                    line.push(failed(format!("{}{}", chip.marker(), chip.value)));
+                }
+                if rest > 0 {
+                    line.push(plain(format!(" +{rest} more")));
+                }
+                line.push(plain(format!(" · {}", d.domain)));
+                Some(line)
+            }
+            Facts::Cert(c) => Some(vec![plain(format!(
+                "{} · by {}",
+                self.error,
+                c.issuer_name()
+            ))]),
+            Facts::Domain(d) => Some(vec![plain(format!(
+                "{} · {}",
+                self.error,
+                d.registrar_name()
+            ))]),
+        }
+    }
+
+    /// A row for the owner's drawer: tagged with the region it ran in (an
+    /// empty label reads as `None`), and carrying what a failing check read.
+    pub(super) fn with_region(region: String, mut r: CheckResult) -> Self {
+        let failed = r.status != CheckStatus::Up;
+        let facts = r.details.take().filter(|_| failed).map(Facts::from);
         Self {
             region: (!region.is_empty()).then_some(region),
+            facts,
             ..Self::from(r)
         }
     }
@@ -179,6 +242,9 @@ pub struct DetailLive {
     /// The notice is only ever out of band here: it lives in the ping card,
     /// which this response does not own.
     pub liveness_oob: bool,
+    pub facts: Option<super::facts::CheckFacts>,
+    /// Always out of band here, like the liveness notice.
+    pub facts_oob: bool,
 }
 
 /// Rows for the ribbon drill drawer: a page of raw checks over a bucket window,
@@ -483,6 +549,7 @@ impl From<CheckResult> for ResultRow {
             server_name: None,
             region: None,
             flow_step,
+            facts: None,
         }
     }
 }

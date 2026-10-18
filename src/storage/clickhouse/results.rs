@@ -15,9 +15,9 @@ use crate::domain::metrics::{
     FlowStepTrend, LatencyBucket, PriorPeriodSummary, RegionLatencySeries, RegionRollup,
 };
 use crate::domain::{
-    CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
-    DiagnosticEvidence, DnsAnswer, EdgeProvider, Incident, NetworkPath, ObservedCadence, OrgId,
-    coalesce_incidents,
+    CheckDetails, CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus,
+    DiagnosticConfidence, DiagnosticEvidence, DnsAnswer, EdgeProvider, Incident, NetworkPath,
+    ObservedCadence, OrgId, coalesce_incidents,
 };
 use crate::error::Result;
 use crate::storage::traits::{
@@ -146,6 +146,7 @@ fn coalesce_from_incident_rows(target_id: Uuid, rows: Vec<IncidentRow>) -> Vec<I
 }
 
 /// Shared tail of every raw-result read, in [`OwnedResultRow`] field order.
+/// Reads decoded into a row with `details` select it after these.
 const RESULT_COLUMNS: &str = "timestamp, status, duration_ms, dns_ms, connect_ms, tls_ms, \
      ttfb_ms, response_code, response_size, remote_ip, tried_ips, hop_url, dns_resolver, \
      dns_answer, dns_ttl, error, diagnostic_kind, diagnostic_confidence, diagnostic_provider, \
@@ -175,6 +176,7 @@ struct OwnedResultRow {
     diagnostic_confidence: Option<String>,
     diagnostic_provider: Option<String>,
     diagnostic_evidence: Vec<String>,
+    details: Option<String>,
 }
 
 #[derive(Debug, Row, Deserialize)]
@@ -202,6 +204,7 @@ struct RegionResultRow {
     diagnostic_confidence: Option<String>,
     diagnostic_provider: Option<String>,
     diagnostic_evidence: Vec<String>,
+    details: Option<String>,
 }
 
 impl RegionResultRow {
@@ -228,11 +231,14 @@ impl RegionResultRow {
             diagnostic_confidence: self.diagnostic_confidence,
             diagnostic_provider: self.diagnostic_provider,
             diagnostic_evidence: self.diagnostic_evidence,
+            details: self.details,
         };
         (self.region, row_to_result(inner, org_id))
     }
 }
 
+/// No `details`: the incident writer reads many targets on a short loop and
+/// only needs the verdicts.
 #[derive(Debug, Row, Deserialize)]
 struct MultiResultRow {
     #[serde(with = "clickhouse::serde::uuid")]
@@ -287,6 +293,7 @@ impl MultiResultRow {
             diagnostic_confidence: self.diagnostic_confidence,
             diagnostic_provider: self.diagnostic_provider,
             diagnostic_evidence: self.diagnostic_evidence,
+            details: None,
         };
         (self.region, row_to_result(inner, org_id))
     }
@@ -349,6 +356,7 @@ fn row_to_result(row: OwnedResultRow, org_id: Uuid) -> CheckResult {
         network: network_from(&row),
         diagnostic,
         error: row.error,
+        details: row.details.as_deref().and_then(CheckDetails::parse),
     }
 }
 
@@ -612,7 +620,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let mut q = self
             .client
             .query(&format!(
-                "SELECT target_id, {RESULT_COLUMNS} FROM {TABLE} \
+                "SELECT target_id, {RESULT_COLUMNS}, details FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? {region_pred} \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -647,7 +655,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let rows: Vec<RegionResultRow> = self
             .client
             .query(&format!(
-                "SELECT region, target_id, {RESULT_COLUMNS} FROM {TABLE} \
+                "SELECT region, target_id, {RESULT_COLUMNS}, details FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \
@@ -662,6 +670,48 @@ impl ResultsStore for ClickhouseResultsStore {
             .fetch_all::<RegionResultRow>()
             .await
             .context("clickhouse list_results_by_region")?;
+        Ok(rows.into_iter().map(|r| r.split(org.0)).collect())
+    }
+
+    async fn latest_details_by_region(
+        &self,
+        org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        region: Option<&str>,
+    ) -> Result<Vec<(String, CheckResult)>> {
+        // The inner read touches only the key and the details null map, so the
+        // full rows are read for one timestamp per region, not the window.
+        let region_pred = region.map(|_| "AND region = ?").unwrap_or("");
+        let mut q = self
+            .client
+            .query(&format!(
+                "SELECT region, target_id, {RESULT_COLUMNS}, details FROM {TABLE} \
+                 WHERE org_id = ? AND target_id = ? AND details IS NOT NULL \
+                 AND timestamp >= fromUnixTimestamp(?) \
+                 AND (region, timestamp) IN ( \
+                     SELECT region, max(timestamp) FROM {TABLE} \
+                     WHERE org_id = ? AND target_id = ? {region_pred} \
+                     AND details IS NOT NULL \
+                     AND timestamp >= fromUnixTimestamp(?) \
+                     AND timestamp < fromUnixTimestamp(?) \
+                     GROUP BY region) \
+                 ORDER BY region LIMIT 1 BY region"
+            ))
+            .bind(org.0)
+            .bind(target_id)
+            .bind(range.from.timestamp())
+            .bind(org.0)
+            .bind(target_id);
+        if let Some(r) = region {
+            q = q.bind(r);
+        }
+        let rows: Vec<RegionResultRow> = q
+            .bind(range.from.timestamp())
+            .bind(range.to.timestamp())
+            .fetch_all::<RegionResultRow>()
+            .await
+            .context("clickhouse latest_details_by_region")?;
         Ok(rows.into_iter().map(|r| r.split(org.0)).collect())
     }
 
@@ -680,7 +730,7 @@ impl ResultsStore for ClickhouseResultsStore {
         let mut q = self
             .client
             .query(&format!(
-                "SELECT region, target_id, {RESULT_COLUMNS} FROM {TABLE} \
+                "SELECT region, target_id, {RESULT_COLUMNS}, details FROM {TABLE} \
                  WHERE org_id = ? AND target_id = ? AND status != {up} {region_pred} \
                  AND timestamp >= fromUnixTimestamp(?) \
                  AND timestamp < fromUnixTimestamp(?) \

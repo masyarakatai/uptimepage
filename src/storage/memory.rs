@@ -138,6 +138,29 @@ impl ResultsStore for InMemorySink {
             .collect())
     }
 
+    async fn latest_details_by_region(
+        &self,
+        _org: OrgId,
+        target_id: Uuid,
+        range: ClampedRange,
+        _region: Option<&str>,
+    ) -> Result<Vec<(String, CheckResult)>> {
+        // No region dimension in memory: one region, its newest row with details.
+        let guard = self.results.lock();
+        Ok(guard
+            .iter()
+            .filter(|r| {
+                r.target_id == target_id
+                    && r.details.is_some()
+                    && r.timestamp >= range.from
+                    && r.timestamp < range.to
+            })
+            .max_by_key(|r| r.timestamp)
+            .map(|r| ("default".to_string(), r.clone()))
+            .into_iter()
+            .collect())
+    }
+
     async fn recent_results_for_targets(
         &self,
         targets: &[(OrgId, Uuid)],
@@ -1493,6 +1516,7 @@ mod tests {
             network: None,
             diagnostic: None,
             error: None,
+            details: None,
         }
     }
 

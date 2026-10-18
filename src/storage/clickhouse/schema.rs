@@ -75,6 +75,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_check_network_path.sql",
         include_str!("../../../migrations/clickhouse/006_check_network_path.sql"),
     ),
+    // Raw rows only: the facts a check read describe one run, and the detail
+    // page reads the newest row per region straight off the raw table.
+    (
+        "007_check_details.sql",
+        include_str!("../../../migrations/clickhouse/007_check_details.sql"),
+    ),
 ];
 
 pub async fn migrate(client: &Client) -> Result<()> {

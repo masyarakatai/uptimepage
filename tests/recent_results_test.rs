@@ -1,7 +1,8 @@
 //! ClickHouse integration tests for the multi-target raw results reads: the
 //! batched read behind the incident writer (`target_id IN (...)`, the
 //! per-`(target, region)` cap, region tagging, the `(org, target)` pair
-//! filter) and the monitors list's last check times.
+//! filter), the monitors list's last check times, and each region's newest
+//! check details.
 //!
 //! Skipped by default. Requires a ClickHouse the migrations have run against:
 //!
@@ -12,8 +13,9 @@ use crate::common;
 
 use chrono::{Duration, Utc};
 use uptimepage::domain::{
-    CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus, DiagnosticConfidence,
-    DiagnosticEvidence, DiagnosticRemediation, DnsAnswer, EdgeProvider, NetworkPath, OrgId,
+    CheckDetails, CheckDiagnostic, CheckDiagnosticKind, CheckResult, CheckStatus,
+    DiagnosticConfidence, DiagnosticEvidence, DiagnosticRemediation, DnsAnswer, DnsDetails,
+    DnsRecordType, EdgeProvider, NetworkPath, OrgId,
 };
 use uptimepage::storage::{
     ClampedRange, ClickhouseResultSink, ClickhouseResultsStore, FailingServer, OrgTtlDays,
@@ -37,6 +39,7 @@ fn result(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>) -> CheckResult {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 
@@ -536,4 +539,109 @@ async fn failing_servers_group_failures_by_address() {
         ],
         "passing, degraded, and unconnected checks stay out"
     );
+}
+
+fn a_records(answers: &[&str]) -> CheckDetails {
+    CheckDetails::Dns(DnsDetails {
+        domain: "example.com".into(),
+        record_type: DnsRecordType::A,
+        missing: None,
+        unexpected: None,
+        answers: answers.iter().map(|a| a.to_string()).collect(),
+        aliases: Vec::new(),
+        expected_contains: None,
+        matched: None,
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires ClickHouse (CLICKHOUSE_URL)"]
+async fn latest_details_are_each_regions_newest_reading() {
+    let Some(ch) = common::ch_client_from_env().await else {
+        eprintln!("skipped: CLICKHOUSE_URL not set");
+        return;
+    };
+    let sink = |region: &str| {
+        ClickhouseResultSink::new(
+            ch.clone(),
+            region.into(),
+            format!("agent-{region}"),
+            OrgTtlDays::new(),
+        )
+    };
+    let store = ClickhouseResultsStore::from_client(ch.clone());
+
+    let org = Uuid::now_v7();
+    let target = Uuid::now_v7();
+    let now = Utc::now();
+    let ago = |s: i64| now - Duration::seconds(s);
+    let graded = |secs: i64, status: CheckStatus, answers: &[&str]| {
+        CheckResult::graded(target, org, ago(secs), 5, status, a_records(answers))
+    };
+
+    sink("eu")
+        .write_batch(&[
+            graded(90, CheckStatus::Up, &["192.0.2.1"]),
+            graded(60, CheckStatus::Down, &["192.0.2.9"]),
+            // A run that read nothing leaves the last reading in place.
+            CheckResult::error_with_elapsed(target, org, ago(30), 5, "dns: lookup timed out"),
+        ])
+        .await
+        .expect("seed eu");
+    sink("us")
+        .write_batch(&[graded(45, CheckStatus::Up, &["198.51.100.7"])])
+        .await
+        .expect("seed us");
+
+    let range = ClampedRange::unclamped(TimeRange {
+        from: ago(3600),
+        to: now + Duration::seconds(60),
+    });
+    let rows = store
+        .latest_details_by_region(OrgId(org), target, range, None)
+        .await
+        .expect("latest details");
+    let read: Vec<(&str, CheckStatus, Option<&CheckDetails>)> = rows
+        .iter()
+        .map(|(region, r)| (region.as_str(), r.status, r.details.as_ref()))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            ("eu", CheckStatus::Down, Some(&a_records(&["192.0.2.9"]))),
+            ("us", CheckStatus::Up, Some(&a_records(&["198.51.100.7"]))),
+        ]
+    );
+    assert_eq!(
+        rows[0].1.error,
+        Some(a_records(&["192.0.2.9"]).error_json())
+    );
+
+    let listed = store
+        .list_results(OrgId(org), target, range, 10, 0, Some("eu"))
+        .await
+        .expect("list results");
+    let listed: Vec<Option<&CheckDetails>> = listed.iter().map(|r| r.details.as_ref()).collect();
+    assert_eq!(
+        listed,
+        [
+            None,
+            Some(&a_records(&["192.0.2.9"])),
+            Some(&a_records(&["192.0.2.1"])),
+        ],
+        "the results API carries each run's details"
+    );
+
+    let us_only = store
+        .latest_details_by_region(OrgId(org), target, range, Some("us"))
+        .await
+        .expect("region filter");
+    assert_eq!(us_only.len(), 1);
+    assert_eq!(us_only[0].0, "us");
+
+    let other_org = store
+        .latest_details_by_region(OrgId(Uuid::now_v7()), target, range, None)
+        .await
+        .expect("other org");
+    assert!(other_org.is_empty(), "details stay inside their org");
 }

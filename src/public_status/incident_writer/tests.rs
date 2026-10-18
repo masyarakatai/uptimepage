@@ -32,6 +32,7 @@ fn result(target_id: Uuid, when: DateTime<Utc>, status: CheckStatus) -> CheckRes
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

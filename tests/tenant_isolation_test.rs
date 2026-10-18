@@ -64,6 +64,7 @@ fn ok_result(target_id: Uuid, org_id: Uuid) -> CheckResult {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

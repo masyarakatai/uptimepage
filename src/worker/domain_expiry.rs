@@ -23,7 +23,6 @@ use std::time::Duration;
 use anyhow::anyhow;
 use chrono::Utc;
 use metrics::{Counter, counter};
-use serde::Serialize;
 use tokio::time::{Instant, timeout_at};
 use uuid::Uuid;
 
@@ -36,7 +35,10 @@ static RDAP_SINGLEFLIGHT_MISSES: LazyLock<Counter> =
 static STATE_WRITE_FAILED: LazyLock<Counter> =
     LazyLock::new(|| counter!(metric_names::DOMAIN_EXPIRY_STATE_WRITE_FAILED));
 
-use crate::domain::{CheckResult, CheckStatus, DomainExpiryCheck, OrgId, SERVED_STALE_PREFIX};
+use crate::domain::{
+    CheckDetails, CheckResult, CheckStatus, DomainExpiryCheck, DomainExpiryDetails, OrgId,
+    SERVED_STALE_PREFIX,
+};
 use crate::http_client::HttpClients;
 use crate::metric_names;
 use crate::storage::DomainExpiryStateStore;
@@ -117,7 +119,14 @@ pub async fn execute_domain_expiry_check(
                 STATE_WRITE_FAILED.increment(1);
             }
             let verdict = classify(check, answer.expiration, answer.registrar.as_deref());
-            emit_fresh(target_id, org_id, started_at, duration_ms, verdict)
+            CheckResult::graded(
+                target_id,
+                org_id,
+                started_at,
+                duration_ms,
+                verdict.status,
+                verdict.details,
+            )
         }
         Err(err) => {
             fall_back(
@@ -299,7 +308,7 @@ fn record_singleflight_outcome(outcome: FetchOutcome) {
 #[derive(Debug)]
 struct Verdict {
     status: CheckStatus,
-    details_json: String,
+    details: CheckDetails,
 }
 
 fn classify(
@@ -310,52 +319,14 @@ fn classify(
     let days_remaining = (expiration - Utc::now()).num_days();
     let status =
         CheckStatus::from_days_remaining(days_remaining, check.warn_days, check.critical_days);
-
-    #[derive(Serialize)]
-    struct Details<'a> {
-        domain: &'a str,
-        days_remaining: i64,
-        expiration_date: String,
-        registrar: Option<&'a str>,
-    }
-    let details_json = serde_json::to_string(&Details {
-        domain: &check.domain,
-        days_remaining,
-        expiration_date: expiration.to_rfc3339(),
-        registrar,
-    })
-    .expect("infallible serialize for fixed struct");
     Verdict {
         status,
-        details_json,
-    }
-}
-
-fn emit_fresh(
-    target_id: Uuid,
-    org_id: Uuid,
-    started_at: chrono::DateTime<Utc>,
-    duration_ms: u32,
-    verdict: Verdict,
-) -> CheckResult {
-    CheckResult {
-        target_id,
-        org_id,
-        timestamp: started_at,
-        status: verdict.status,
-        duration_ms,
-        dns_ms: None,
-        connect_ms: None,
-        tls_ms: None,
-        ttfb_ms: None,
-        response_code: None,
-        response_size: Some(verdict.details_json.len() as u32),
-        network: None,
-        diagnostic: None,
-        error: match verdict.status {
-            CheckStatus::Up => None,
-            _ => Some(verdict.details_json),
-        },
+        details: CheckDetails::DomainExpiry(DomainExpiryDetails {
+            domain: check.domain.clone(),
+            days_remaining,
+            expiration_date: expiration,
+            registrar: registrar.map(str::to_owned),
+        }),
     }
 }
 
@@ -379,7 +350,7 @@ fn emit_stale(
             let annotation = format!(
                 "{SERVED_STALE_PREFIX} last_verified_age_secs={age_secs}; refresh_failed={refresh_failure_kind}",
             );
-            Some(format!("{annotation}; {}", verdict.details_json))
+            Some(format!("{annotation}; {}", verdict.details.error_json()))
         }
     };
     CheckResult {
@@ -397,6 +368,9 @@ fn emit_stale(
         network: None,
         diagnostic: None,
         error,
+        // A cached answer: the lookup it repeats stored these facts with its
+        // own time, which is when they were last true.
+        details: None,
     }
 }
 

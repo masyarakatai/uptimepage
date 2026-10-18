@@ -26,6 +26,7 @@ fn sample_results(n: usize) -> Vec<CheckResult> {
             network: None,
             diagnostic: None,
             error: None,
+            details: None,
         })
         .collect()
 }

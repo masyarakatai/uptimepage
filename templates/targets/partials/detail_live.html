@@ -17,5 +17,6 @@
 </section>
 {%- include "targets/partials/detail_ribbon.html" -%}
 {%- include "targets/partials/_heartbeat_liveness.html" -%}
+{%- include "targets/partials/_check_facts.html" -%}
 {%- import "targets/partials/_status_badge.html" as sb -%}
 {%- call sb::show(last_status, enabled, true) %}{% endcall -%}

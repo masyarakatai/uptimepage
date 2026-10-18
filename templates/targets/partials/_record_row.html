@@ -1,0 +1,15 @@
+{# One group of regions in the DNS facts panel: its name, then its records as
+   chips, the ones past the first few behind a toggle. Expects `f` and `g`. -#}
+{% if let Some(d) = g.facts.dns() -%}
+<div class="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
+  {% if f.show_regions() %}<span class="flag-label w-32 shrink-0 break-all {{ g.label_tone() }}">{{ g.label() }}<span class="sr-only"> ({{ g.status.as_str() }})</span></span>{% endif %}
+  <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+    {% if d.record_count() == 0 %}<span class="font-mono text-sm text-state-bad">no {{ d.record_type }} records</span>{% endif %}
+    {% let chips_id = g.chips_id() %}
+    {% include "targets/partials/_record_chips.html" %}
+    {% if f.show_regions() %}{% if let Some(want) = d.unmatched %}<span class="text-xs text-state-bad">lacks {{ want }}</span>{% endif %}{% endif %}
+    {% if g.regions.len() > 1 %}<span class="text-xs text-quiet">{{ g.names() }}</span>{% endif %}
+    {% if !d.aliases.is_empty() %}<span class="break-all text-xs text-quiet">via {{ d.aliases|join(" → ") }}</span>{% endif %}
+  </div>
+</div>
+{%- endif %}

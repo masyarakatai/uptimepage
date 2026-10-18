@@ -3639,6 +3639,29 @@
     }
     /* Borderless treatment matching the monitors-table chips. */
     .dashboard-chip--flat { border-color: transparent; }
+    /* One DNS record in the check facts panel. An answer the expected set
+       lacks reads in the bad tone; an expected value no answer carried is
+       dashed and struck through. */
+    .record-chip {
+        @apply inline-flex max-w-full items-center rounded-sm border px-2 py-0.5 font-mono text-[13px];
+        overflow-wrap: anywhere;
+        background: var(--theme-surface-sunk);
+        border-color: var(--theme-line);
+    }
+    .record-chip--unexpected {
+        color: var(--theme-state-bad-fg);
+        border-color: var(--theme-state-bad-line);
+    }
+    .record-chip--missing {
+        color: var(--theme-state-bad-fg);
+        border-color: var(--theme-state-bad-line);
+        border-style: dashed;
+        background: transparent;
+    }
+    .record-chip--missing .record-chip__value { text-decoration: line-through; }
+    /* A <summary> that reads as a bracket button. */
+    .facts-toggle { cursor: pointer; list-style: none; }
+    .facts-toggle::-webkit-details-marker { display: none; }
     .dashboard-chip__count {
         @apply font-mono;
         color: var(--theme-ink);
@@ -3780,6 +3803,7 @@
         color: var(--sm-dashboard-hint-fg);
     }
     .dashboard-kpi-card__value--bad   { color: var(--theme-state-bad-fg); }
+    .dashboard-kpi-card__value--warn  { color: var(--theme-state-warn-fg); }
     .dashboard-kpi-card__value--quiet { color: var(--theme-text-quiet); }
     .dashboard-kpi-card__delta {
         @apply text-[11px] font-medium tabular-nums;

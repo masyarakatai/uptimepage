@@ -34,6 +34,7 @@ fn http_ok(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>, dur: u32) -> Chec
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 
@@ -53,6 +54,7 @@ fn tcp_ok(target: Uuid, org: Uuid, ts: chrono::DateTime<Utc>, dur: u32) -> Check
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

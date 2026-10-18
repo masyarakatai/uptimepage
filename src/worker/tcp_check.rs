@@ -48,6 +48,7 @@ pub async fn execute_tcp_check(
             network: None,
             diagnostic: None,
             error: None,
+            details: None,
         },
         Ok(Err(err)) => CheckResult {
             target_id,
@@ -64,6 +65,7 @@ pub async fn execute_tcp_check(
             network: None,
             diagnostic: None,
             error: Some(err.to_string()),
+            details: None,
         },
         Err(_) => {
             CheckResult::error_with_elapsed(target_id, org_id, started_at, duration_ms, "timeout")

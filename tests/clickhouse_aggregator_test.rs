@@ -136,6 +136,7 @@ fn ok_result(target_id: Uuid, org_id: Uuid, ts: chrono::DateTime<Utc>) -> CheckR
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

@@ -28,6 +28,7 @@ use load::{
 use rows::FLOW_RUNS_SHOWN;
 
 mod charts;
+mod facts;
 mod load;
 mod rows;
 #[cfg(test)]
@@ -184,6 +185,11 @@ pub struct DetailPage {
     /// Stored runs, newest first. Empty for every kind but flow, which is what
     /// keeps the panel and its query off the other seven.
     pub flow_runs: Vec<FlowRunRow>,
+    /// What a certificate, DNS or domain check last read; `None` for every
+    /// other kind.
+    pub facts: Option<facts::CheckFacts>,
+    /// The card renders in place here, not as an OOB swap.
+    pub facts_oob: bool,
 }
 
 pub async fn index(
@@ -353,6 +359,7 @@ pub async fn index(
     };
 
     let reaches_nobody = alerts_nobody(&state, org, &target).await;
+    let facts = facts::load(&state, org, &target, selected_region.as_deref()).await;
 
     // Passive kinds have no probe region, so no region selector.
     let regions = if target.check.is_passive() {
@@ -416,6 +423,8 @@ pub async fn index(
         manual,
         manual_set_by,
         flow_runs,
+        facts,
+        facts_oob: false,
     })
 }
 
@@ -578,6 +587,7 @@ pub async fn live_partial(
 
     let liveness = read_liveness(&state, org, &target).await;
     let last_status = badge_status(live.last_status, liveness.as_ref());
+    let facts = facts::load(&state, org, &target, selected_region.as_deref()).await;
 
     let page = DetailLive {
         id: target.id.to_string(),
@@ -594,6 +604,8 @@ pub async fn live_partial(
         ribbon_oob: true,
         liveness,
         liveness_oob: true,
+        facts,
+        facts_oob: true,
     };
     let rendered = page
         .render()

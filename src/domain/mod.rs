@@ -2,6 +2,7 @@ pub mod agent_wire;
 pub mod alert;
 pub mod check;
 pub mod check_address;
+pub mod check_details;
 pub mod check_error;
 pub mod consent;
 pub mod credential;
@@ -51,6 +52,10 @@ pub use check::{
     min_interval_secs_for_kind, publishes_no_expiry, reduced_domain_hint, registered_domain,
 };
 pub use check_address::AddressError;
+pub use check_details::{
+    CheckDetails, DnsDetails, DomainExpiryDetails, Expiry, NO_COMMON_NAME, TlsCertDetails, expiry,
+    expiry_words,
+};
 pub use check_error::{
     ErrorClass, ErrorFamily, classify_check_error, humanize_check_error, is_timeout_error,
 };

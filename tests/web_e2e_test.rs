@@ -1025,6 +1025,7 @@ async fn a_pending_heartbeat_with_results_shows_them_on_every_surface() {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }])
     .await
     .expect("seed a stored result");
@@ -1089,6 +1090,7 @@ async fn monitors_list_shows_the_last_check_to_the_second() {
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }])
     .await
     .expect("seed a stored result");
@@ -1162,6 +1164,7 @@ async fn the_check_drawer_shows_the_network_path_of_a_failed_check() {
         }),
         diagnostic: None,
         error: Some("unexpected status 404".into()),
+        details: None,
     }])
     .await
     .expect("seed a failed result");

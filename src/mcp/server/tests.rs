@@ -66,6 +66,7 @@ fn check_result(dns: Option<u16>, ttfb: Option<u16>, size: Option<u32>) -> Check
         network: None,
         diagnostic: None,
         error: None,
+        details: None,
     }
 }
 

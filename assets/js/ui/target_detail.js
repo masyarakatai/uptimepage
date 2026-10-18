@@ -235,6 +235,29 @@
         row.setAttribute("aria-expanded", String(!open));
     });
 
+    // A list folded behind a <details> closes from a control after its last
+    // item, so "show fewer" sits where the list ends rather than above it.
+    // Opening hides the summary, so a keyboard user's focus moves to that
+    // control instead of dropping to the page.
+    const ownClose = (details) =>
+        details.querySelector(":scope > [data-details-close], :scope > div > [data-details-close]");
+    document.addEventListener("click", (ev) => {
+        const close = ev.target.closest("[data-details-close]");
+        if (close) {
+            const details = close.closest("details");
+            if (!details) return;
+            details.open = false;
+            details.querySelector(":scope > summary")?.focus();
+            return;
+        }
+        const details = ev.target.closest("summary")?.parentElement;
+        const own = details && ownClose(details);
+        if (!own || ev.detail !== 0) return;
+        requestAnimationFrame(() => {
+            if (details.open) own.focus();
+        });
+    });
+
     // Header ⋯ overflow menu: native <details> stays open on outside click, so
     // dismiss it on any click outside or Escape.
     const closeHdrMenus = (except) => {

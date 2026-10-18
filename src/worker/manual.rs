@@ -78,6 +78,7 @@ pub fn manual_result(
         network: None,
         diagnostic: None,
         error: state.error(),
+        details: None,
     }
 }
 

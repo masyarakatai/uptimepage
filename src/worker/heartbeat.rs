@@ -117,6 +117,7 @@ fn passive_result(
         network: None,
         diagnostic: None,
         error,
+        details: None,
     }
 }
 

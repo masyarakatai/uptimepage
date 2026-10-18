@@ -103,6 +103,7 @@ pub async fn execute_flow_check_probe(
         network: None,
         diagnostic: None,
         error,
+        details: None,
     };
     (result, FlowProbe { evidence, steps })
 }

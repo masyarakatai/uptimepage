@@ -546,6 +546,7 @@ async fn finalize(
             network: None,
             diagnostic,
             error,
+            details: None,
         },
         probe,
     )

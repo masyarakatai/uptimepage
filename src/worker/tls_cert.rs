@@ -1,11 +1,12 @@
 use std::time::Instant;
 
 use chrono::Utc;
-use serde::Serialize;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::domain::{CheckResult, CheckStatus, TlsCertCheck};
+use crate::domain::{
+    CheckDetails, CheckResult, CheckStatus, NO_COMMON_NAME, TlsCertCheck, TlsCertDetails,
+};
 use crate::http_client::HttpClients;
 use crate::http_client::connector::tls_reason;
 use crate::http_client::dial::connect_via_guard;
@@ -25,27 +26,15 @@ pub async fn execute_tls_cert_check(
 
     match outcome {
         Ok(Ok(probe)) => CheckResult {
-            target_id,
-            org_id,
-            timestamp: started_at,
-            status: probe.verdict.status,
-            duration_ms,
-            dns_ms: None,
-            connect_ms: None,
             tls_ms: Some(probe.handshake_ms.min(u16::MAX as u32) as u16),
-            ttfb_ms: None,
-            response_code: None,
-            response_size: Some(probe.verdict.details_json.len() as u32),
-            network: None,
-            diagnostic: None,
-            // `error` doubles as the structured details payload for cert
-            // checks. Up results stay None (matching every other check
-            // type's convention); Degraded/Down carries the JSON document
-            // documented in docs/api.md.
-            error: match probe.verdict.status {
-                CheckStatus::Up => None,
-                _ => Some(probe.verdict.details_json),
-            },
+            ..CheckResult::graded(
+                target_id,
+                org_id,
+                started_at,
+                duration_ms,
+                probe.verdict.status,
+                probe.verdict.details,
+            )
         },
         Ok(Err(err)) => CheckResult {
             target_id,
@@ -62,6 +51,7 @@ pub async fn execute_tls_cert_check(
             network: None,
             diagnostic: None,
             error: Some(err.to_string()),
+            details: None,
         },
         Err(_) => {
             CheckResult::error_with_elapsed(target_id, org_id, started_at, duration_ms, "timeout")
@@ -76,7 +66,7 @@ struct ProbeOutcome {
 
 struct CertVerdict {
     status: CheckStatus,
-    details_json: String,
+    details: CheckDetails,
 }
 
 async fn run_check(check: &TlsCertCheck, clients: &HttpClients) -> anyhow::Result<ProbeOutcome> {
@@ -123,23 +113,15 @@ fn grade(facts: &CertFacts, check: &TlsCertCheck) -> CertVerdict {
         check.critical_days,
     );
 
-    #[derive(Serialize)]
-    struct Details<'a> {
-        days_remaining: i64,
-        not_after: String,
-        subject_common_name: &'a str,
-        issuer_common_name: &'a str,
-    }
-    let details_json = serde_json::to_string(&Details {
+    let details = CheckDetails::TlsCert(TlsCertDetails {
         days_remaining: facts.days_remaining,
-        not_after: facts.not_after.to_rfc3339(),
-        subject_common_name: facts.subject_common_name.as_deref().unwrap_or("<no CN>"),
-        issuer_common_name: facts.issuer_common_name.as_deref().unwrap_or("<no CN>"),
-    })
-    .expect("infallible serialize for fixed struct");
+        not_after: facts.not_after,
+        subject_common_name: common_name(facts.subject_common_name.as_deref()),
+        issuer_common_name: common_name(facts.issuer_common_name.as_deref()),
+    });
+    CertVerdict { status, details }
+}
 
-    CertVerdict {
-        status,
-        details_json,
-    }
+fn common_name(name: Option<&str>) -> String {
+    name.unwrap_or(NO_COMMON_NAME).to_owned()
 }

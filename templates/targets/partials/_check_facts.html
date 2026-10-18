@@ -1,0 +1,96 @@
+{# What a certificate, DNS or domain check last read. Regions that read the
+   same thing fold into one group, the worst first. Re-rendered out of band by
+   the live poll; its toggles keep open across it by id. -#}
+{% if let Some(f) = facts -%}
+<section id="check-facts"{% if facts_oob %} hx-swap-oob="true"{% endif %} class="space-y-2">
+  {% if let Some(top) = f.groups.first() %}
+  {% if let Some(d) = top.facts.dns() %}
+  <article class="sticker-card corner-frame p-5">
+    <div class="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <div class="min-w-0">
+        <p class="dashboard-kpi-card__label break-all">{{ d.record_type }} {{ d.domain }}</p>
+        {% if f.groups.len() == 1 %}
+        <p class="dashboard-kpi-card__value mt-1.5 {{ top.value_tone() }}">{{ d.record_count() }}<span class="dashboard-kpi-card__unit"> record{% if d.record_count() != 1 %}s{% endif %}</span></p>
+        {% else %}
+        <p class="dashboard-kpi-card__value mt-1.5 {{ top.value_tone() }}">{{ f.groups.len() }}<span class="dashboard-kpi-card__unit"> {{ f.kind.readings() }}</span></p>
+        {% endif %}
+        <div class="mt-2 space-y-0.5">
+          {% if let Some(l) = f.lacking() %}<p class="dashboard-kpi-card__hint text-state-bad">{% if l.everywhere %}none contains {{ l.want }}{% else %}{{ l.regions }} of {{ f.region_count() }} regions lack {{ l.want }}{% endif %}</p>{% endif %}
+          {% if f.off_set() %}<p class="dashboard-kpi-card__hint text-state-bad">not the expected set</p>{% endif %}
+          {% if f.show_regions() %}<p class="dashboard-kpi-card__hint">{{ f.region_count() }} regions{% if f.groups.len() == 1 %} agree{% endif %}</p>{% endif %}
+          <p class="dashboard-kpi-card__hint">checked <time datetime="{{ f.checked_at|iso_ts }}" data-tz>{{ f.checked_at|human_ts }}</time></p>
+        </div>
+      </div>
+      <div class="min-w-0 space-y-2">
+        {% for g in f.shown_groups() %}{% include "targets/partials/_record_row.html" %}{% endfor %}
+        {% if !f.more_groups().is_empty() %}
+        <details id="check-facts-more-groups" data-keep-open class="group/sets space-y-2">
+          <summary class="facts-toggle btn-ghost flex w-fit px-1.5 py-0.5 font-mono text-xs text-muted group-open/sets:hidden">[ +{{ f.more_groups().len() }} more {{ f.kind.readings() }} · {{ f.more_group_regions() }} regions ]</summary>
+          {% for g in f.more_groups() %}{% include "targets/partials/_record_row.html" %}{% endfor %}
+          <button type="button" data-details-close class="btn-ghost px-1.5 py-0.5 font-mono text-xs text-muted">[ show fewer ]</button>
+        </details>
+        {% endif %}
+      </div>
+    </div>
+  </article>
+  {% else %}
+  <div class="grid gap-4 md:grid-cols-4">
+    {% if let Some(cd) = top.countdown() %}
+    <article class="sticker-card dashboard-kpi-card corner-frame">
+      <p class="dashboard-kpi-card__label">{{ cd.lead }}</p>
+      <p class="dashboard-kpi-card__value {{ top.value_tone() }}">{{ cd.value }}{% if !cd.unit.is_empty() %}<span class="dashboard-kpi-card__unit"> {{ cd.unit }}</span>{% endif %}</p>
+      <p class="dashboard-kpi-card__hint">{% if f.groups.len() > 1 %}{{ top.names() }} · {% endif %}{% if let Some(at) = top.facts.expires_at() %}<time datetime="{{ at|iso_ts }}" data-tz="exact">{{ at|human_ts }}</time>{% endif %}</p>
+    </article>
+    {% endif %}
+    {% if let Some(next) = f.groups.get(1) %}{% if let Some(cd) = next.countdown() %}
+    <article class="sticker-card dashboard-kpi-card corner-frame">
+      <p class="dashboard-kpi-card__label">Elsewhere</p>
+      <p class="dashboard-kpi-card__value {{ next.value_tone() }}">{{ cd.value }}{% if !cd.unit.is_empty() %}<span class="dashboard-kpi-card__unit"> {{ cd.unit }}</span>{% endif %}</p>
+      <p class="dashboard-kpi-card__hint">{{ next.names() }}{% if let Some(at) = next.facts.expires_at() %} · <time datetime="{{ at|iso_ts }}" data-tz="exact">{{ at|human_ts }}</time>{% endif %}</p>
+    </article>
+    {% endif %}{% endif %}
+    <article class="sticker-card dashboard-kpi-card corner-frame min-w-0{% if f.groups.len() == 1 %} md:col-span-2{% endif %}">
+      {% if let Some(c) = top.facts.cert() %}
+      <p class="dashboard-kpi-card__label">Issued to</p>
+      <p class="dashboard-kpi-card__value break-all text-2xl{% if c.subject.is_none() %} dashboard-kpi-card__value--quiet{% endif %}">{{ c.subject_name() }}</p>
+      <p class="dashboard-kpi-card__hint break-all">by {{ c.issuer_name() }}{% if let Some(e) = f.elsewhere() %} · <span class="text-state-warn">{{ e }}</span>{% endif %}</p>
+      {% else if let Some(dm) = top.facts.domain() %}
+      <p class="dashboard-kpi-card__label">Registrar</p>
+      <p class="dashboard-kpi-card__value break-all text-2xl{% if dm.registrar.is_none() %} dashboard-kpi-card__value--quiet{% endif %}">{{ dm.registrar_name() }}</p>
+      <p class="dashboard-kpi-card__hint break-all">for {{ dm.domain }}{% if let Some(e) = f.elsewhere() %} · <span class="text-state-warn">{{ e }}</span>{% endif %}</p>
+      {% endif %}
+    </article>
+    <article class="sticker-card dashboard-kpi-card corner-frame">
+      {% if f.show_regions() %}
+      <p class="dashboard-kpi-card__label">Read by</p>
+      <p class="dashboard-kpi-card__value">{{ f.region_count() }}<span class="dashboard-kpi-card__unit"> regions</span></p>
+      <p class="dashboard-kpi-card__hint">{% if f.groups.len() == 1 %}all agree{% else %}<span class="text-state-warn">{{ f.groups.len() }} {{ f.kind.readings() }} seen</span>{% endif %} · <time datetime="{{ f.checked_at|iso_ts }}" data-tz>{{ f.checked_at|human_ts }}</time></p>
+      {% else %}
+      <p class="dashboard-kpi-card__label">Checked</p>
+      <p class="dashboard-kpi-card__value text-2xl"><time datetime="{{ f.checked_at|iso_ts }}" data-tz>{{ f.checked_at|human_ts }}</time></p>
+      <p class="dashboard-kpi-card__hint">from {{ top.label() }}</p>
+      {% endif %}
+    </article>
+  </div>
+  {% endif %}
+  {% else %}
+  <article class="sticker-card dashboard-kpi-card corner-frame">
+    <p class="dashboard-kpi-card__label">{{ f.kind.title() }}</p>
+    <p class="font-mono text-xs text-quiet"># nothing read yet</p>
+  </article>
+  {% endif %}
+  {% if !f.raw.is_empty() %}
+  <details id="check-facts-raw" data-keep-open class="group/raw">
+    <summary class="facts-toggle btn-ghost ml-auto flex w-fit px-1.5 py-0.5 font-mono text-xs text-muted">[ raw json <span aria-hidden="true" class="mx-1 inline-block transition-transform group-open/raw:rotate-180 motion-reduce:transition-none">▾</span> ]</summary>
+    <div class="mt-2 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(20rem,1fr))]">
+      {% for r in f.raw %}
+      <div class="min-w-0">
+        {% if f.show_regions() %}<p class="mb-1.5 flag-label">{{ r.region }}</p>{% endif %}
+        <pre class="overflow-auto rounded-sm bg-[color:var(--theme-surface-sunk)] p-4 text-xs text-body">{{ r.json }}</pre>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+</section>
+{%- endif %}

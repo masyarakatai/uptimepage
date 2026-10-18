@@ -11,7 +11,8 @@
 {% let has_error = r.error != "" %}
 {% let has_guidance = owner_view && r.diagnostic_guidance != "" %}
 {% let has_network = owner_view && !r.network.is_empty() %}
-{% let expandable = (bad || warn) && (has_timing || has_error || has_network || has_guidance) %}
+{% let has_facts = owner_view && r.facts.is_some() %}
+{% let expandable = (bad || warn) && (has_timing || has_error || has_network || has_guidance || has_facts) %}
 <tr class="{% if loop.index0 % 2 == 0 %}result-row--even{% else %}result-row--odd{% endif %}{% if bad %} result-row--bad{% else if warn %} result-row--warn{% endif %}{% if expandable %} cursor-pointer{% endif %}"
     {% if expandable %}data-result-row aria-expanded="false"{% endif %}>
   <td class="px-3 py-2 font-mono text-xs text-muted">{% if expandable %}<span class="result-row__chev" aria-hidden="true">▸</span>{% endif %}<time datetime="{{ r.timestamp|iso_ts }}" data-tz="exact">{{ r.timestamp|human_ts }}</time></td>
@@ -24,7 +25,13 @@
   </td>
   <td class="px-3 py-2 text-body">{{ r.duration_ms }} ms</td>
   <td class="px-3 py-2 font-mono text-xs text-body">{{ r.response_code }}</td>
+  {% if owner_view %}{% if let Some(line) = r.reading_line() %}
+  <td class="px-3 py-2 text-xs text-muted max-w-xl truncate" title="{% for s in line %}{{ s.text }}{% endfor %}">{% for s in line %}{% if s.bad %}<span class="text-state-bad">{{ s.text }}</span>{% else %}{{ s.text }}{% endif %}{% endfor %}</td>
+  {% else %}
   <td class="px-3 py-2 text-xs text-muted max-w-xs truncate" title="{{ r.error }}">{{ r.error }}</td>
+  {% endif %}{% else %}
+  <td class="px-3 py-2 text-xs text-muted max-w-xs truncate" title="{{ r.error }}">{{ r.error }}</td>
+  {% endif %}
 </tr>
 {% if expandable %}
 <tr class="result-row-detail hidden" data-result-detail>
@@ -43,8 +50,9 @@
       {% if let Some(step) = r.flow_step %}<span class="mr-2 inline-block rounded-sm border border-[color:var(--theme-line)] px-1.5 py-0.5 font-mono text-[0.7rem] tabular-nums text-muted">{{ step }}</span>{% endif %}<span class="text-muted mr-2">error:</span>{{ r.error }}
     </div>
     {% endif %}
+    {% if has_facts %}{% if let Some(f) = r.facts %}{% include "targets/partials/_row_reading.html" %}{% endif %}{% endif %}
     {% if has_network %}
-    <div class="{% if has_timing || has_error %}mt-2 {% endif %}space-y-1">
+    <div class="{% if has_timing || has_error || has_facts %}mt-2 {% endif %}space-y-1">
       {% if let Some(url) = r.network.hop_url %}
       <div><span class="text-muted mr-2">final URL:</span><span class="font-mono break-all">{{ url }}</span></div>
       {% endif %}
@@ -60,7 +68,7 @@
     </div>
     {% endif %}
     {% if has_guidance %}
-    <div class="{% if has_timing || has_error || has_network %}mt-2 {% endif %}text-pretty text-body">
+    <div class="{% if has_timing || has_error || has_network || has_facts %}mt-2 {% endif %}text-pretty text-body">
       <span class="text-muted mr-2">recommended:</span>{{ r.diagnostic_guidance }}
     </div>
     {% endif %}
