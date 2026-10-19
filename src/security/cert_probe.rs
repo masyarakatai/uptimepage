@@ -19,6 +19,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
+use x509_parser::asn1_rs::{Any, Tag};
 use x509_parser::prelude::*;
 
 #[derive(Debug, Error)]
@@ -191,13 +192,37 @@ fn to_utc(ts: i64) -> Result<DateTime<Utc>, CertProbeError> {
 fn first_cn(name: &X509Name<'_>) -> Option<String> {
     name.iter_common_name()
         .next()
-        .and_then(|cn| cn.as_str().ok().map(str::to_owned))
+        .and_then(|cn| attr_string(cn.attr_value()))
 }
 
 fn first_organization(name: &X509Name<'_>) -> Option<String> {
     name.iter_organization()
         .next()
-        .and_then(|o| o.as_str().ok().map(str::to_owned))
+        .and_then(|o| attr_string(o.attr_value()))
+}
+
+/// `as_str` reads only the modern string types, and older CAs wrote names in
+/// the rest. TeletexString carries UTF-8 from some CAs and Latin-1 from the
+/// oldest ones.
+fn attr_string(value: &Any<'_>) -> Option<String> {
+    let data = value.as_bytes();
+    match value.tag() {
+        Tag::T61String => Some(match std::str::from_utf8(data) {
+            Ok(s) => s.to_owned(),
+            Err(_) => data.iter().copied().map(char::from).collect(),
+        }),
+        Tag::BmpString => value.as_bmpstring().ok().map(|s| s.string()),
+        Tag::UniversalString => value.as_universalstring().ok().map(|s| s.string()),
+        Tag::NumericString
+        | Tag::PrintableString
+        | Tag::Utf8String
+        | Tag::Ia5String
+        | Tag::VisibleString
+        | Tag::GeneralString
+        | Tag::GraphicString
+        | Tag::VideotexString => std::str::from_utf8(data).ok().map(str::to_owned),
+        _ => None,
+    }
 }
 
 fn san_dns_names(cert: &X509Certificate<'_>) -> Vec<String> {
@@ -295,5 +320,56 @@ mod tests {
     fn exact_match_ignores_case_and_trailing_dot() {
         assert!(name_covers("ACME.com", "acme.com."));
         assert!(!name_covers("acme.com", "acme.org"));
+    }
+
+    #[test]
+    fn names_in_legacy_string_types_are_read() {
+        use rcgen::string::{BmpString, TeletexString};
+        use rcgen::{CertificateParams, DnType, DnValue, KeyPair};
+
+        let mut params = CertificateParams::new(Vec::new()).expect("params");
+        params.distinguished_name.push(
+            DnType::CommonName,
+            DnValue::TeletexString(TeletexString::try_from("*.legacy.test").unwrap()),
+        );
+        params.distinguished_name.push(
+            DnType::OrganizationName,
+            DnValue::BmpString(BmpString::try_from("Київстар").unwrap()),
+        );
+        let cert = params
+            .self_signed(&KeyPair::generate().expect("key"))
+            .expect("cert");
+        let (_, parsed) = X509Certificate::from_der(cert.der()).expect("parse");
+
+        assert_eq!(first_cn(parsed.subject()).as_deref(), Some("*.legacy.test"));
+        assert_eq!(
+            first_organization(parsed.subject()).as_deref(),
+            Some("Київстар")
+        );
+    }
+
+    #[test]
+    fn teletex_reads_utf8_and_falls_back_to_latin1() {
+        let t61 = |data| attr_string(&Any::from_tag_and_data(Tag::T61String, data));
+        assert_eq!(t61("Львів".as_bytes()).as_deref(), Some("Львів"));
+        assert_eq!(t61(b"Caf\xe9 Ltd").as_deref(), Some("Café Ltd"));
+    }
+
+    #[test]
+    fn every_string_type_reads_and_others_do_not() {
+        let read = |tag, data: &[u8]| attr_string(&Any::from_tag_and_data(tag, data));
+        let ucs4: Vec<u8> = "Київ"
+            .chars()
+            .flat_map(|c| u32::from(c).to_be_bytes())
+            .collect();
+        assert_eq!(read(Tag::UniversalString, &ucs4).as_deref(), Some("Київ"));
+        for tag in [Tag::VisibleString, Tag::GeneralString, Tag::GraphicString] {
+            assert_eq!(
+                read(tag, b"Legacy CA").as_deref(),
+                Some("Legacy CA"),
+                "{tag}"
+            );
+        }
+        assert_eq!(read(Tag::OctetString, b"Legacy CA"), None);
     }
 }
