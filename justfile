@@ -299,6 +299,14 @@ seed-heartbeats:
 seed-flapping:
     bash scripts/seed-flapping.sh
 
+# Seed certificate, DNS and domain monitors covering every state the check
+# facts card renders: healthy, inside the warning window, expired, records
+# missing or unexpected, no records, a CNAME chain, and two regions that read
+# the same cert or different answers. The running app probes them for real.
+# Stop the dev-region agents first. Idempotent: tagged rows wiped (PG + CH).
+seed-check-facts:
+    bash scripts/seed-check-facts.sh
+
 # Seed a status page whose history mixes incidents and maintenance windows
 # (ended, long-noted, archive-only, running, upcoming, cancelled, off-page),
 # then check the JSON API, the history tabs and the archive against the
