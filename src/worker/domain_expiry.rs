@@ -252,10 +252,12 @@ async fn fall_back(
     let err_msg = err.message();
 
     // Single round-trip: UPDATE … RETURNING bumps the failure counters AND
-    // hands back the current row. Decides staleness in app-space.
+    // hands back the current row, only while it is still for this domain: an
+    // edited monitor's last-good describes the old one. Decides staleness in
+    // app-space.
     let state = match runtime
         .state_store
-        .record_failure_returning(OrgId(org_id), target_id, &err_msg)
+        .record_failure_returning(OrgId(org_id), target_id, &check.domain, &err_msg)
         .await
     {
         Ok(s) => s,
@@ -293,7 +295,7 @@ async fn fall_back(
     tracing::debug!(
         %target_id,
         kind = err_kind,
-        "domain_expiry: no usable last-good (missing or beyond staleness ceiling), emitting fresh Error"
+        "domain_expiry: no usable last-good (missing, kept for another domain, or beyond staleness ceiling), emitting fresh Error"
     );
     CheckResult::error_with_elapsed(target_id, org_id, started_at, duration_ms, err_msg)
 }
@@ -403,6 +405,54 @@ mod tests {
         .unwrap();
     }
 
+    fn runtime(store: Arc<InMemoryDomainExpiryStateStore>) -> DomainExpiryRuntime {
+        DomainExpiryRuntime::new(
+            Arc::new(RegistrationClient::new(Arc::new(RdapClient::new(
+                crate::http_outbound::build_outbound_client(crate::security::SsrfGuard::strict()),
+            )))),
+            Arc::new(RdapSingleflight::with_default_ttl()),
+            store,
+            HostThrottle::permissive(),
+            StdDuration::from_secs(7 * 24 * 3600),
+        )
+    }
+
+    async fn time_out(
+        runtime: &DomainExpiryRuntime,
+        org: OrgId,
+        target: Uuid,
+        domain: &str,
+    ) -> CheckResult {
+        fall_back(
+            target,
+            org.0,
+            &check(domain),
+            runtime,
+            Utc::now(),
+            1,
+            ProbeFailure::Timeout,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_last_good_answer_serves_only_the_domain_it_was_for() {
+        let target = Uuid::new_v4();
+        let org = OrgId(Uuid::new_v4());
+        let store: Arc<InMemoryDomainExpiryStateStore> =
+            Arc::new(InMemoryDomainExpiryStateStore::new());
+        seed_state(&store, org, target, 90);
+        let runtime = runtime(Arc::clone(&store));
+
+        let edited = time_out(&runtime, org, target, "example.org").await;
+        assert_eq!(edited.status, CheckStatus::Error);
+        let kept = store.get(org, target).await.unwrap().unwrap();
+        assert_eq!((kept.domain.as_str(), kept.attempts), ("example.com", 0));
+
+        let same = time_out(&runtime, org, target, "example.com").await;
+        assert_eq!(same.status, CheckStatus::Up);
+    }
+
     #[tokio::test]
     async fn beyond_staleness_emits_real_error() {
         let target = Uuid::new_v4();
@@ -416,25 +466,8 @@ mod tests {
             s.last_success_at = Utc::now() - chrono::Duration::days(10);
         }
 
-        let runtime = DomainExpiryRuntime::new(
-            Arc::new(RegistrationClient::new(Arc::new(RdapClient::new(
-                crate::http_outbound::build_outbound_client(crate::security::SsrfGuard::strict()),
-            )))),
-            Arc::new(RdapSingleflight::with_default_ttl()),
-            store,
-            HostThrottle::permissive(),
-            StdDuration::from_secs(7 * 24 * 3600),
-        );
-        let r = fall_back(
-            target,
-            org.0,
-            &check("example.com"),
-            &runtime,
-            Utc::now(),
-            1,
-            ProbeFailure::Timeout,
-        )
-        .await;
+        let runtime = runtime(store);
+        let r = time_out(&runtime, org, target, "example.com").await;
         assert_eq!(r.status, CheckStatus::Error);
         assert!(r.error.as_deref().unwrap().contains("timeout"));
     }
@@ -445,15 +478,7 @@ mod tests {
         let org = Uuid::new_v4();
         let store: Arc<InMemoryDomainExpiryStateStore> =
             Arc::new(InMemoryDomainExpiryStateStore::new());
-        let runtime = DomainExpiryRuntime::new(
-            Arc::new(RegistrationClient::new(Arc::new(RdapClient::new(
-                crate::http_outbound::build_outbound_client(crate::security::SsrfGuard::strict()),
-            )))),
-            Arc::new(RdapSingleflight::with_default_ttl()),
-            store,
-            HostThrottle::permissive(),
-            StdDuration::from_secs(7 * 24 * 3600),
-        );
+        let runtime = runtime(store);
         let r = fall_back(
             target,
             org,

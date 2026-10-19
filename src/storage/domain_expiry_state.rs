@@ -51,12 +51,14 @@ pub trait DomainExpiryStateStore: Send + Sync {
     /// Combined fetch + failure record in one round-trip. Returns the row
     /// AFTER the failure counters are bumped — the caller decides
     /// independently whether to serve the row based on staleness.
-    /// Returns `None` for missing rows; the executor treats `None` as
-    /// "no last-good, escalate to Error".
+    /// Returns `None` for missing rows, and for a row kept for another
+    /// `domain` (the monitor's domain was edited since), which is left as it
+    /// was; the executor treats `None` as "no last-good, escalate to Error".
     async fn record_failure_returning(
         &self,
         org: OrgId,
         target: Uuid,
+        domain: &str,
         error: &str,
     ) -> Result<Option<DomainExpiryState>>;
 }
@@ -125,19 +127,21 @@ impl DomainExpiryStateStore for PgDomainExpiryStateStore {
         &self,
         org: OrgId,
         target: Uuid,
+        domain: &str,
         error: &str,
     ) -> Result<Option<DomainExpiryState>> {
         let row: Option<DomainExpiryStateRow> = sqlx::query_as(
             r#"UPDATE domain_expiry_state
                SET last_attempt_at = now(),
-                   last_error = $3,
+                   last_error = $4,
                    attempts = attempts + 1
-               WHERE target_id = $1 AND org_id = $2
+               WHERE target_id = $1 AND org_id = $2 AND domain = $3
                RETURNING domain, expiry_at, registrar, last_success_at,
                          last_attempt_at, last_error, attempts"#,
         )
         .bind(target)
         .bind(org.0)
+        .bind(domain)
         .bind(error)
         .fetch_optional(&self.pool)
         .await
@@ -225,10 +229,11 @@ impl DomainExpiryStateStore for InMemoryDomainExpiryStateStore {
         &self,
         org: OrgId,
         target: Uuid,
+        domain: &str,
         error: &str,
     ) -> Result<Option<DomainExpiryState>> {
         let mut g = self.inner.lock();
-        let Some(state) = g.get_mut(&(org, target)) else {
+        let Some(state) = g.get_mut(&(org, target)).filter(|s| s.domain == domain) else {
             return Ok(None);
         };
         state.last_attempt_at = Utc::now();
