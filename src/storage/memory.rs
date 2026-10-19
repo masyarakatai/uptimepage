@@ -702,6 +702,12 @@ impl InMemoryTargetStore {
         self.targets.lock().push(target);
     }
 
+    pub(crate) fn unbind_channel(&self, channel_id: Uuid) {
+        for t in self.targets.lock().iter_mut() {
+            t.alerts.0.retain(|b| b.channel_id != channel_id);
+        }
+    }
+
     fn materialize(new: NewTarget, source: WriteSource) -> Target {
         let now = Utc::now();
         let recovery_period_secs = new.recovery_period();
@@ -997,20 +1003,6 @@ impl TargetStore for InMemoryTargetStore {
         let before = guard.len();
         guard.retain(|t| t.id != id);
         Ok(guard.len() != before)
-    }
-
-    async fn unbind_channel(&self, _org: OrgId, channel_id: Uuid) -> Result<u64> {
-        let mut guard = self.targets.lock();
-        let mut touched = 0;
-        for t in guard.iter_mut() {
-            let before = t.alerts.0.len();
-            t.alerts.0.retain(|b| b.channel_id != channel_id);
-            if t.alerts.0.len() != before {
-                t.updated_at = Utc::now();
-                touched += 1;
-            }
-        }
-        Ok(touched)
     }
 
     async fn bulk_create(

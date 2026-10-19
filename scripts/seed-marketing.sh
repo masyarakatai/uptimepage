@@ -524,25 +524,27 @@ pg <<SQL
 WITH org AS (SELECT id FROM organizations WHERE slug='${SLUG}'),
      chan AS (SELECT name, id FROM notification_channels
                WHERE org_id = (SELECT id FROM org))
+INSERT INTO target_channels (target_id, channel_id, org_id, position)
+SELECT t.id, c.id, t.org_id, (array_position(m.names, c.name) - 1)::int
+  FROM targets t
+ CROSS JOIN LATERAL (SELECT CASE
+         WHEN t.tags @> ARRAY['p0']     THEN ARRAY['Engineering Slack','On-call PagerDuty','On-call SMS']
+         WHEN t.tags @> ARRAY['p1']     THEN ARRAY['Engineering Slack','On-call PagerDuty']
+         WHEN t.tags @> ARRAY['tls']
+           OR t.tags @> ARRAY['domain'] THEN ARRAY['Ops email','Engineering Slack']
+         WHEN t.tags @> ARRAY['db']     THEN ARRAY['Engineering Slack','Runbook automation','Ops phone']
+         WHEN t.tags @> ARRAY['email']  THEN ARRAY['Engineering Slack','Ops email']
+         WHEN t.tags @> ARRAY['ops']    THEN ARRAY['Self-hosted ntfy','Engineering Slack','Status bot']
+         WHEN t.group_name = 'Edge'         THEN ARRAY['Engineering Slack','Community Discord']
+         WHEN t.group_name = 'Integrations' THEN ARRAY['Engineering Slack','Platform Teams']
+         WHEN t.group_name = 'Infrastructure' THEN ARRAY['Engineering Slack','Runbook automation']
+         ELSE ARRAY['Engineering Slack']
+       END AS names) m
+  JOIN chan c ON c.name = ANY(m.names)
+ WHERE t.org_id = (SELECT id FROM org)
+ON CONFLICT (target_id, channel_id) DO NOTHING;
+WITH org AS (SELECT id FROM organizations WHERE slug='${SLUG}')
 UPDATE targets t SET
-  -- jsonb_agg over zero rows returns NULL, which violates alerts NOT NULL.
-  alerts = COALESCE((
-    SELECT jsonb_agg(jsonb_build_object('channel_id', c.id))
-      FROM chan c
-     WHERE c.name = ANY(CASE
-       WHEN t.tags @> ARRAY['p0']     THEN ARRAY['Engineering Slack','On-call PagerDuty','On-call SMS']
-       WHEN t.tags @> ARRAY['p1']     THEN ARRAY['Engineering Slack','On-call PagerDuty']
-       WHEN t.tags @> ARRAY['tls']
-         OR t.tags @> ARRAY['domain'] THEN ARRAY['Ops email','Engineering Slack']
-       WHEN t.tags @> ARRAY['db']     THEN ARRAY['Engineering Slack','Runbook automation','Ops phone']
-       WHEN t.tags @> ARRAY['email']  THEN ARRAY['Engineering Slack','Ops email']
-       WHEN t.tags @> ARRAY['ops']    THEN ARRAY['Self-hosted ntfy','Engineering Slack','Status bot']
-       WHEN t.group_name = 'Edge'         THEN ARRAY['Engineering Slack','Community Discord']
-       WHEN t.group_name = 'Integrations' THEN ARRAY['Engineering Slack','Platform Teams']
-       WHEN t.group_name = 'Infrastructure' THEN ARRAY['Engineering Slack','Runbook automation']
-       ELSE ARRAY['Engineering Slack']
-     END)
-  ), '[]'::jsonb),
   alert_confirmations = CASE
     WHEN t.tags @> ARRAY['p0'] THEN 2
     WHEN t.tags @> ARRAY['p1'] THEN 2

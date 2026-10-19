@@ -30,6 +30,7 @@ use crate::request::{
     TargetsWrite, TokenScopes,
 };
 use crate::storage::TargetFilter;
+use crate::storage::channel_bindings::BULK_CHANNELS_FIELD;
 use crate::storage::traits::ChannelEdit;
 use crate::target_ops::SetManualState;
 use crate::targets::{HeartbeatInfo, heartbeat_info, heartbeat_info_from};
@@ -1003,7 +1004,7 @@ pub async fn bulk_action(
             require_channels(channel_ids, "channel_add")?;
             state
                 .target_ops()
-                .verify_channel_ids(org, channel_ids, "action.channel_ids")
+                .verify_channel_ids(org, channel_ids, BULK_CHANNELS_FIELD)
                 .await?;
             state
                 .target_store
@@ -1021,7 +1022,7 @@ pub async fn bulk_action(
         BulkAction::SetChannels { channel_ids } => {
             state
                 .target_ops()
-                .verify_channel_ids(org, channel_ids, "action.channel_ids")
+                .verify_channel_ids(org, channel_ids, BULK_CHANNELS_FIELD)
                 .await?;
             state
                 .target_store

@@ -199,10 +199,6 @@ pub trait TargetStore: Send + Sync {
     /// A monitor is a hard delete, so the `target.deleted` audit row written in
     /// the same transaction is the only surviving record that it existed.
     async fn delete(&self, org: OrgId, id: Uuid, actor: Option<UserId>) -> Result<bool>;
-    /// Remove every alert binding to `channel_id` across the org's targets.
-    /// Channel deletion calls this so a dangling binding can't poison later
-    /// whole-array alert updates. Returns the number of targets touched.
-    async fn unbind_channel(&self, org: OrgId, channel_id: Uuid) -> Result<u64>;
     /// Bulk create. Same atomic `(count) + items.len() <= max_targets`
     /// bound; rows, their region sets and policies land together or not at all.
     async fn bulk_create(

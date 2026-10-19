@@ -8,13 +8,39 @@ use crate::common;
 use std::time::Duration;
 
 use uptimepage::domain::target::MAX_TAGS_PER_TARGET;
-use uptimepage::domain::{CheckSpec, ExpectedStatus, NewTarget, OrgId, TcpCheck, WriteSource};
+use uptimepage::domain::{
+    ChannelConfig, CheckSpec, ExpectedStatus, NewNotificationChannel, NewTarget, OrgId,
+    SlackConfig, TcpCheck, WriteSource,
+};
+use uptimepage::error::{AppError, codes};
 use uptimepage::storage::traits::ChannelEdit;
-use uptimepage::storage::{PostgresTargetStore, TargetFilter, TargetStore, create_org_with_owner};
+use uptimepage::storage::{
+    NotificationChannelStore, PgNotificationChannelStore, PostgresTargetStore, TargetFilter,
+    TargetStore, create_org_with_owner,
+};
 use url::Url;
 use uuid::Uuid;
 
 use crate::common::MIGRATOR;
+
+async fn channel(pool: &sqlx::PgPool, org: OrgId, name: &str) -> Uuid {
+    let new = NewNotificationChannel {
+        name: name.into(),
+        config: ChannelConfig::Slack(SlackConfig {
+            webhook_url: format!("https://hooks.slack.com/services/T/B/{name}"),
+            mention: None,
+        }),
+        enabled: true,
+        auto_bind_tags: Vec::new(),
+        acknowledge_button: true,
+        resolve_button: false,
+    };
+    PgNotificationChannelStore::new(pool.clone(), None)
+        .create(org, new, WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap()
+        .id
+}
 
 async fn seed(
     store: &PostgresTargetStore,
@@ -639,7 +665,11 @@ async fn a_bulk_channel_edit_merges_into_each_monitors_bindings() {
             ExpectedStatus::Exact(200),
         ))
     };
-    let [slack, pager, email] = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+    let [slack, pager, email] = [
+        channel(&pool, org.id, "slack").await,
+        channel(&pool, org.id, "pager").await,
+        channel(&pool, org.id, "email").await,
+    ];
     let bound = seed(&store, org.id, "bound", http(), None).await;
     let bare = seed(&store, org.id, "bare", http(), None).await;
     store
@@ -687,10 +717,19 @@ async fn a_bulk_channel_edit_merges_into_each_monitors_bindings() {
         .unwrap()
         .unwrap();
     let foreign = seed(&store, other.id, "foreign", http(), None).await;
+    let theirs = channel(&pool, other.id, "theirs").await;
     store
-        .edit_channels(other.id, &[foreign], ChannelEdit::Replace(&[slack]))
+        .edit_channels(other.id, &[foreign], ChannelEdit::Replace(&[theirs]))
         .await
         .unwrap();
+    let err = store
+        .edit_channels(org.id, &[bound], ChannelEdit::Add(&[theirs]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AppError::BadRequest { code, .. } if code == codes::INVALID_ALERT_CONFIG),
+        "another org's channel is not bindable: {err:?}"
+    );
 
     let hit = store
         .edit_channels(org.id, &[bound, bare, foreign], ChannelEdit::Replace(&[]))
@@ -710,7 +749,7 @@ async fn a_bulk_channel_edit_merges_into_each_monitors_bindings() {
             .iter()
             .map(|b| b.channel_id)
             .collect::<Vec<_>>(),
-        vec![slack]
+        vec![theirs]
     );
 
     common::drop_test_db(&name).await;

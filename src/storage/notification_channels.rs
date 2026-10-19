@@ -27,6 +27,7 @@ use crate::error::{AppError, Result};
 use crate::security::{Cipher, envelope_str, wrap_envelope};
 use crate::storage::accounts;
 use crate::storage::locks::{account_lock_key, advisory_xact_lock};
+use crate::storage::memory::InMemoryTargetStore;
 
 /// Serialize + (optionally) seal a config for storage. With no KEK the JSON is
 /// stored as-is (no-KEK self-host); with a KEK the whole blob becomes
@@ -118,6 +119,8 @@ pub trait NotificationChannelStore: Send + Sync {
         source: WriteSource,
         actor: Option<UserId>,
     ) -> Result<Option<NotificationChannel>>;
+    /// Deletes the channel and, in the same transaction, its bindings to every
+    /// monitor in the org.
     async fn delete(&self, org: OrgId, id: Uuid, actor: Option<UserId>) -> Result<bool>;
     /// Disable every channel of `kind` carrying `external_ref` and clear its
     /// verification stamp; returns how many flipped. Deliberately NOT
@@ -656,28 +659,60 @@ impl NotificationChannelStore for PgNotificationChannelStore {
             .begin()
             .await
             .map_err(|e| AppError::Other(anyhow!("begin: {e}")))?;
-        let removed: Option<(Uuid, String)> = sqlx::query_as(
-            r#"DELETE FROM notification_channels WHERE id = $1 AND org_id = $2 RETURNING id, kind"#,
+        // Each step written out rather than left to the foreign-key cascades,
+        // whose firing order follows trigger names. LOCK ORDER: the channel,
+        // then its pages in id order, then its bindings in monitor order, the
+        // order a monitor delete takes pages and bindings in.
+        let kind: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM notification_channels WHERE id = $1 AND org_id = $2 FOR UPDATE",
         )
         .bind(id)
         .bind(org.0)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| AppError::Other(anyhow!("delete notification channel: {e}")))?;
-        if let Some((channel_id, kind)) = &removed {
-            crate::storage::orgs::record_audit_tx(
-                &mut tx,
-                org,
-                actor,
-                "channel.deleted",
-                serde_json::json!({ "channel_id": channel_id, "kind": kind }),
-            )
-            .await?;
-        }
+        .map_err(|e| AppError::Other(anyhow!("lock notification channel: {e}")))?;
+        let Some(kind) = kind else {
+            return Ok(false);
+        };
+        sqlx::query(
+            "UPDATE incident_notifications SET channel_id = NULL WHERE id IN ( \
+                 SELECT id FROM incident_notifications \
+                  WHERE channel_id = $1 AND org_id = $2 ORDER BY id FOR UPDATE)",
+        )
+        .bind(id)
+        .bind(org.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Other(anyhow!("detach channel pages: {e}")))?;
+        sqlx::query(
+            "DELETE FROM target_channels WHERE (target_id, channel_id) IN ( \
+                 SELECT target_id, channel_id FROM target_channels \
+                  WHERE channel_id = $1 AND org_id = $2 \
+                  ORDER BY target_id, channel_id FOR UPDATE)",
+        )
+        .bind(id)
+        .bind(org.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Other(anyhow!("unbind channel: {e}")))?;
+        sqlx::query("DELETE FROM notification_channels WHERE id = $1 AND org_id = $2")
+            .bind(id)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::Other(anyhow!("delete notification channel: {e}")))?;
+        crate::storage::orgs::record_audit_tx(
+            &mut tx,
+            org,
+            actor,
+            "channel.deleted",
+            serde_json::json!({ "channel_id": id, "kind": kind }),
+        )
+        .await?;
         tx.commit()
             .await
             .map_err(|e| AppError::Other(anyhow!("commit: {e}")))?;
-        Ok(removed.is_some())
+        Ok(true)
     }
 
     async fn disable_by_external_ref(
@@ -761,7 +796,7 @@ impl NotificationChannelStore for PgNotificationChannelStore {
             .await
             .map_err(|e| AppError::Other(anyhow!("begin: {e}")))?;
         let row: Option<(Value,)> = sqlx::query_as(
-            "SELECT config FROM notification_channels WHERE id = $1 AND org_id = $2 FOR UPDATE",
+            "SELECT config FROM notification_channels WHERE id = $1 AND org_id = $2 FOR NO KEY UPDATE",
         )
         .bind(id)
         .bind(org.0)
@@ -788,7 +823,7 @@ impl NotificationChannelStore for PgNotificationChannelStore {
             .map_err(|e| AppError::Other(anyhow!("begin: {e}")))?;
         let rows: Vec<(Uuid, Uuid, Value)> = sqlx::query_as(
             r#"SELECT id, org_id, config FROM notification_channels /* SAFE: provider lifecycle — the chat moved for every org linked to it; kind partitions the ref namespace */
-               WHERE kind = $1 AND external_ref = $2 FOR UPDATE"#,
+               WHERE kind = $1 AND external_ref = $2 FOR NO KEY UPDATE"#,
         )
         .bind(ChannelKind::TelegramApp.as_db_str())
         .bind(from)
@@ -965,11 +1000,20 @@ struct MemEntry {
 #[derive(Default)]
 pub struct InMemoryNotificationChannelStore {
     inner: Mutex<Vec<MemEntry>>,
+    targets: Option<Arc<InMemoryTargetStore>>,
 }
 
 impl InMemoryNotificationChannelStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A delete also unbinds the channel from `targets`, as the Postgres store does.
+    pub fn with_targets(targets: Arc<InMemoryTargetStore>) -> Self {
+        Self {
+            targets: Some(targets),
+            ..Self::default()
+        }
     }
 
     /// Total entries across every org (test introspection only).
@@ -1175,10 +1219,16 @@ impl NotificationChannelStore for InMemoryNotificationChannelStore {
     }
 
     async fn delete(&self, org: OrgId, id: Uuid, _actor: Option<UserId>) -> Result<bool> {
-        let mut g = self.inner.lock();
-        let before = g.len();
-        g.retain(|e| !(e.org == org && e.ch.id == id));
-        Ok(g.len() < before)
+        let removed = {
+            let mut g = self.inner.lock();
+            let before = g.len();
+            g.retain(|e| !(e.org == org && e.ch.id == id));
+            g.len() < before
+        };
+        if let (true, Some(targets)) = (removed, &self.targets) {
+            targets.unbind_channel(id);
+        }
+        Ok(removed)
     }
 
     async fn disable_by_external_ref(

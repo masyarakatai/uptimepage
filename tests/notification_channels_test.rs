@@ -688,11 +688,11 @@ async fn resend_verification_rejects_non_email_channels() {
     assert_eq!(body["error"]["code"], "CHANNEL_NOT_VERIFIABLE");
 }
 
-/// Deleting a channel must scrub its bindings from `targets.alerts` — a
-/// dangling `{channel_id}` fails channel-existence validation on the next
-/// whole-array alerts update of that monitor.
+/// Deleting a channel unbinds it from the monitor: a leftover `{channel_id}`
+/// would make a client writing the monitor's alerts back unchanged fail
+/// channel-existence validation.
 #[tokio::test]
-async fn delete_scrubs_alert_bindings_from_targets() {
+async fn delete_unbinds_channel_from_monitor() {
     let app = app();
     let (_, ch_a) = send(
         &app,
@@ -728,25 +728,11 @@ async fn delete_scrubs_alert_bindings_from_targets() {
 
     let (status, body) = send_empty(&app, "GET", &format!("/api/v1/targets/{target_id}")).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["alerts"], json!([]), "binding must be scrubbed");
-
-    // The regression this guards: with a dangling binding, any later
-    // round-tripped alerts update would 400 on the deleted channel id.
-    let (_, ch_b) = send(
-        &app,
-        "POST",
-        "/api/v1/notification-channels",
-        slack_body("b"),
-    )
-    .await;
-    let (status, body) = send(
-        &app,
-        "PATCH",
-        &format!("/api/v1/targets/{target_id}"),
-        json!({ "alerts": [{ "channel_id": ch_b["id"].as_str().unwrap() }] }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "rebind must succeed: {body}");
+    assert_eq!(
+        body["alerts"],
+        json!([]),
+        "binding must go with the channel"
+    );
 }
 
 #[tokio::test]

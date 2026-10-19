@@ -27,7 +27,7 @@ use crate::domain::quota::RegionCaps;
 use crate::domain::{OrgId, Target};
 use crate::error::Result;
 use crate::security::Cipher;
-use crate::storage::postgres::{TargetRow, decode_target_row};
+use crate::storage::postgres::{TargetRow, decode_target_row, target_columns};
 
 /// Source of every enabled target across every organisation, for the
 /// scheduler's global registry. Each target is paired with its owning
@@ -111,7 +111,7 @@ type RegionPullEtagRow = (
 /// Single source for the cross-tenant target column list. Both the
 /// scheduler-snapshot and incident-writer-keyset queries return the same
 /// `targets` shape that [`decode_target_row`] consumes.
-const TARGET_COLUMNS: &str = "t.org_id, t.id, t.name, t.check_spec, t.interval_secs, t.enabled, t.tags, t.alerts, t.region_policy, t.alert_confirmations, t.notify_recovery, t.renotify_interval_secs, t.recovery_period_secs, t.group_name, t.owner_user_id, t.write_source, t.created_at, t.updated_at, t.plan_hold_at";
+const TARGET_COLUMNS: &str = concat!("t.org_id, ", target_columns!("t"));
 
 /// The per-org region ceiling, joined in as `cap`. `$2` carries the org ids and
 /// `$3` their limits; an org missing from the arrays has no ceiling. Written

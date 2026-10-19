@@ -690,32 +690,30 @@ UPDATE notification_channels SET write_source = 'api'
 --   fix-api  : both enabled channels, 3 confirmations, recovery on,  remind hourly
 --   fix-db   : Slack only,            5 confirmations, recovery off,  reminders off
 --   fix-auth : Slack + Telegram,      2 confirmations, recovery on,   remind every 15m
--- COALESCE guards against a future rename / typo in the WHERE clause:
--- jsonb_agg over zero rows returns NULL, which violates alerts NOT NULL.
+INSERT INTO target_channels (target_id, channel_id, org_id, position)
+SELECT '${T_API}'::uuid, id, org_id, (row_number() OVER (ORDER BY name) - 1)::int
+  FROM notification_channels
+ WHERE org_id='${ORG}'::uuid AND name IN ('Fixture Slack','Fixture Webhook')
+ON CONFLICT (target_id, channel_id) DO NOTHING;
 UPDATE targets SET
-  alerts = COALESCE((
-    SELECT jsonb_agg(jsonb_build_object('channel_id', id))
-      FROM notification_channels
-     WHERE org_id='${ORG}'::uuid AND name IN ('Fixture Slack','Fixture Webhook')
-  ), '[]'::jsonb),
   alert_confirmations = 3, notify_recovery = true, renotify_interval_secs = 3600
 WHERE id='${T_API}'::uuid;
 
+INSERT INTO target_channels (target_id, channel_id, org_id, position)
+SELECT '${T_DB}'::uuid, id, org_id, (row_number() OVER (ORDER BY name) - 1)::int
+  FROM notification_channels
+ WHERE org_id='${ORG}'::uuid AND name = 'Fixture Slack'
+ON CONFLICT (target_id, channel_id) DO NOTHING;
 UPDATE targets SET
-  alerts = COALESCE((
-    SELECT jsonb_agg(jsonb_build_object('channel_id', id))
-      FROM notification_channels
-     WHERE org_id='${ORG}'::uuid AND name = 'Fixture Slack'
-  ), '[]'::jsonb),
   alert_confirmations = 5, notify_recovery = false, renotify_interval_secs = 0
 WHERE id='${T_DB}'::uuid;
 
+INSERT INTO target_channels (target_id, channel_id, org_id, position)
+SELECT '${T_AUTH}'::uuid, id, org_id, (row_number() OVER (ORDER BY name) - 1)::int
+  FROM notification_channels
+ WHERE org_id='${ORG}'::uuid AND name IN ('Fixture Slack','Fixture Telegram')
+ON CONFLICT (target_id, channel_id) DO NOTHING;
 UPDATE targets SET
-  alerts = COALESCE((
-    SELECT jsonb_agg(jsonb_build_object('channel_id', id))
-      FROM notification_channels
-     WHERE org_id='${ORG}'::uuid AND name IN ('Fixture Slack','Fixture Telegram')
-  ), '[]'::jsonb),
   alert_confirmations = 2, notify_recovery = true, renotify_interval_secs = 900
 WHERE id='${T_AUTH}'::uuid;
 
@@ -723,12 +721,12 @@ WHERE id='${T_AUTH}'::uuid;
 -- the fixture, so its incident remains triggered and acknowledgeable — the
 -- repeat-until-ack delivery + timeline are eyeball-able. Reminders off so the
 -- renotify sweep doesn't re-page a fixture box.
+INSERT INTO target_channels (target_id, channel_id, org_id, position)
+SELECT '${T_TCP}'::uuid, id, org_id, (row_number() OVER (ORDER BY name) - 1)::int
+  FROM notification_channels
+ WHERE org_id='${ORG}'::uuid AND name = 'Fixture Pushover'
+ON CONFLICT (target_id, channel_id) DO NOTHING;
 UPDATE targets SET
-  alerts = COALESCE((
-    SELECT jsonb_agg(jsonb_build_object('channel_id', id))
-      FROM notification_channels
-     WHERE org_id='${ORG}'::uuid AND name = 'Fixture Pushover'
-  ), '[]'::jsonb),
   alert_confirmations = 2, notify_recovery = true, renotify_interval_secs = 0
 WHERE id='${T_TCP}'::uuid;
 SQL
@@ -1048,7 +1046,8 @@ UNION ALL
 SELECT 'notification_channels', count(*)::text FROM notification_channels WHERE org_id='${ORG}' AND name LIKE 'Fixture %'
 UNION ALL
 SELECT 'targets w/ alerts',    count(*)::text FROM targets
-  WHERE org_id='${ORG}' AND tags @> ARRAY['seed-fixtures'] AND jsonb_array_length(alerts) > 0;
+  WHERE org_id='${ORG}' AND tags @> ARRAY['seed-fixtures']
+    AND EXISTS (SELECT 1 FROM target_channels tc WHERE tc.target_id = targets.id);
 SQL
 
 # ── Regions, assignments, agents (real topology this seed wrote onto) ─────────

@@ -20,6 +20,10 @@ use crate::domain::{
 use crate::error::{AppError, Result};
 use crate::security::Cipher;
 use crate::storage::accounts;
+use crate::storage::channel_bindings::{
+    ALERT_CHANNEL_FIELD, BULK_CHANNELS_FIELD, insert_bindings, lock_bindings_of,
+    lock_bound_channels, set_bindings,
+};
 use crate::storage::count_sql;
 use crate::storage::locks::{account_lock_key, advisory_xact_lock};
 use crate::storage::postgres_secrets::{decrypt_in_place, encrypt_in_place};
@@ -36,6 +40,70 @@ pub static MIGRATOR: LazyLock<sqlx::migrate::Migrator> = LazyLock::new(|| {
     migrator.set_ignore_missing(true);
     migrator
 });
+
+/// What every query that decodes a [`TargetRow`] selects or returns, for the
+/// targets row the query names `$t`.
+macro_rules! target_columns {
+    ($t:literal) => {
+        concat!(
+            $t,
+            ".id",
+            ", ",
+            $t,
+            ".name",
+            ", ",
+            $t,
+            ".check_spec",
+            ", ",
+            $t,
+            ".interval_secs",
+            ", ",
+            $t,
+            ".enabled",
+            ", ",
+            $t,
+            ".tags",
+            ", ",
+            $crate::storage::channel_bindings::target_alerts_column!($t),
+            ", ",
+            $t,
+            ".region_policy",
+            ", ",
+            $t,
+            ".alert_confirmations",
+            ", ",
+            $t,
+            ".notify_recovery",
+            ", ",
+            $t,
+            ".renotify_interval_secs",
+            ", ",
+            $t,
+            ".recovery_period_secs",
+            ", ",
+            $t,
+            ".group_name",
+            ", ",
+            $t,
+            ".owner_user_id",
+            ", ",
+            $t,
+            ".write_source",
+            ", ",
+            $t,
+            ".created_at",
+            ", ",
+            $t,
+            ".updated_at",
+            ", ",
+            $t,
+            ".plan_hold_at"
+        )
+    };
+}
+pub(crate) use target_columns;
+
+const TARGET_COLUMNS: &str = target_columns!("targets");
 
 /// Org-scoped Postgres-backed target store. Every query binds the `org`
 /// passed by the caller (resolved from the request's `CurrentOrg`) so reads,
@@ -309,18 +377,36 @@ async fn close_incidents_of_deleted_targets(
     ids: &[Uuid],
     actor: Option<UserId>,
 ) -> Result<u64> {
-    sqlx::query("SELECT id FROM targets WHERE id = ANY($1) AND org_id = $2 FOR UPDATE")
+    sqlx::query("SELECT id FROM targets WHERE id = ANY($1) AND org_id = $2 ORDER BY id FOR UPDATE")
         .bind(ids)
         .bind(org.0)
         .execute(&mut **tx)
         .await
         .context("delete target: lock")?;
-    sqlx::query("SELECT id FROM incidents WHERE target_id = ANY($1) AND org_id = $2 FOR UPDATE")
-        .bind(ids)
-        .bind(org.0)
-        .execute(&mut **tx)
-        .await
-        .context("delete target: lock incidents")?;
+    sqlx::query(
+        "SELECT id FROM incidents WHERE target_id = ANY($1) AND org_id = $2 ORDER BY id FOR UPDATE",
+    )
+    .bind(ids)
+    .bind(org.0)
+    .execute(&mut **tx)
+    .await
+    .context("delete target: lock incidents")?;
+    // The pages to mute, locked in id order: a channel delete locks its
+    // channel's pages in the same order, so the two never deadlock on the
+    // pages they share. Only these ids are muted below; a page that becomes
+    // eligible after this read is not.
+    let muting: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT n.id FROM incident_notifications n \
+         WHERE n.org_id = $2 \
+           AND n.incident_id IN (SELECT id FROM incidents WHERE target_id = ANY($1) AND org_id = $2) \
+           AND n.status IN ('queued', 'failed') AND n.reason <> 'resolved' \
+         ORDER BY n.id FOR UPDATE OF n",
+    )
+    .bind(ids)
+    .bind(org.0)
+    .fetch_all(&mut **tx)
+    .await
+    .context("delete target: lock pages to mute")?;
     // One snapshot for every step: `owned` still sees the monitor links that
     // the delete is about to clear.
     let (closed,): (i64,) = sqlx::query_as(&format!(
@@ -385,7 +471,7 @@ async fn close_incidents_of_deleted_targets(
            ), muted AS (
                UPDATE incident_notifications
                SET status = 'suppressed', next_attempt_at = NULL, error = 'monitor deleted'
-               WHERE org_id = $2 AND incident_id IN (SELECT id FROM owned)
+               WHERE org_id = $2 AND id = ANY($5::uuid[])
                  AND status IN ('queued', 'failed') AND reason <> 'resolved'
            )
            SELECT count(*) FROM closed"#,
@@ -396,6 +482,7 @@ async fn close_incidents_of_deleted_targets(
     .bind(org.0)
     .bind(actor.map(|u| u.0))
     .bind(MONITOR_DELETED_MESSAGE)
+    .bind(&muting)
     .fetch_one(&mut **tx)
     .await
     .context("delete target: close incidents")?;
@@ -425,11 +512,7 @@ impl TargetStore for PostgresTargetStore {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let sql = format!(
-            r#"SELECT id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at
+            r#"SELECT {TARGET_COLUMNS}
                FROM targets
                WHERE org_id = $1
                  AND ($2::bool IS NULL OR enabled = $2)
@@ -562,14 +645,9 @@ impl TargetStore for PostgresTargetStore {
     }
 
     async fn get(&self, org: OrgId, id: Uuid) -> Result<Option<Target>> {
-        let row: Option<TargetRow> = sqlx::query_as::<_, TargetRow>(
-            r#"SELECT id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at
-               FROM targets WHERE id = $1 AND org_id = $2"#,
-        )
+        let row: Option<TargetRow> = sqlx::query_as::<_, TargetRow>(&format!(
+            "SELECT {TARGET_COLUMNS} FROM targets WHERE id = $1 AND org_id = $2"
+        ))
         .bind(id)
         .bind(org.0)
         .fetch_optional(&self.pool)
@@ -590,7 +668,6 @@ impl TargetStore for PostgresTargetStore {
         max_flow_checks: i64,
     ) -> Result<Target> {
         let check_json = self.encode_check(&new.check)?;
-        let alerts_json = serde_json::to_value(&new.alerts).context("encoding alerts JSON")?;
         let region_policy_json = serde_json::to_value(new.region_policy.unwrap_or_default())
             .context("encoding region_policy JSON")?;
         // A per-account advisory lock held across count+INSERT in one tx. The
@@ -636,25 +713,22 @@ impl TargetStore for PostgresTargetStore {
                 ));
             }
         }
-        let row: TargetRow = sqlx::query_as::<_, TargetRow>(
-            r#"INSERT INTO targets (org_id, name, check_spec, interval_secs, enabled, tags, alerts,
+        let channel_ids: Vec<Uuid> = new.alerts.iter().map(|b| b.channel_id).collect();
+        lock_bound_channels(&mut tx, org, &channel_ids, ALERT_CHANNEL_FIELD).await?;
+        let row: TargetRow = sqlx::query_as::<_, TargetRow>(&format!(
+            r#"INSERT INTO targets (org_id, name, check_spec, interval_secs, enabled, tags,
                                     group_name, owner_user_id, write_source, region_policy,
                                     alert_confirmations, notify_recovery, renotify_interval_secs,
                                     recovery_period_secs)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-               RETURNING id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at"#,
-        )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+               RETURNING {TARGET_COLUMNS}"#,
+        ))
         .bind(org.0)
         .bind(&new.name)
         .bind(check_json)
         .bind(new.interval.as_secs() as i32)
         .bind(new.enabled)
         .bind(&new.tags)
-        .bind(alerts_json)
         .bind(&new.group_name)
         .bind(new.owner())
         .bind(source.as_str())
@@ -669,9 +743,15 @@ impl TargetStore for PostgresTargetStore {
             true => owner_not_member(),
             false => anyhow::Error::new(e).context("insert target").into(),
         })?;
+        let targets = vec![row.id; channel_ids.len()];
+        let positions: Vec<i32> = (0..).take(channel_ids.len()).collect();
+        insert_bindings(&mut tx, org, &targets, &channel_ids, &positions).await?;
         self.assign_default_region(&mut tx, &[row.id]).await?;
         tx.commit().await.context("create target: commit")?;
-        self.decode_row(row)
+        // Returned before the bindings above were written.
+        let mut target = self.decode_row(row)?;
+        target.alerts = new.alerts;
+        Ok(target)
     }
 
     async fn update(
@@ -688,11 +768,6 @@ impl TargetStore for PostgresTargetStore {
             .map(|c| self.encode_check(c))
             .transpose()?;
         let interval_secs = update.interval.map(|d| d.as_secs() as i32);
-        let alerts_json = update
-            .alerts
-            .as_ref()
-            .map(|a| serde_json::to_value(a).context("encoding alerts JSON"))
-            .transpose()?;
         let region_policy_json = update
             .region_policy
             .map(|p| serde_json::to_value(p).context("encoding region_policy JSON"))
@@ -704,22 +779,33 @@ impl TargetStore for PostgresTargetStore {
             r#"WITH rearmed AS (
                    UPDATE heartbeat_monitors hm SET armed_at = now()
                    FROM targets t
-                   WHERE hm.org_id = $12 AND hm.target_id = $1
+                   WHERE hm.org_id = $11 AND hm.target_id = $1
                      AND t.id = hm.target_id AND t.enabled = false
                )
             "#
         } else {
             ""
         };
-        // Only a flip of `enabled` has an audit row to bundle, so only that path
-        // pays for a transaction. Every other edit stays the single statement it
+        let channel_ids: Option<Vec<Uuid>> = update
+            .alerts
+            .as_ref()
+            .map(|a| a.iter().map(|b| b.channel_id).collect());
+        // Only a flip of `enabled` has an audit row to bundle and only a write
+        // that sends `alerts` has bindings to write, so only those paths pay
+        // for a transaction. Every other edit stays the single statement it
         // was, which matters for the per-target writes a bulk create fans out.
-        let mut tx = match update.enabled {
-            Some(_) => Some(self.pool.begin().await.context("update target: begin")?),
-            None => None,
+        let mut tx = if update.enabled.is_some() || channel_ids.is_some() {
+            Some(self.pool.begin().await.context("update target: begin")?)
+        } else {
+            None
         };
+        // LOCK ORDER: channels, then the `targets` row, then its bindings.
+        if let (Some(tx), Some(ids)) = (tx.as_mut(), &channel_ids) {
+            lock_bound_channels(tx, org, ids, ALERT_CHANNEL_FIELD).await?;
+        }
         // Read under a row lock, so a concurrent flip can't land between the
-        // state this compares against and the write that follows.
+        // state this compares against and the write that follows, and two
+        // saves of one monitor's bindings run one after the other.
         //
         // LOCK ORDER: this takes the `targets` row before the statement below
         // touches `heartbeat_monitors`, matching `set_enabled`. Hoisting the
@@ -736,6 +822,9 @@ impl TargetStore for PostgresTargetStore {
             .context("update target: read enabled")?,
             None => None,
         };
+        if let (Some(tx), Some(ids), Some(_)) = (tx.as_mut(), &channel_ids, was_enabled) {
+            set_bindings(tx, org, id, ids).await?;
+        }
         let sql = format!(
             r#"{rearm_cte}UPDATE targets SET
                  name = COALESCE($2, name),
@@ -743,22 +832,17 @@ impl TargetStore for PostgresTargetStore {
                  interval_secs = COALESCE($4, interval_secs),
                  enabled = COALESCE($5, enabled),
                  tags = COALESCE($6, tags),
-                 alerts = COALESCE($7, alerts),
-                 region_policy = COALESCE($14, region_policy),
-                 alert_confirmations = COALESCE($15, alert_confirmations),
-                 notify_recovery = COALESCE($16, notify_recovery),
-                 renotify_interval_secs = COALESCE($17, renotify_interval_secs),
-                 recovery_period_secs = COALESCE($18, recovery_period_secs),
-                 group_name = CASE WHEN $8::bool THEN $9 ELSE group_name END,
-                 owner_user_id = CASE WHEN $10::bool THEN $11 ELSE owner_user_id END,
-                 write_source = COALESCE($13, write_source),
+                 region_policy = COALESCE($13, region_policy),
+                 alert_confirmations = COALESCE($14, alert_confirmations),
+                 notify_recovery = COALESCE($15, notify_recovery),
+                 renotify_interval_secs = COALESCE($16, renotify_interval_secs),
+                 recovery_period_secs = COALESCE($17, recovery_period_secs),
+                 group_name = CASE WHEN $7::bool THEN $8 ELSE group_name END,
+                 owner_user_id = CASE WHEN $9::bool THEN $10 ELSE owner_user_id END,
+                 write_source = COALESCE($12, write_source),
                  updated_at = now()
-               WHERE id = $1 AND org_id = $12
-               RETURNING id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at"#,
+               WHERE id = $1 AND org_id = $11
+               RETURNING {TARGET_COLUMNS}"#,
         );
         let query = sqlx::query_as::<_, TargetRow>(&sql)
             .bind(id)
@@ -767,7 +851,6 @@ impl TargetStore for PostgresTargetStore {
             .bind(interval_secs)
             .bind(update.enabled)
             .bind(update.tags)
-            .bind(alerts_json)
             .bind(update.group_name.is_some())
             .bind(update.group_name.clone().flatten())
             .bind(update.owner_user_id.is_some())
@@ -820,6 +903,7 @@ impl TargetStore for PostgresTargetStore {
         let mut tx = self.pool.begin().await.context("delete target: begin")?;
         let incidents_closed =
             close_incidents_of_deleted_targets(&mut tx, org, &[id], actor).await?;
+        lock_bindings_of(&mut tx, org, &[id]).await?;
         // RETURNING, not a prior read: after the commit there is nothing left
         // to read the name from.
         let removed: Option<(String, String)> = sqlx::query_as(
@@ -848,28 +932,6 @@ impl TargetStore for PostgresTargetStore {
         }
         tx.commit().await.context("delete target: commit")?;
         Ok(removed.is_some())
-    }
-
-    async fn unbind_channel(&self, org: OrgId, channel_id: Uuid) -> Result<u64> {
-        // No write_source stamp: this is system cleanup, not an operator edit.
-        let res = sqlx::query(
-            r#"UPDATE targets
-               SET alerts = COALESCE(
-                       (SELECT jsonb_agg(e)
-                          FROM jsonb_array_elements(alerts) e
-                         WHERE e->>'channel_id' IS DISTINCT FROM $2::text),
-                       '[]'::jsonb),
-                   updated_at = now()
-               WHERE org_id = $1
-                 AND alerts @> jsonb_build_array(
-                         jsonb_build_object('channel_id', $2::text))"#,
-        )
-        .bind(org.0)
-        .bind(channel_id)
-        .execute(&self.pool)
-        .await
-        .context("unbind channel bindings")?;
-        Ok(res.rows_affected())
     }
 
     async fn bulk_create(
@@ -906,31 +968,28 @@ impl TargetStore for PostgresTargetStore {
         // without leaning on RETURNING order, which Postgres does not promise.
         // A policy deleted since the caller read it binds nothing, as in
         // `set_target_policy`.
-        const SQL: &str = r#"INSERT INTO targets (id, org_id, name, check_spec, interval_secs, enabled, tags, alerts,
+        let sql = format!(
+            r#"INSERT INTO targets (id, org_id, name, check_spec, interval_secs, enabled, tags,
                                     group_name, owner_user_id, write_source,
                                     alert_confirmations, notify_recovery, renotify_interval_secs,
                                     recovery_period_secs, region_policy, escalation_policy_id)
-               SELECT u.id, $9, u.name, u.check_spec, u.interval_secs, u.enabled,
+               SELECT u.id, $8, u.name, u.check_spec, u.interval_secs, u.enabled,
                       ARRAY(SELECT jsonb_array_elements_text(u.tags)),
-                      u.alerts,
                       u.group_name, u.owner_user_id,
-                      $10,
+                      $9,
                       u.alert_confirmations, u.notify_recovery, u.renotify_interval_secs,
                       u.recovery_period_secs, u.region_policy,
                       (SELECT p.id FROM escalation_policies p
-                        WHERE p.id = u.escalation_policy_id AND p.org_id = $9 AND p.deleted_at IS NULL)
-               FROM UNNEST($1::text[], $2::jsonb[], $3::int4[], $4::bool[], $5::jsonb[], $6::jsonb[],
-                           $7::text[], $8::uuid[], $11::int4[], $12::bool[], $13::int4[],
-                           $14::jsonb[], $15::uuid[], $16::int4[], $17::uuid[])
-                    AS u(name, check_spec, interval_secs, enabled, tags, alerts,
+                        WHERE p.id = u.escalation_policy_id AND p.org_id = $8 AND p.deleted_at IS NULL)
+               FROM UNNEST($1::text[], $2::jsonb[], $3::int4[], $4::bool[], $5::jsonb[],
+                           $6::text[], $7::uuid[], $10::int4[], $11::bool[], $12::int4[],
+                           $13::jsonb[], $14::uuid[], $15::int4[], $16::uuid[])
+                    AS u(name, check_spec, interval_secs, enabled, tags,
                          group_name, owner_user_id, alert_confirmations, notify_recovery,
                          renotify_interval_secs, region_policy, id, recovery_period_secs,
                          escalation_policy_id)
-               RETURNING id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at"#;
+               RETURNING {TARGET_COLUMNS}"#
+        );
 
         let len = items.len();
         let mut names: Vec<String> = Vec::with_capacity(len);
@@ -939,7 +998,6 @@ impl TargetStore for PostgresTargetStore {
         // Postgres rejects ragged 2-D arrays (text[][] must be rectangular), so
         // pass per-row tag lists as jsonb and unpack on the server side.
         let mut tags_json: Vec<Json<Vec<String>>> = Vec::with_capacity(len);
-        let mut alerts_json: Vec<Json<TargetAlerts>> = Vec::with_capacity(len);
         let mut group_name: Vec<Option<String>> = Vec::with_capacity(len);
         let mut owner_user_id: Vec<Option<Uuid>> = Vec::with_capacity(len);
         let mut confirmations: Vec<i32> = Vec::with_capacity(len);
@@ -984,6 +1042,17 @@ impl TargetStore for PostgresTargetStore {
                 ));
             }
         }
+        let (mut bound_targets, mut bound_channels, mut bound_at) =
+            (Vec::new(), Vec::new(), Vec::new());
+        for (id, new) in ids.iter().zip(&items) {
+            for (position, binding) in (0_i32..).zip(new.alerts.iter()) {
+                bound_targets.push(*id);
+                bound_channels.push(binding.channel_id);
+                bound_at.push(position);
+            }
+        }
+        lock_bound_channels(&mut tx, org, &bound_channels, ALERT_CHANNEL_FIELD).await?;
+        let alerts: Vec<TargetAlerts> = items.iter().map(|t| t.alerts.clone()).collect();
 
         let rows: Vec<TargetRow> = if let Some(cipher) = &self.cipher {
             // Cipher path: walk each CheckSpec via serde_json::Value so credential
@@ -998,7 +1067,6 @@ impl TargetStore for PostgresTargetStore {
                 intervals.push(new.interval.as_secs() as i32);
                 enabled.push(new.enabled);
                 tags_json.push(Json(new.tags));
-                alerts_json.push(Json(new.alerts));
                 group_name.push(new.group_name);
                 owner_user_id.push(new.owner_user_id.flatten());
                 confirmations.push(new.alert_confirmations.max(1) as i32);
@@ -1006,13 +1074,12 @@ impl TargetStore for PostgresTargetStore {
                 renotifies.push(new.renotify_interval_secs as i32);
                 policies.push(Json(new.region_policy.unwrap_or_default()));
             }
-            sqlx::query_as::<_, TargetRow>(SQL)
+            sqlx::query_as::<_, TargetRow>(&sql)
                 .bind(&names)
                 .bind(&check_specs)
                 .bind(&intervals)
                 .bind(&enabled)
                 .bind(&tags_json)
-                .bind(&alerts_json)
                 .bind(&group_name)
                 .bind(&owner_user_id)
                 .bind(org.0)
@@ -1038,7 +1105,6 @@ impl TargetStore for PostgresTargetStore {
                 intervals.push(new.interval.as_secs() as i32);
                 enabled.push(new.enabled);
                 tags_json.push(Json(new.tags));
-                alerts_json.push(Json(new.alerts));
                 group_name.push(new.group_name);
                 owner_user_id.push(new.owner_user_id.flatten());
                 confirmations.push(new.alert_confirmations.max(1) as i32);
@@ -1046,13 +1112,12 @@ impl TargetStore for PostgresTargetStore {
                 renotifies.push(new.renotify_interval_secs as i32);
                 policies.push(Json(new.region_policy.unwrap_or_default()));
             }
-            sqlx::query_as::<_, TargetRow>(SQL)
+            sqlx::query_as::<_, TargetRow>(&sql)
                 .bind(&names)
                 .bind(&check_specs)
                 .bind(&intervals)
                 .bind(&enabled)
                 .bind(&tags_json)
-                .bind(&alerts_json)
                 .bind(&group_name)
                 .bind(&owner_user_id)
                 .bind(org.0)
@@ -1068,6 +1133,8 @@ impl TargetStore for PostgresTargetStore {
                 .await
                 .context("bulk insert targets")?
         };
+
+        insert_bindings(&mut tx, org, &bound_targets, &bound_channels, &bound_at).await?;
 
         let mut target_ids: Vec<Uuid> = Vec::new();
         let mut region_ids: Vec<&str> = Vec::new();
@@ -1100,18 +1167,18 @@ impl TargetStore for PostgresTargetStore {
             ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         let mut rows = rows;
         rows.sort_by_key(|r| position[&r.id]);
-        self.rows_to_targets(rows)
+        // Returned before the bindings above were written.
+        let mut targets = self.rows_to_targets(rows)?;
+        for (target, alerts) in targets.iter_mut().zip(alerts) {
+            target.alerts = alerts;
+        }
+        Ok(targets)
     }
 
     async fn list_updated_since(&self, org: OrgId, since: DateTime<Utc>) -> Result<Vec<Target>> {
-        let rows: Vec<TargetRow> = sqlx::query_as::<_, TargetRow>(
-            r#"SELECT id, name, check_spec, interval_secs, enabled, tags, alerts, region_policy,
-                      alert_confirmations, notify_recovery, renotify_interval_secs, recovery_period_secs,
-                      group_name, owner_user_id,
-                      write_source,
-                      created_at, updated_at, plan_hold_at
-               FROM targets WHERE org_id = $1 AND updated_at > $2"#,
-        )
+        let rows: Vec<TargetRow> = sqlx::query_as::<_, TargetRow>(&format!(
+            "SELECT {TARGET_COLUMNS} FROM targets WHERE org_id = $1 AND updated_at > $2"
+        ))
         .bind(org.0)
         .bind(since)
         .fetch_all(&self.pool)
@@ -1253,6 +1320,7 @@ impl TargetStore for PostgresTargetStore {
         }
         let mut tx = self.pool.begin().await.context("bulk delete: begin")?;
         let incidents_closed = close_incidents_of_deleted_targets(&mut tx, org, ids, actor).await?;
+        lock_bindings_of(&mut tx, org, ids).await?;
         let rows: Vec<(Uuid, String)> = sqlx::query_as(
             r#"DELETE FROM targets WHERE id = ANY($1) AND org_id = $2 RETURNING id, name"#,
         )
@@ -1419,42 +1487,94 @@ impl TargetStore for PostgresTargetStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        // Add and remove read `alerts` off the row they update, so a concurrent
-        // edit is re-applied to the list it left behind rather than overwritten.
-        let set = match edit {
-            ChannelEdit::Add(_) => {
-                r#"alerts || COALESCE((
-                     SELECT jsonb_agg(jsonb_build_object('channel_id', c::text) ORDER BY n)
-                     FROM unnest($2::uuid[]) WITH ORDINALITY AS u(c, n)
-                     WHERE NOT alerts @> jsonb_build_array(
-                         jsonb_build_object('channel_id', c::text))
-                   ), '[]'::jsonb)"#
-            }
-            ChannelEdit::Remove(_) => {
-                r#"COALESCE((
-                     SELECT jsonb_agg(e ORDER BY n)
-                     FROM jsonb_array_elements(alerts) WITH ORDINALITY AS a(e, n)
-                     WHERE NOT (e->>'channel_id' = ANY($2::uuid[]::text[]))
-                   ), '[]'::jsonb)"#
-            }
+        let channels = edit.channels();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("bulk edit_channels: begin")?;
+        // LOCK ORDER: channels, then the monitors in id order, then their
+        // bindings. Remove binds nothing, so it has no channel to lock.
+        if !matches!(edit, ChannelEdit::Remove(_)) {
+            lock_bound_channels(&mut tx, org, &channels, BULK_CHANNELS_FIELD).await?;
+        }
+        let locked: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM targets WHERE id = ANY($1) AND org_id = $2 ORDER BY id FOR UPDATE",
+        )
+        .bind(ids)
+        .bind(org.0)
+        .fetch_all(&mut *tx)
+        .await
+        .context("bulk edit_channels: lock")?;
+        if locked.is_empty() {
+            return Ok(locked);
+        }
+        match edit {
+            // After each monitor's last binding, in the order named.
+            ChannelEdit::Add(_) => sqlx::query(
+                "INSERT INTO target_channels (target_id, channel_id, org_id, position) \
+                 SELECT t.id, u.c, $3, (SELECT COALESCE(max(x.position), -1) \
+                                          FROM target_channels x WHERE x.target_id = t.id) \
+                                       + u.n::int \
+                   FROM unnest($1::uuid[]) AS t(id) \
+                  CROSS JOIN unnest($2::uuid[]) WITH ORDINALITY AS u(c, n) \
+                 ON CONFLICT (target_id, channel_id) DO NOTHING",
+            )
+            .bind(&locked)
+            .bind(&channels)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .context("bulk edit_channels: add")?,
+            ChannelEdit::Remove(_) => sqlx::query(
+                "DELETE FROM target_channels WHERE (target_id, channel_id) IN ( \
+                     SELECT target_id, channel_id FROM target_channels \
+                      WHERE target_id = ANY($1) AND org_id = $3 AND channel_id = ANY($2) \
+                      ORDER BY target_id, channel_id FOR UPDATE)",
+            )
+            .bind(&locked)
+            .bind(&channels)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .context("bulk edit_channels: remove")?,
             ChannelEdit::Replace(_) => {
-                r#"(SELECT COALESCE(
-                       jsonb_agg(jsonb_build_object('channel_id', c::text) ORDER BY n),
-                       '[]'::jsonb)
-                    FROM unnest($2::uuid[]) WITH ORDINALITY AS u(c, n))"#
+                sqlx::query(
+                    "DELETE FROM target_channels WHERE (target_id, channel_id) IN ( \
+                         SELECT target_id, channel_id FROM target_channels \
+                          WHERE target_id = ANY($1) AND org_id = $3 AND channel_id <> ALL($2) \
+                          ORDER BY target_id, channel_id FOR UPDATE)",
+                )
+                .bind(&locked)
+                .bind(&channels)
+                .bind(org.0)
+                .execute(&mut *tx)
+                .await
+                .context("bulk edit_channels: replace, drop")?;
+                sqlx::query(
+                    "INSERT INTO target_channels (target_id, channel_id, org_id, position) \
+                     SELECT t.id, u.c, $3, (u.n - 1)::int \
+                       FROM unnest($1::uuid[]) AS t(id) \
+                      CROSS JOIN unnest($2::uuid[]) WITH ORDINALITY AS u(c, n) \
+                     ON CONFLICT (target_id, channel_id) DO UPDATE SET position = EXCLUDED.position \
+                     WHERE target_channels.position <> EXCLUDED.position",
+                )
+                .bind(&locked)
+                .bind(&channels)
+                .bind(org.0)
+                .execute(&mut *tx)
+                .await
+                .context("bulk edit_channels: replace, set")?
             }
         };
-        let rows: Vec<(Uuid,)> = sqlx::query_as(&format!(
-            "UPDATE targets SET alerts = {set}, updated_at = now() \
-             WHERE id = ANY($1) AND org_id = $3 RETURNING id"
-        ))
-        .bind(ids)
-        .bind(edit.channels())
-        .bind(org.0)
-        .fetch_all(&self.pool)
-        .await
-        .context("bulk edit_channels")?;
-        Ok(rows.into_iter().map(|(id,)| id).collect())
+        sqlx::query("UPDATE targets SET updated_at = now() WHERE id = ANY($1) AND org_id = $2")
+            .bind(&locked)
+            .bind(org.0)
+            .execute(&mut *tx)
+            .await
+            .context("bulk edit_channels: touch")?;
+        tx.commit().await.context("bulk edit_channels: commit")?;
+        Ok(locked)
     }
 
     async fn ping(&self) -> Result<()> {

@@ -16,8 +16,8 @@ pub struct AlertBinding {
     pub channel_id: Uuid,
 }
 
-/// A target's alert bindings. Serialised transparently as a JSON array so the
-/// `targets.alerts` column is a list of `{channel_id}` objects.
+/// A target's alert bindings, in saved order. Serialised transparently as a
+/// JSON array of `{channel_id}` objects; stored as `target_channels` rows.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(transparent)]
 #[schema(value_type = Vec<AlertBinding>)]

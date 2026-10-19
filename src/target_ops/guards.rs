@@ -8,6 +8,7 @@ use crate::error::codes;
 use crate::error::{AppError, Result};
 use crate::request::state::require_pool;
 use crate::security::SsrfGuard;
+use crate::storage::channel_bindings::{ALERT_CHANNEL_FIELD, unknown_channel};
 use crate::targets::flow_capable_set;
 use crate::targets::validate::{
     RegionSnapshot, flow_covered, normalize_region_ids, reject_manual_recovery_period,
@@ -153,7 +154,7 @@ impl TargetOps<'_> {
         alerts: &TargetAlerts,
     ) -> Result<()> {
         let ids: Vec<Uuid> = alerts.iter().map(|b| b.channel_id).collect();
-        self.verify_channel_ids(org, &ids, "alerts.channel_id")
+        self.verify_channel_ids(org, &ids, ALERT_CHANNEL_FIELD)
             .await
     }
 
@@ -170,11 +171,7 @@ impl TargetOps<'_> {
         }
         let known = self.channels.existing_channel_ids(org, ids).await?;
         if let Some(missing) = ids.iter().find(|id| !known.contains(id)) {
-            return Err(AppError::bad_request_field(
-                codes::INVALID_ALERT_CONFIG,
-                format!("notification channel {missing} does not exist"),
-                field,
-            ));
+            return Err(unknown_channel(*missing, field));
         }
         Ok(())
     }

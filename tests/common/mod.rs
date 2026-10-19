@@ -218,8 +218,9 @@ pub fn build_test_app_with_seedable_incidents(
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let narration = Arc::new(InMemoryIncidentNarrationStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> = narration.clone();
-    let notification_channel_store: Arc<dyn NotificationChannelStore> =
-        Arc::new(InMemoryNotificationChannelStore::new());
+    let notification_channel_store: Arc<dyn NotificationChannelStore> = Arc::new(
+        InMemoryNotificationChannelStore::with_targets(target_store.clone()),
+    );
     let quotas = Arc::new(QuotaService::new(&cfg, None));
     let state = AppState::new(
         cfg,
@@ -294,8 +295,9 @@ fn build_test_app_with_public_source_inner(
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(InMemoryIncidentNarrationStore::new());
-    let notification_channel_store: Arc<dyn NotificationChannelStore> =
-        Arc::new(InMemoryNotificationChannelStore::new());
+    let notification_channel_store: Arc<dyn NotificationChannelStore> = Arc::new(
+        InMemoryNotificationChannelStore::with_targets(target_store.clone()),
+    );
     let quotas = Arc::new(QuotaService::new(&cfg, None));
     let state = AppState::new(
         cfg,
@@ -462,8 +464,9 @@ pub async fn build_test_app_with_pg_state(
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(InMemoryIncidentNarrationStore::new());
-    let notification_channel_store: Arc<dyn NotificationChannelStore> =
-        Arc::new(InMemoryNotificationChannelStore::new());
+    let notification_channel_store: Arc<dyn NotificationChannelStore> = Arc::new(
+        InMemoryNotificationChannelStore::with_targets(target_store.clone()),
+    );
     let quotas = Arc::new(QuotaService::new(&cfg, Some(pool.clone())));
     let state = AppState::new(
         cfg,
@@ -787,8 +790,9 @@ pub fn build_test_app_state_with_email(
     let maintenance_store: Arc<dyn MaintenanceStore> = Arc::new(InMemoryMaintenanceStore::new());
     let incident_narration_store: Arc<dyn IncidentNarrationStore> =
         Arc::new(InMemoryIncidentNarrationStore::new());
-    let notification_channel_store: Arc<dyn NotificationChannelStore> =
-        Arc::new(InMemoryNotificationChannelStore::new());
+    let notification_channel_store: Arc<dyn NotificationChannelStore> = Arc::new(
+        InMemoryNotificationChannelStore::with_targets(target_store.clone()),
+    );
     let quotas = Arc::new(QuotaService::new(&cfg, None));
     AppState::new(
         cfg,

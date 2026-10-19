@@ -1,7 +1,8 @@
 //! Live-Postgres contract for `notification_channels`: cross-tenant isolation
 //! on every store method, the per-org quota cap, secrets sealed at rest by the
-//! credentials KEK, and the org scoping of the channel-id lookup that the
-//! target→channel binding IDOR guard (`verify_alert_channels`) is built on.
+//! credentials KEK, the org scoping of the channel-id lookup that the
+//! target→channel binding IDOR guard (`verify_alert_channels`) is built on,
+//! and the binding rows against concurrent saves and deletes.
 //! The in-memory suite (`notification_channels_test`) covers the
 //! HTTP/redaction contract; this one exercises the real SQL.
 //!
@@ -18,14 +19,16 @@ use uptimepage::domain::{
     AlertAction, AlertBinding, ChannelConfig, ChannelKind, CheckSpec, DiscordAppConfig,
     EmailConfig, ExpectedStatus, NewIncidentNotification, NewNotificationChannel, NewTarget,
     NotificationChannelUpdate, NotificationReason, NotificationStatus, NtfyConfig, SlackAppConfig,
-    SlackConfig, TargetAlerts, WriteSource,
+    SlackConfig, TargetAlerts, TargetUpdate, WriteSource,
 };
 use uptimepage::error::AppError;
 use uptimepage::error::codes;
+use uptimepage::storage::traits::ChannelEdit;
 use uptimepage::storage::{
     Actor, IncidentOpsStore, NotificationChannelStore, PgIncidentOpsStore,
     PgNotificationChannelStore, PostgresTargetStore, TargetStore, create_org_with_owner,
 };
+use uuid::Uuid;
 
 use common::{default_http_check, make_user, pg_pool_from_env, test_cipher, unique_slug};
 
@@ -429,116 +432,824 @@ async fn target_alert_binding_channel_lookup_is_org_scoped_live_pg() {
     cleanup(&pool, &[org_a, org_b], &[user_a, user_b]).await;
 }
 
+fn bound_target(name: &str, channels: &[Uuid]) -> NewTarget {
+    let url = url::Url::parse("https://example.com/").unwrap();
+    NewTarget {
+        name: name.into(),
+        check: CheckSpec::Http(default_http_check(url, ExpectedStatus::Exact(200))),
+        interval: Duration::from_secs(30),
+        enabled: true,
+        tags: vec![],
+        alerts: TargetAlerts(
+            channels
+                .iter()
+                .map(|&channel_id| AlertBinding { channel_id })
+                .collect(),
+        ),
+        region_policy: Default::default(),
+        alert_confirmations: 2,
+        notify_recovery: true,
+        renotify_interval_secs: 3600,
+        recovery_period_secs: None,
+        group_name: None,
+        owner_user_id: None,
+        regions: None,
+    }
+}
+
+fn bound(target: &uptimepage::domain::Target) -> Vec<Uuid> {
+    target.alerts.iter().map(|b| b.channel_id).collect()
+}
+
+/// The first backend `blocker` holds up, polled until one waits on it.
+async fn wait_blocked_by(pool: &sqlx::PgPool, blocker: i32) -> i32 {
+    for _ in 0..400 {
+        let pid: Option<i32> = sqlx::query_scalar(
+            "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) LIMIT 1",
+        )
+        .bind(blocker)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if let Some(pid) = pid {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("nothing waited on backend {blocker}");
+}
+
+/// Opens a transaction holding the row lock on `table`'s row `id`, so a write
+/// that reaches that row parks there. Returns it with its backend pid.
+async fn hold_row(
+    pool: &sqlx::PgPool,
+    table: &str,
+    id: Uuid,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+    let mut hold = pool.begin().await.unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *hold)
+        .await
+        .unwrap();
+    sqlx::query(&format!("SELECT 1 FROM {table} WHERE id = $1 FOR UPDATE"))
+        .bind(id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    (hold, pid)
+}
+
+/// An open incident on `target` with one queued page to `channel`. Returns
+/// `(incident, page)`.
+async fn queued_page(
+    pool: &sqlx::PgPool,
+    org: uptimepage::domain::OrgId,
+    target: Uuid,
+    channel: Uuid,
+) -> (Uuid, Uuid) {
+    let incident: Uuid = sqlx::query_scalar(
+        "INSERT INTO incidents \
+            (org_id, target_id, started_at, status_at_start, state, severity, urgency, origin, visibility) \
+         VALUES ($1, $2, now(), 'down', 'triggered', 'major', 'high', 'monitor', 'internal') \
+         RETURNING id",
+    )
+    .bind(org.0)
+    .bind(target)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let page = page_to(pool, org, incident, channel).await;
+    (incident, page)
+}
+
+/// One more queued page of `incident` to `channel`.
+async fn page_to(
+    pool: &sqlx::PgPool,
+    org: uptimepage::domain::OrgId,
+    incident: Uuid,
+    channel: Uuid,
+) -> Uuid {
+    PgIncidentOpsStore::new(pool.clone())
+        .record_notification(NewIncidentNotification {
+            org,
+            incident_id: incident,
+            escalation_level: Some(0),
+            target_user_id: None,
+            channel_id: Some(channel),
+            transport: "slack".into(),
+            reason: NotificationReason::Opened,
+            status: NotificationStatus::Queued,
+            attempt: 1,
+            error: None,
+            sent_at: None,
+            episode: 0,
+        })
+        .await
+        .unwrap()
+}
+
+/// Opens a transaction holding the binding of `target` to `channel`, so a
+/// write that reaches that row parks there. Returns it with its backend pid.
+async fn hold_binding(
+    pool: &sqlx::PgPool,
+    target: Uuid,
+    channel: Uuid,
+) -> (sqlx::Transaction<'static, sqlx::Postgres>, i32) {
+    let mut hold = pool.begin().await.unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *hold)
+        .await
+        .unwrap();
+    sqlx::query(
+        "SELECT 1 FROM target_channels WHERE target_id = $1 AND channel_id = $2 FOR UPDATE",
+    )
+    .bind(target)
+    .bind(channel)
+    .execute(&mut *hold)
+    .await
+    .unwrap();
+    (hold, pid)
+}
+
+/// Whether another transaction could lock the rows `sql` selects right now.
+async fn lockable(pool: &sqlx::PgPool, sql: &str, ids: &[Uuid]) -> bool {
+    let mut probe = pool.begin().await.unwrap();
+    let mut query = sqlx::query(sql);
+    for id in ids {
+        query = query.bind(*id);
+    }
+    let locked = match query.execute(&mut *probe).await {
+        Ok(_) => true,
+        Err(e) if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("55P03") => false,
+        Err(e) => panic!("probe failed: {e}"),
+    };
+    probe.rollback().await.unwrap();
+    locked
+}
+
+fn set_alerts(channels: &[Uuid]) -> TargetUpdate {
+    TargetUpdate {
+        alerts: Some(TargetAlerts(
+            channels
+                .iter()
+                .map(|&channel_id| AlertBinding { channel_id })
+                .collect(),
+        )),
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
-async fn unbind_channel_scrubs_only_that_binding_in_org_live_pg() {
+async fn a_channel_delete_removes_only_its_own_bindings_live_pg() {
     let Some(pool) = pg_pool_from_env().await else {
         return;
     };
     let (org_a, org_b, user_a, user_b) = two_orgs(&pool, "nc-unbind").await;
     let channels = PgNotificationChannelStore::new(pool.clone(), None);
     let targets = PostgresTargetStore::from_pool(pool.clone(), None);
-
-    let ch_a = channels
-        .create(org_a, slack("A", "T/B/ua"), WriteSource::Ui, i64::MAX, None)
-        .await
-        .unwrap();
-    let ch_b = channels
-        .create(org_a, slack("B", "T/B/ub"), WriteSource::Ui, i64::MAX, None)
-        .await
-        .unwrap();
-
-    let mk_target = |name: &str, alerts: Vec<AlertBinding>| {
-        let url = url::Url::parse("https://example.com/").unwrap();
-        NewTarget {
-            name: name.into(),
-            check: CheckSpec::Http(default_http_check(url, ExpectedStatus::Exact(200))),
-            interval: Duration::from_secs(30),
-            enabled: true,
-            tags: vec![],
-            alerts: TargetAlerts(alerts),
-            region_policy: Default::default(),
-            alert_confirmations: 2,
-            notify_recovery: true,
-            renotify_interval_secs: 3600,
-            recovery_period_secs: None,
-            group_name: None,
-            owner_user_id: None,
-            regions: None,
-        }
+    let new_channel = |org, name: &'static str| {
+        channels.create(
+            org,
+            slack(name, &format!("T/B/u{name}")),
+            WriteSource::Ui,
+            i64::MAX,
+            None,
+        )
     };
-    let both = targets
-        .create(
-            org_a,
-            mk_target(
-                "both",
-                vec![
-                    AlertBinding {
-                        channel_id: ch_a.id,
-                    },
-                    AlertBinding {
-                        channel_id: ch_b.id,
-                    },
-                ],
-            ),
-            WriteSource::Ui,
-            i64::MAX,
-            i64::MAX,
-        )
+    let ch_a = new_channel(org_a, "a").await.unwrap();
+    let ch_b = new_channel(org_a, "b").await.unwrap();
+    let theirs = new_channel(org_b, "theirs").await.unwrap();
+    let create = |org, new| targets.create(org, new, WriteSource::Ui, i64::MAX, i64::MAX);
+    let both = create(org_a, bound_target("both", &[ch_a.id, ch_b.id]))
         .await
         .unwrap();
-    let only_a = targets
-        .create(
-            org_a,
-            mk_target(
-                "only-a",
-                vec![AlertBinding {
-                    channel_id: ch_a.id,
-                }],
-            ),
-            WriteSource::Ui,
-            i64::MAX,
-            i64::MAX,
-        )
+    let only_a = create(org_a, bound_target("only-a", &[ch_a.id]))
         .await
         .unwrap();
-    // Store-level write: another org carrying the same channel id must be
-    // untouched by org_a's scrub (handler validation would never allow this
-    // binding, which is exactly why the SQL needs its own org guard).
-    let foreign = targets
-        .create(
-            org_b,
-            mk_target(
-                "foreign",
-                vec![AlertBinding {
-                    channel_id: ch_a.id,
-                }],
-            ),
-            WriteSource::Ui,
-            i64::MAX,
-            i64::MAX,
-        )
+    let foreign = create(org_b, bound_target("foreign", &[theirs.id]))
         .await
         .unwrap();
 
-    let touched = targets.unbind_channel(org_a, ch_a.id).await.unwrap();
-    assert_eq!(touched, 2);
+    assert!(channels.delete(org_a, ch_a.id, None).await.unwrap());
 
     let both = targets.get(org_a, both.id).await.unwrap().unwrap();
-    let bound: Vec<_> = both.alerts.iter().map(|b| b.channel_id).collect();
-    assert_eq!(bound, vec![ch_b.id], "sibling binding must survive");
-
+    assert_eq!(bound(&both), vec![ch_b.id], "sibling binding must survive");
     let only_a = targets.get(org_a, only_a.id).await.unwrap().unwrap();
-    assert!(only_a.alerts.is_empty(), "binding must be scrubbed");
-
+    assert!(only_a.alerts.is_empty(), "binding must go with the channel");
     let foreign = targets.get(org_b, foreign.id).await.unwrap().unwrap();
-    assert_eq!(
-        foreign.alerts.iter().count(),
-        1,
-        "foreign org's bindings must be untouched"
-    );
+    assert_eq!(bound(&foreign), vec![theirs.id]);
 
     cleanup(&pool, &[org_a, org_b], &[user_a, user_b]).await;
+}
+
+/// The store checks the org before it writes; the database refuses the row
+/// anyway, whichever org the row claims.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_binding_across_orgs_is_refused_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let (org_a, org_b, user_a, user_b) = two_orgs(&pool, "nc-cross").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch_a = channels
+        .create(org_a, slack("A", "T/B/xa"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let theirs = targets
+        .create(
+            org_b,
+            bound_target("b", &[]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+
+    match targets
+        .update(org_b, theirs.id, set_alerts(&[ch_a.id]), None, None)
+        .await
+    {
+        Err(AppError::BadRequest { code, .. }) => assert_eq!(code, codes::INVALID_ALERT_CONFIG),
+        other => panic!("expected {}, got {other:?}", codes::INVALID_ALERT_CONFIG),
+    }
+    for claimed in [org_a, org_b] {
+        let err = sqlx::query(
+            "INSERT INTO target_channels (target_id, channel_id, org_id, position) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(theirs.id)
+        .bind(ch_a.id)
+        .bind(claimed.0)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("org_id mismatch"), "{err}");
+    }
+
+    cleanup(&pool, &[org_a, org_b], &[user_a, user_b]).await;
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_save_keeps_the_order_it_names_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-order").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let mut ids = Vec::new();
+    for name in ["c", "d", "e"] {
+        let ch = channels
+            .create(
+                org,
+                slack(name, &format!("T/B/o{name}")),
+                WriteSource::Ui,
+                i64::MAX,
+                None,
+            )
+            .await
+            .unwrap();
+        ids.push(ch.id);
+    }
+    let [c, d, e] = [ids[0], ids[1], ids[2]];
+    let created = targets
+        .create(
+            org,
+            bound_target("t", &[c, d, e]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bound(&created), vec![c, d, e]);
+
+    for order in [vec![e, c], vec![c, e, d], vec![]] {
+        let saved = targets
+            .update(org, created.id, set_alerts(&order), None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound(&saved), order, "returned in the order saved");
+        let read = targets.get(org, created.id).await.unwrap().unwrap();
+        assert_eq!(bound(&read), order, "read back in the order saved");
+    }
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A save that has locked its channels before the delete commits first, and
+/// the delete then removes the binding it wrote.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn delete_waits_for_a_binding_write_in_flight_then_removes_it_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-race-save").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch = channels
+        .create(org, slack("A", "T/B/rs"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+
+    let (hold, holder) = hold_row(&pool, "targets", target.id).await;
+    let save = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move {
+            store
+                .update(org, target.id, set_alerts(&[ch.id]), None, None)
+                .await
+        }
+    });
+    let saver = wait_blocked_by(&pool, holder).await;
+    let delete = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, ch.id, None).await }
+    });
+    wait_blocked_by(&pool, saver).await;
+    hold.rollback().await.unwrap();
+
+    let saved = save.await.unwrap().unwrap().unwrap();
+    assert_eq!(bound(&saved), vec![ch.id]);
+    assert!(delete.await.unwrap().unwrap());
+    let after = targets.get(org, target.id).await.unwrap().unwrap();
+    assert!(
+        after.alerts.is_empty(),
+        "the delete removes the committed binding"
+    );
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A save that reaches the channel after the delete took it waits, then is
+/// refused, instead of binding a channel that no longer exists.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_binding_write_behind_the_delete_is_refused_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-race-del").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch = channels
+        .create(org, slack("A", "T/B/rd"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let create = |name, chs: &[Uuid]| {
+        targets.create(
+            org,
+            bound_target(name, chs),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+    };
+    let bound_one = create("bound", &[ch.id]).await.unwrap();
+    let late = create("late", &[]).await.unwrap();
+    let (_, page) = queued_page(&pool, org, bound_one.id, ch.id).await;
+
+    // The delete takes the channel row, then parks on its page, still holding
+    // the channel.
+    let (hold, holder) = hold_row(&pool, "incident_notifications", page).await;
+    let delete = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, ch.id, None).await }
+    });
+    let deleter = wait_blocked_by(&pool, holder).await;
+    let save = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move {
+            store
+                .update(org, late.id, set_alerts(&[ch.id]), None, None)
+                .await
+        }
+    });
+    wait_blocked_by(&pool, deleter).await;
+    hold.rollback().await.unwrap();
+
+    assert!(delete.await.unwrap().unwrap());
+    match save.await.unwrap() {
+        Err(AppError::BadRequest { code, .. }) => assert_eq!(code, codes::INVALID_ALERT_CONFIG),
+        other => panic!("expected {}, got {other:?}", codes::INVALID_ALERT_CONFIG),
+    }
+    for id in [bound_one.id, late.id] {
+        let t = targets.get(org, id).await.unwrap().unwrap();
+        assert!(t.alerts.is_empty(), "{} keeps no deleted channel", t.name);
+    }
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A save that drops C and reorders D holds its own binding rows; the delete
+/// of C waits for it on the row the save already removed, and never the
+/// other way round.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_save_dropping_the_channel_being_deleted_does_not_deadlock_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-race-drop").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let c = channels
+        .create(org, slack("C", "T/B/dc"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let d = channels
+        .create(org, slack("D", "T/B/dd"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[c.id, d.id]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+
+    // The save drops (T,C), then parks moving D to the front.
+    let (hold, holder) = hold_binding(&pool, target.id, d.id).await;
+    let save = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move {
+            store
+                .update(org, target.id, set_alerts(&[d.id]), None, None)
+                .await
+        }
+    });
+    let saver = wait_blocked_by(&pool, holder).await;
+    let delete = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, c.id, None).await }
+    });
+    wait_blocked_by(&pool, saver).await;
+    hold.rollback().await.unwrap();
+
+    let saved = save.await.unwrap().unwrap().unwrap();
+    assert_eq!(bound(&saved), vec![d.id]);
+    assert!(delete.await.unwrap().unwrap());
+    let after = targets.get(org, target.id).await.unwrap().unwrap();
+    assert_eq!(bound(&after), vec![d.id]);
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// Two saves of one monitor run one after the other on the monitor's row, so
+/// the second diffs against what the first wrote.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn two_saves_of_one_monitor_take_turns_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-two-saves").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let c = channels
+        .create(org, slack("C", "T/B/tc"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let d = channels
+        .create(org, slack("D", "T/B/td"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+
+    let (hold, holder) = hold_row(&pool, "targets", target.id).await;
+    let save = |order: Vec<Uuid>| {
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        tokio::spawn(async move {
+            store
+                .update(org, target.id, set_alerts(&order), None, None)
+                .await
+        })
+    };
+    let first = save(vec![c.id]);
+    let first_saver = wait_blocked_by(&pool, holder).await;
+    let second = save(vec![d.id, c.id]);
+    for _ in 0..400 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE pid <> $2 AND ($1 = ANY(pg_blocking_pids(pid)) OR $2 = ANY(pg_blocking_pids(pid)))",
+        )
+        .bind(holder)
+        .bind(first_saver)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    hold.rollback().await.unwrap();
+
+    first.await.unwrap().unwrap().unwrap();
+    second.await.unwrap().unwrap().unwrap();
+    let after = bound(&targets.get(org, target.id).await.unwrap().unwrap());
+    assert!(
+        after == vec![c.id] || after == vec![d.id, c.id],
+        "one save's list, whole: {after:?}"
+    );
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A bulk edit takes its channels before any monitor or binding row: held up
+/// on a channel a delete has, it holds nothing that delete could need.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_bulk_edit_takes_its_channels_before_any_monitor_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-bulk").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let c = channels
+        .create(org, slack("C", "T/B/bc"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let d = channels
+        .create(org, slack("D", "T/B/bd"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let create = |name, chs: &[Uuid]| {
+        targets.create(
+            org,
+            bound_target(name, chs),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+    };
+    let t1 = create("t1", &[c.id]).await.unwrap();
+    let t3 = create("t3", &[c.id, d.id]).await.unwrap();
+
+    let (hold, holder) = hold_row(&pool, "notification_channels", d.id).await;
+    let bulk = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        let ids = vec![t1.id, t3.id];
+        let only_d = vec![d.id];
+        async move {
+            store
+                .edit_channels(org, &ids, ChannelEdit::Replace(&only_d))
+                .await
+        }
+    });
+    wait_blocked_by(&pool, holder).await;
+    for t in [t1.id, t3.id] {
+        assert!(
+            lockable(
+                &pool,
+                "SELECT 1 FROM targets WHERE id = $1 FOR UPDATE NOWAIT",
+                &[t]
+            )
+            .await,
+            "monitor locked before its channels"
+        );
+    }
+    assert!(
+        lockable(
+            &pool,
+            "SELECT 1 FROM target_channels WHERE target_id = $1 AND channel_id = $2 FOR UPDATE NOWAIT",
+            &[t3.id, d.id]
+        )
+        .await,
+        "binding locked before its channels"
+    );
+    hold.rollback().await.unwrap();
+
+    let edited = bulk.await.unwrap().unwrap();
+    assert_eq!(edited.len(), 2);
+    for t in [t1.id, t3.id] {
+        let after = targets.get(org, t).await.unwrap().unwrap();
+        assert_eq!(bound(&after), vec![d.id]);
+    }
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A monitor delete mutes its pages, then its binding rows go last with the
+/// monitor. A channel delete of a muted page's channel must take pages before
+/// bindings too, or each holds what the other waits on.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn deleting_a_monitor_and_its_channel_together_does_not_deadlock_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-race-both").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let c = channels
+        .create(org, slack("C", "T/B/rb"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let d = channels
+        .create(org, slack("D", "T/B/rbd"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    // `kept` sorts and was bound first, so the monitor delete's removal of
+    // its bindings reaches it, and parks there, before it touches `gone`'s.
+    let (kept, gone) = (c.id.min(d.id), c.id.max(d.id));
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[kept, gone]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+    queued_page(&pool, org, target.id, gone).await;
+
+    // The monitor delete mutes the page, then parks removing its bindings.
+    let (hold, holder) = hold_binding(&pool, target.id, kept).await;
+    let delete_monitor = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move { store.delete(org, target.id, None).await }
+    });
+    let monitor_deleter = wait_blocked_by(&pool, holder).await;
+    let delete_channel = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, gone, None).await }
+    });
+    wait_blocked_by(&pool, monitor_deleter).await;
+    hold.rollback().await.unwrap();
+
+    assert!(delete_monitor.await.unwrap().unwrap());
+    assert!(delete_channel.await.unwrap().unwrap());
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A closing notice locks its incident, then records a page whose foreign key
+/// needs the channel row. A monitor delete holds the monitor and waits on that
+/// incident. The channel delete waits on neither, so the three never wait on
+/// each other in a ring.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_closing_notice_and_both_deletes_do_not_deadlock_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-race-ring").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch = channels
+        .create(org, slack("A", "T/B/rr"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[ch.id]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+    let (incident, _) = queued_page(&pool, org, target.id, ch.id).await;
+
+    // The notice's first step, as `record_closing_notification` takes it.
+    let mut notice = pool.begin().await.unwrap();
+    let noticer: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *notice)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE incidents SET updated_at = now() WHERE id = $1")
+        .bind(incident)
+        .execute(&mut *notice)
+        .await
+        .unwrap();
+    let delete_monitor = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move { store.delete(org, target.id, None).await }
+    });
+    wait_blocked_by(&pool, noticer).await;
+    let delete_channel = {
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        tokio::time::timeout(Duration::from_secs(10), store.delete(org, ch.id, None))
+            .await
+            .expect("the channel delete waited on the monitor or the incident")
+            .unwrap()
+    };
+    assert!(delete_channel);
+
+    // Its second step: the page to the channel, which is gone by now.
+    let err = sqlx::query(
+        "INSERT INTO incident_notifications \
+            (org_id, incident_id, escalation_level, target_user_id, channel_id, \
+             transport, reason, status, attempt, error, sent_at, episode) \
+         VALUES ($1, $2, 0, NULL, $3, 'slack', 'resolved', 'queued', 1, NULL, NULL, 0)",
+    )
+    .bind(org.0)
+    .bind(incident)
+    .bind(ch.id)
+    .execute(&mut *notice)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err.as_database_error().and_then(|d| d.code()).as_deref(),
+        Some("23503"),
+        "the channel is already gone, nothing waits on it: {err}"
+    );
+    notice.rollback().await.unwrap();
+
+    assert!(delete_monitor.await.unwrap().unwrap());
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// Both deletes update the pages they share. Each locks them in id order
+/// first, so neither can hold one the other needs while waiting on another.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn two_pages_shared_by_both_deletes_are_taken_in_one_order_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user) = two_orgs(&pool, "nc-two-pages").await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch = channels
+        .create(org, slack("A", "T/B/tp"), WriteSource::Ui, i64::MAX, None)
+        .await
+        .unwrap();
+    let target = targets
+        .create(
+            org,
+            bound_target("t", &[ch.id]),
+            WriteSource::Ui,
+            i64::MAX,
+            i64::MAX,
+        )
+        .await
+        .unwrap();
+    let (incident, first) = queued_page(&pool, org, target.id, ch.id).await;
+    let second = page_to(&pool, org, incident, ch.id).await;
+    let higher = first.max(second);
+
+    // The channel delete takes the lower page, then parks on the higher one.
+    let (hold, holder) = hold_row(&pool, "incident_notifications", higher).await;
+    let delete_channel = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, ch.id, None).await }
+    });
+    let channel_deleter = wait_blocked_by(&pool, holder).await;
+    let delete_monitor = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move { store.delete(org, target.id, None).await }
+    });
+    wait_blocked_by(&pool, channel_deleter).await;
+    hold.rollback().await.unwrap();
+
+    assert!(delete_channel.await.unwrap().unwrap());
+    assert!(delete_monitor.await.unwrap().unwrap());
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
 }
 
 #[tokio::test]
@@ -1884,4 +2595,125 @@ async fn a_discord_press_finds_its_channel_by_webhook_pg() {
     );
 
     cleanup(&pool, &[org_a, org_b], &[user_a, user_b]).await;
+}
+
+/// Two monitors bound to one channel, `(low, high)` by id, and the delete the
+/// tests below race against it parked on `high`'s binding after it took
+/// `low`'s.
+async fn two_monitors_on_one_channel(
+    pool: &sqlx::PgPool,
+    tag: &str,
+) -> (
+    uptimepage::domain::OrgId,
+    uptimepage::domain::OrgId,
+    uptimepage::domain::UserId,
+    uptimepage::domain::UserId,
+    Uuid,
+    Uuid,
+    Uuid,
+) {
+    let (org, other, user, other_user) = two_orgs(pool, tag).await;
+    let channels = PgNotificationChannelStore::new(pool.clone(), None);
+    let targets = PostgresTargetStore::from_pool(pool.clone(), None);
+    let ch = channels
+        .create(
+            org,
+            slack("A", &format!("T/B/{tag}")),
+            WriteSource::Ui,
+            i64::MAX,
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let mut ids = Vec::new();
+    for name in ["a", "b"] {
+        let t = targets
+            .create(
+                org,
+                bound_target(name, &[ch]),
+                WriteSource::Ui,
+                i64::MAX,
+                i64::MAX,
+            )
+            .await
+            .unwrap();
+        ids.push(t.id);
+    }
+    (
+        org,
+        other,
+        user,
+        other_user,
+        ch,
+        ids[0].min(ids[1]),
+        ids[0].max(ids[1]),
+    )
+}
+
+/// A channel delete and a bulk remove of that channel both drop the bindings
+/// of several monitors. Both lock them in monitor order first, so neither can
+/// hold one binding while waiting on the other's.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_bulk_remove_and_a_channel_delete_take_shared_bindings_in_one_order_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user, ch, low, high) =
+        two_monitors_on_one_channel(&pool, "nc-bulk-rm").await;
+
+    let (hold, holder) = hold_binding(&pool, high, ch).await;
+    let delete_channel = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, ch, None).await }
+    });
+    let channel_deleter = wait_blocked_by(&pool, holder).await;
+    let remove = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move {
+            store
+                .edit_channels(org, &[low, high], ChannelEdit::Remove(&[ch]))
+                .await
+        }
+    });
+    wait_blocked_by(&pool, channel_deleter).await;
+    hold.rollback().await.unwrap();
+
+    assert!(delete_channel.await.unwrap().unwrap());
+    assert_eq!(remove.await.unwrap().unwrap().len(), 2);
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
+}
+
+/// A bulk monitor delete cascades the bindings of several monitors; it locks
+/// them in monitor order first, as the channel delete does.
+#[tokio::test]
+#[ignore = "requires DATABASE_URL — run via DATABASE_URL=... cargo test -- --ignored"]
+async fn a_bulk_monitor_delete_and_a_channel_delete_take_shared_bindings_in_one_order_live_pg() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let workers = pg_pool_from_env().await.unwrap();
+    let (org, other, user, other_user, ch, low, high) =
+        two_monitors_on_one_channel(&pool, "nc-bulk-del").await;
+
+    let (hold, holder) = hold_binding(&pool, high, ch).await;
+    let delete_channel = tokio::spawn({
+        let store = PgNotificationChannelStore::new(workers.clone(), None);
+        async move { store.delete(org, ch, None).await }
+    });
+    let channel_deleter = wait_blocked_by(&pool, holder).await;
+    let delete_monitors = tokio::spawn({
+        let store = PostgresTargetStore::from_pool(workers.clone(), None);
+        async move { store.delete_bulk(org, &[low, high], None).await }
+    });
+    wait_blocked_by(&pool, channel_deleter).await;
+    hold.rollback().await.unwrap();
+
+    assert!(delete_channel.await.unwrap().unwrap());
+    assert_eq!(delete_monitors.await.unwrap().unwrap().len(), 2);
+
+    cleanup(&pool, &[org, other], &[user, other_user]).await;
 }

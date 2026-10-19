@@ -271,14 +271,6 @@ pub async fn delete(
     // The bot-leave decision below needs the transport + chat id, gone once
     // the row is.
     let channel = state.notification_channel_store.get(org, id).await?;
-    // Scrub before delete: a stale {channel_id} left in targets.alerts
-    // fails channel-existence validation on the next whole-array alerts
-    // update of that monitor. This order keeps the operation retryable —
-    // a scrub failure leaves the channel in place, so the client's DELETE
-    // retry re-runs both steps. A PATCH racing the delete can still
-    // re-introduce a binding; the escalation engine tolerates missing
-    // channels at resolve time.
-    state.target_store.unbind_channel(org, id).await?;
     if state
         .notification_channel_store
         .delete(org, id, Some(user))
