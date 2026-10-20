@@ -28,6 +28,16 @@
         </default>
     </profiles>
 
+    <!-- Server text logs sit in the container's own filesystem, not a volume.
+         The default trace level with ten 1000M files per log grew to gigabytes
+         on the root disk; three 100M files at information level keep merge and
+         startup context without the per-query trace. -->
+    <logger>
+        <level>information</level>
+        <size>100M</size>
+        <count>3</count>
+    </logger>
+
     <!-- Sample async metrics every 60s instead of every second: their
          collection is the main idle-CPU cost (ClickHouse#60016). -->
     <asynchronous_metrics_update_period_s>60</asynchronous_metrics_update_period_s>

@@ -477,11 +477,11 @@ resource "grafana_rule_group" "pipeline" {
   }
 
   # ClickHouse partition-explosion early warning. MaxPartCountForPartition
-  # (sampled app-side into this gauge) climbing toward parts_to_throw_insert
+  # (scraped from ClickHouse's own metrics endpoint) climbing toward parts_to_throw_insert
   # (default 3000) means inserts are about to be rejected fleet-wide. A healthy
   # day-partitioned schema sits in the low tens; 1500 is half the hard ceiling,
   # ample lead time to react (almost always: a high-cardinality column was added
-  # to PARTITION BY, or merges fell behind). no_data = OK: the gauge is absent
+  # to PARTITION BY, or merges fell behind). no_data = OK: the series is absent
   # when CH is unreachable, which ResultsLost / StorageWriteLatencyHigh cover.
   rule {
     name           = "UptimepageClickHousePartsHigh"
@@ -507,7 +507,7 @@ resource "grafana_rule_group" "pipeline" {
       model = jsonencode({
         refId   = "A"
         instant = true
-        expr    = "max(uptimepage_clickhouse_max_part_count_for_partition) > 1500"
+        expr    = "max(ClickHouseAsyncMetrics_MaxPartCountForPartition) > 1500"
       })
     }
     data {
@@ -1034,6 +1034,47 @@ resource "grafana_rule_group" "pipeline" {
         refId   = "A"
         instant = true
         expr    = "(sum(rate(uptimepage_notifications_failures_total[1h])) / sum(rate(uptimepage_notifications_total[1h])) > 0.25) and (sum(increase(uptimepage_notifications_failures_total[1h])) >= 5)"
+      })
+    }
+    data {
+      ref_id         = "C"
+      datasource_uid = "__expr__"
+      relative_time_range {
+        from = 0
+        to   = 0
+      }
+      model = local.threshold_c
+    }
+  }
+
+  # UptimepageClickHousePartsHigh reads a series from the separate ClickHouse scrape
+  # job and treats no data as OK, so a broken scrape, a dropped <prometheus>
+  # section or a renamed metric would leave it silently unable to fire.
+  rule {
+    name           = "UptimepageClickHouseMetricsMissing"
+    condition      = "C"
+    for            = "10m"
+    no_data_state  = "OK"
+    exec_err_state = "Error"
+    labels = {
+      severity = "warning"
+      service  = "uptimepage"
+    }
+    annotations = {
+      summary     = "uptimepage: ClickHouse metrics missing"
+      description = "ClickHouseAsyncMetrics_MaxPartCountForPartition has not reached Grafana Cloud for 10m, so UptimepageClickHousePartsHigh cannot fire. Check the clickhouse scrape job in deployment/config.alloy and the <prometheus> section of deployment/clickhouse-config.xml. Runbook: runbooks/grafana-cloud.md."
+    }
+    data {
+      ref_id         = "A"
+      datasource_uid = data.grafana_data_source.prometheus.uid
+      relative_time_range {
+        from = 600
+        to   = 0
+      }
+      model = jsonencode({
+        refId   = "A"
+        instant = true
+        expr    = "absent(ClickHouseAsyncMetrics_MaxPartCountForPartition)"
       })
     }
     data {

@@ -47,15 +47,11 @@ async fn sampler_runs_and_shuts_down() {
         .connect_lazy("postgres://localhost:1/none")
         .expect("lazy pool");
 
-    // Dead CH endpoint — the parts-count sample fails each tick and is skipped
-    // (best-effort), which is exactly the resilience this asserts.
-    let ch = clickhouse::Client::default().with_url("http://127.0.0.1:1");
-
     let shutdown = CancellationToken::new();
     let h = sampler::spawn(
         pool,
         registry,
-        Some(sampler::DbSources { pg_pool, ch }),
+        Some(pg_pool),
         &tx,
         Duration::from_millis(20),
         shutdown.clone(),
@@ -69,7 +65,7 @@ async fn sampler_runs_and_shuts_down() {
 }
 
 // The probe-only agent runs the sampler with no database; it must sample the
-// worker/queue gauges and shut down cleanly without a Postgres or CH handle.
+// worker/queue gauges and shut down cleanly without a Postgres pool.
 #[tokio::test]
 async fn sampler_runs_without_database() {
     let addr = "127.0.0.1:1".parse().unwrap();

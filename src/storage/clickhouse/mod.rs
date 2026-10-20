@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Context;
 use backoff::ExponentialBackoffBuilder;
 use chrono::{DateTime, TimeZone, Utc};
-use clickhouse::{Client, Row, query::Query};
+use clickhouse::{Client, Row, RowOwned, RowRead, query::Query};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -98,15 +98,38 @@ pub fn build_client(cfg: &ClickhouseConfig) -> Client {
 /// `table` is always a fixed in-crate constant at the call sites, never user
 /// input, so the identifier interpolation is injection-free.
 pub(crate) async fn count_org_rows(client: &Client, table: &str, org_id: Uuid) -> Result<u64> {
-    let row: CountRow = client
+    let query = client
         .query(&format!(
             "SELECT count() AS n FROM {table} WHERE org_id = ?"
         ))
-        .bind(org_id)
-        .fetch_one::<CountRow>()
+        .bind(org_id);
+    let row: CountRow = fetch_single(query)
         .await
         .with_context(|| format!("clickhouse count_org_rows {table}"))?;
     Ok(row.n)
+}
+
+/// The first row of a query that returns at most one, read with the rest of
+/// the response. The client's `fetch_one` and `fetch_optional` return after
+/// the first row and leave the rest unread, which can close the connection
+/// while ClickHouse is still writing; it logs that as a broken pipe.
+pub(crate) async fn fetch_first<T: RowOwned + RowRead>(
+    query: Query,
+) -> clickhouse::error::Result<Option<T>> {
+    let mut cursor = query.fetch::<T>()?;
+    let first = cursor.next().await?;
+    while cursor.next().await?.is_some() {}
+    Ok(first)
+}
+
+/// [`fetch_first`] for a query that always returns a row, such as an
+/// aggregate without `GROUP BY`.
+pub(crate) async fn fetch_single<T: RowOwned + RowRead>(
+    query: Query,
+) -> clickhouse::error::Result<T> {
+    fetch_first(query)
+        .await?
+        .ok_or(clickhouse::error::Error::RowNotFound)
 }
 
 /// Single-column scalar count row, shared by every `SELECT count() AS n …`

@@ -65,7 +65,6 @@ pub const PG_POOL_IDLE: &str = "uptimepage_pg_pool_idle";
 pub const PG_POOL_IN_USE: &str = "uptimepage_pg_pool_in_use";
 pub const PROCESS_RESIDENT_BYTES: &str = "uptimepage_process_resident_bytes";
 pub const PROCESS_START_TIME: &str = "uptimepage_process_start_time_seconds";
-pub const CLICKHOUSE_MAX_PART_COUNT: &str = "uptimepage_clickhouse_max_part_count_for_partition";
 pub const ACCOUNT_DELETIONS_REQUESTED: &str = "uptimepage_account_deletions_requested_total";
 pub const BILLING_WEBHOOKS: &str = "uptimepage_billing_webhooks_total";
 pub const BILLING_WEBHOOK_REJECTED: &str = "uptimepage_billing_webhook_rejected_total";

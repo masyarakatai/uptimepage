@@ -254,7 +254,6 @@ async fn main() -> Result<()> {
     );
     let ch_client_for_public = clickhouse_client.clone();
     let ch_client_for_purge = clickhouse_client.clone();
-    let ch_client_for_sampler = clickhouse_client.clone();
     let ch_client_for_region = clickhouse_client.clone();
     let ch_client_for_error_classes = clickhouse_client.clone();
     let results_store: Arc<dyn ResultsStore> =
@@ -386,10 +385,7 @@ async fn main() -> Result<()> {
     let sampler_handle: JoinHandle<()> = uptimepage::scheduler::sampler::spawn(
         pool.clone(),
         registry.clone(),
-        Some(uptimepage::scheduler::sampler::DbSources {
-            pg_pool: pg_pool.clone(),
-            ch: ch_client_for_sampler,
-        }),
+        Some(pg_pool.clone()),
         &result_tx,
         sample_interval,
         root.clone(),

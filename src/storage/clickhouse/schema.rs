@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::error::Result;
 
-use super::CountRow;
+use super::{CountRow, fetch_single};
 
 /// Ordered list of migrations. Each entry is `(filename, sql)`. Filename is
 /// recorded in `schema_migrations` after apply so we never re-run a migration
@@ -135,12 +135,13 @@ pub async fn migrate(client: &Client) -> Result<()> {
         // let the next boot re-run the migration. With the IF-NOT-EXISTS
         // discipline above that is harmless today, but the fence costs one
         // count query per migration and removes the silent footgun outright.
-        let CountRow { n } = client
-            .query("SELECT count() AS n FROM schema_migrations WHERE filename = ?")
-            .bind(*name)
-            .fetch_one::<CountRow>()
-            .await
-            .with_context(|| format!("verify clickhouse migration recorded {name}"))?;
+        let CountRow { n } = fetch_single(
+            client
+                .query("SELECT count() AS n FROM schema_migrations WHERE filename = ?")
+                .bind(*name),
+        )
+        .await
+        .with_context(|| format!("verify clickhouse migration recorded {name}"))?;
         if n == 0 {
             return Err(anyhow::anyhow!(
                 "clickhouse migration {name} applied but not recorded in schema_migrations",

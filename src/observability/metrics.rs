@@ -313,10 +313,6 @@ fn register_descriptions() {
         "uptimepage_process_resident_bytes",
         "Resident set size of the uptimepage process in bytes (VmRSS on Linux). Early-warning signal for slow leaks and unbounded growth before the OOM killer triggers; not exposed on non-Linux platforms"
     );
-    describe_gauge!(
-        "uptimepage_clickhouse_max_part_count_for_partition",
-        "ClickHouse MaxPartCountForPartition (sampled from system.asynchronous_metrics). Early warning for partition explosion — climbs toward parts_to_throw_insert (default 3000) if a high-cardinality column is ever added to PARTITION BY"
-    );
     describe_counter!(
         "uptimepage_http_requests_total",
         "HTTP requests handled, labelled by method, MatchedPath route, and status class (2xx/3xx/4xx/5xx/other). The route label is the path-pattern with placeholders so cardinality is bounded by the router's static route table"

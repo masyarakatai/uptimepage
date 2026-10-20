@@ -585,7 +585,7 @@ pub async fn run(cfg: AppConfig) -> Result<()> {
         tokio::spawn(async move { batcher.run(token).await })
     };
     // Probe-side gauges (workers in-flight, open breakers, queue depth, RSS).
-    // No DbSources: the agent holds no Postgres/ClickHouse pool to sample.
+    // No Postgres pool: the agent holds no database connection to sample.
     let sample_interval =
         Duration::from_millis(cfg.observability.gauge_sample_interval_ms.max(100));
     let sampler_handle = crate::scheduler::sampler::spawn(

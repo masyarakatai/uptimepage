@@ -3389,7 +3389,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(uptimepage_clickhouse_max_part_count_for_partition)",
+          "expr": "max(ClickHouseAsyncMetrics_MaxPartCountForPartition)",
           "legendFormat": "",
           "refId": "A",
           "instant": true,
@@ -3733,7 +3733,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(uptimepage_clickhouse_max_part_count_for_partition)",
+          "expr": "max(ClickHouseAsyncMetrics_MaxPartCountForPartition)",
           "legendFormat": "max parts",
           "refId": "A",
           "range": true

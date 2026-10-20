@@ -26,8 +26,8 @@ use crate::storage::traits::{
 };
 
 use super::{
-    FLOW_TABLE, HEARTBEAT_PING_TABLE, MINUTE_WINDOW, TABLE, bind_minute_window, from_unix_secs,
-    rollup_source, to_unix_secs,
+    FLOW_TABLE, HEARTBEAT_PING_TABLE, MINUTE_WINDOW, TABLE, bind_minute_window, fetch_first,
+    fetch_single, from_unix_secs, rollup_source, to_unix_secs,
 };
 
 /// Org-scoped read side of the ClickHouse results table. Holds no ambient
@@ -817,8 +817,7 @@ impl ResultsStore for ClickhouseResultsStore {
         if let Some(r) = region {
             cq = cq.bind(r);
         }
-        let counts: Counts = bind_minute_window(cq, range.from, range.to)
-            .fetch_one::<Counts>()
+        let counts: Counts = fetch_single(bind_minute_window(cq, range.from, range.to))
             .await
             .context("clickhouse last_n_summary counts")?;
         let avg_ms = if counts.avg_ms.is_finite() {
@@ -935,8 +934,7 @@ impl ResultsStore for ClickhouseResultsStore {
         if let Some(r) = region {
             q = q.bind(r);
         }
-        let row: CountsRow = bind_minute_window(q, range.from, range.to)
-            .fetch_one::<CountsRow>()
+        let row: CountsRow = fetch_single(bind_minute_window(q, range.from, range.to))
             .await
             .context("clickhouse uptime")?;
 
@@ -1578,8 +1576,7 @@ impl ResultsStore for ClickhouseResultsStore {
         if let Some(r) = region {
             q = q.bind(r);
         }
-        let row: Option<PriorRow> = bind_minute_window(q, prior_from, prior_to)
-            .fetch_optional::<PriorRow>()
+        let row: Option<PriorRow> = fetch_first(bind_minute_window(q, prior_from, prior_to))
             .await
             .context("clickhouse prior_period_summary")?;
         let r = row.unwrap_or(PriorRow {
