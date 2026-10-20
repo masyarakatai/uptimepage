@@ -23,17 +23,45 @@ PROJECT="uptimepage"            # compose `name:` — used for the volume name
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="$BACKUP_ROOT/backup.log"
 
-cd "$COMPOSE_DIR"
-mkdir -p "$BACKUP_ROOT"/{postgres,clickhouse,caddy}
-chmod 700 "$BACKUP_ROOT" "$BACKUP_ROOT"/{postgres,clickhouse,caddy}
-
 log() { echo "$(date -u +%FT%TZ) [$ACTION] $*" | tee -a "$LOG" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 # The dump in progress lives under a .partial name until publish() renames it.
 # A failed run removes it, so a short file never passes for the newest backup.
 PARTIAL=""
-trap '[ -z "$PARTIAL" ] || rm -rf -- "$PARTIAL"' EXIT
+
+# Optional heartbeat monitor: `start` when the run begins, then its exit code
+# (0 = success, any other fails the monitor at once) with this action's last
+# log lines as the ping body.
+BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL:-}"
+BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL%/}"
+LOG_START=0
+
+heartbeat() { # start | exit code
+  [ -n "$BACKUP_HEARTBEAT_URL" ] || return 0
+  local body=""
+  [ "$1" = start ] \
+    || body="$(tail -n "+$((LOG_START + 1))" "$LOG" 2>/dev/null | grep -F "[$ACTION]" | tail -n 20 || true)"
+  printf '%s\n' "$body" | curl -fsS -m 10 --retry 3 --retry-connrefused -o /dev/null \
+    --data-binary @- "$BACKUP_HEARTBEAT_URL/$1" || log "heartbeat ping failed"
+}
+
+# Without errexit: a failed cleanup or log write (a full disk) must not skip
+# the ping that reports the failure.
+on_exit() {
+  local rc=$?
+  set +e
+  [ -z "$PARTIAL" ] || rm -rf -- "$PARTIAL"
+  [ "$rc" -eq 0 ] || log "exited with status $rc"
+  heartbeat "$rc"
+}
+trap on_exit EXIT
+
+cd "$COMPOSE_DIR"
+mkdir -p "$BACKUP_ROOT"/{postgres,clickhouse,caddy}
+chmod 700 "$BACKUP_ROOT" "$BACKUP_ROOT"/{postgres,clickhouse,caddy}
+LOG_START="$(wc -l 2>/dev/null < "$LOG" || echo 0)"
+heartbeat start
 
 publish() { # tmp, out
   chmod 600 "$1"

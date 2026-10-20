@@ -24,6 +24,8 @@ hitting Let's Encrypt rate limits on a full rebuild.
 
 Activity is appended to `/opt/uptimepage/backups/backup.log`.
 
+To be alerted when a run fails or stops running, create a heartbeat monitor per job and put its ping URL in front of the cron command: `BACKUP_HEARTBEAT_URL=https://…/ping/<token> /opt/uptimepage/deployment/backup.sh daily`. Each run pings `/start` when it begins and its exit code when it ends (`/0` passes, anything else fails the monitor at once), with up to 20 of the lines this run logged as the ping body. A run that never reports trips the monitor once its period and grace are up, and a max run time on the monitor catches one that hangs. Put the monitor on a different instance when you can: one on the instance being backed up goes quiet with it, and a ping sent while that instance restarts is lost.
+
 ## Restore
 
 All commands run from `/opt/uptimepage/deployment` with the stack up.
