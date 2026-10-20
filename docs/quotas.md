@@ -28,7 +28,7 @@ Four plans ship seeded: `free`, `founding` (a more generous free tier granted to
 | `evidence_days` | 7 | 7 | 7 | 7 | How long a failed browser-flow run keeps the page it captured. Clamped to `raw_days`, since the run it explains goes then |
 | `max_flow_steps` | 30 | 30 | 30 | 30 | Steps one flow monitor may declare. Clamped to the engine ceiling of 30, so a larger value has no effect |
 | `max_flow_checks` | 0 | 1 | 3 | 10 | Browser flow monitors the org can create; 0 doubles as the feature gate, so a create returns `403 FLOW_CHECKS_DISABLED` rather than a quota error. A flow also needs `flow.enabled` on the process that runs it, so a cap alone does not switch it on |
-| `max_regions` | 3 | ∞ | ∞ | ∞ | Regions a single monitor is probed from. Enforced on assignment and again at hand-out: past the cap, a monitor's default-on regions come first, then the rest by id |
+| `max_regions` | 3 | 5 | ∞ | ∞ | Regions a single monitor is probed from. Enforced on assignment and again at hand-out: past the cap, a monitor's default-on regions come first, then the rest by id |
 | `max_members` | 3 | 5 | 5 | 15 | Distinct people across the account's orgs — one person in two orgs holds one seat |
 | `max_pending_invitations` | 10 | 15 | 15 | 25 | Outstanding (unaccepted) invitations |
 | `max_api_tokens_per_user` | 5 | 7 | 7 | 10 | API tokens a single user may hold |
