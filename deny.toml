@@ -35,6 +35,12 @@ ignore = [
     # `with_builtin_macros`) require upstream PRs. Revisit on clickhouse
     # 0.16 / utoipa-axum 0.3.
     "RUSTSEC-2024-0436",
+    # `basic-toml` — archived, unmaintained. Compiled into the askama_derive
+    # proc-macro through askama's default `config` feature, which path-based
+    # templates need; it runs only at compile time and is not in the binary.
+    # The latest askama (0.16.1) still depends on it. Revisit when
+    # askama_derive drops or replaces basic-toml.
+    "RUSTSEC-2026-0374",
     # `rustls-pemfile` — archived in favour of `rustls-pki-types::pem`.
     # Dev-dep-only (test cert helpers); harmless. Revisit when test deps
     # migrate.
