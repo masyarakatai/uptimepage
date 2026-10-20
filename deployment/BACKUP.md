@@ -30,16 +30,26 @@ All commands run from `/opt/uptimepage/deployment` with the stack up.
 
 ### PostgreSQL
 
+Hold deploys (no pushes to `main`) until the restore is done: a deploy that finds no app running starts one, and its migrations then race the restore.
+
+The app runs as one of two compose services, `uptimepage_blue` or `uptimepage_green`. The other one is stopped but still holds the previous release, so the block stops and restarts only the running color, and falls back to `.active_color` (the last live color) when neither is up. Paste it as one block: each step runs only if the one before it succeeded, so a failed stop or drop never lets the dump replay over live data.
+
 ```bash
-gunzip -c /opt/uptimepage/backups/postgres/monitor-<ts>.sql.gz \
-  | docker compose exec -T postgres psql -U monitor -d monitor
+dump=/opt/uptimepage/backups/postgres/monitor-<ts>.sql.gz
+active=$(docker compose ps --services --status running | grep -E '^uptimepage_(blue|green)$') \
+  || active="uptimepage_$(cat .active_color)"
+gunzip -c "$dump" | tail -n 8 | grep -q 'PostgreSQL database dump complete' \
+  && docker compose stop "$active" \
+  && docker compose exec -T postgres psql -X -U monitor -d postgres -v ON_ERROR_STOP=1 \
+       -c 'DROP DATABASE IF EXISTS monitor WITH (FORCE);' -c 'CREATE DATABASE monitor;' \
+  && gunzip -c "$dump" | docker compose exec -T postgres \
+       psql -X -q -U monitor -d monitor -v ON_ERROR_STOP=1 \
+  && docker compose start "$active"
 ```
 
-For a clean restore, recreate the database first (stop the app container so
-nothing is connected): `docker compose stop uptimepage`, then
-`docker compose exec -T postgres psql -U monitor -d postgres -c
-'DROP DATABASE monitor; CREATE DATABASE monitor;'`, restore as above,
-`docker compose start uptimepage`.
+The first step refuses a dump without pg_dump's closing line: a `pg_dump` that died mid-run still leaves a well-formed `.gz`, just a short one. `WITH (FORCE)` ends other sessions (a cron `pg_dump`, a tunnelled `psql`) that would otherwise block the drop. `DROP` and `CREATE` sit in separate `-c` flags because psql runs a single `-c` string as one transaction, and `DROP DATABASE` refuses to run inside one. The restore stops at the first error and leaves the app stopped; rerun the block with an older dump, which drops the partial database first.
+
+`start` brings back the exact container that was stopped. If that container no longer exists (after a `docker compose down`), `start` silently does nothing: use `docker compose up -d --no-build "$active"` instead, after checking that `UPTIMEPAGE_IMAGE` in `.env` names the release you want, since a failed deploy leaves its own image there.
 
 ### ClickHouse
 
