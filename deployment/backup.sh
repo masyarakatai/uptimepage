@@ -96,15 +96,15 @@ backup_clickhouse() {
 backup_caddy() {
   local vol="${PROJECT}_caddy_data"
   local out="$BACKUP_ROOT/caddy/caddy-data-$TS.tgz"
+  local tmp="$out.partial"
   docker volume inspect "$vol" >/dev/null 2>&1 || die "volume $vol not found"
+  PARTIAL="$tmp"
   log "tar caddy volume $vol → $(basename "$out")"
-  # Throwaway alpine mounts the named volume read-only + the host backup dir.
-  docker run --rm \
-    -v "$vol":/data:ro \
-    -v "$BACKUP_ROOT/caddy":/backup \
-    alpine tar -C /data -czf "/backup/$(basename "$out")" .
-  [ -s "$out" ] || die "caddy tar is empty"
-  chmod 600 "$out"
+  # Throwaway alpine reads the named volume and streams the archive; the host
+  # shell writes the file, so it belongs to the host user, not container root.
+  docker run --rm -v "$vol":/data:ro alpine tar -C /data -czf - . > "$tmp"
+  tar -tzf "$tmp" >/dev/null || die "caddy archive is unreadable"
+  publish "$tmp" "$out"
   log "caddy ok ($(du -h "$out" | cut -f1))"
 }
 
