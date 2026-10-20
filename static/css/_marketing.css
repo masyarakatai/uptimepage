@@ -3343,10 +3343,11 @@ html:has(.mk-hero),
 /* One 12s loop shared by every flow; negative delays stagger the arrivals and
    leave the map already in motion on first paint. */
 .mk-map__flow { --mk-flow-delay: 0s; }
-.mk-map__flow--2 { --mk-flow-delay: -2.4s; }
-.mk-map__flow--3 { --mk-flow-delay: -4.8s; }
-.mk-map__flow--4 { --mk-flow-delay: -7.2s; }
-.mk-map__flow--5 { --mk-flow-delay: -9.6s; }
+.mk-map__flow--2 { --mk-flow-delay: -2s; }
+.mk-map__flow--3 { --mk-flow-delay: -4s; }
+.mk-map__flow--4 { --mk-flow-delay: -6s; }
+.mk-map__flow--5 { --mk-flow-delay: -8s; }
+.mk-map__flow--6 { --mk-flow-delay: -10s; }
 
 .mk-map__arc {
     fill: none;

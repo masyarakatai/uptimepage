@@ -292,7 +292,7 @@ pub async fn architecture(State(cfg): State<Arc<MarketingCfg>>, headers: HeaderM
 
 pub(crate) const PRICING_PATH: &str = "/pricing";
 const PRICING_CREATED: &str = "2026-06-23";
-pub(crate) const PRICING_LASTMOD: &str = "2026-10-14";
+pub(crate) const PRICING_LASTMOD: &str = "2026-10-20";
 
 // Founding-claim figures shown on the pricing scarcity meter.
 const FOUNDING_TOTAL: u32 = 1000;
@@ -308,7 +308,7 @@ const PRICING_FAQS: &[(&str, &str)] = &[
     (
         "What happens when the founding spots run out?",
         "New accounts get Standard, and Pro starts at $9 with the founding limits \
-         plus your own branding. If you claimed a founding spot you keep it at the \
+         plus every region and your own branding. If you claimed a founding spot you keep it at the \
          founding limits for as long as the account is open, at no cost. We do not \
          quietly downgrade you.",
     ),

@@ -129,8 +129,8 @@ pub(crate) const REGION_CAP_JOIN: &str = "LEFT JOIN unnest($2::uuid[], $3::int[]
 /// The middle test is what keeps the cheap paths cheap: a monitor can never be
 /// assigned more regions than exist, so a ceiling at or above the enabled-region
 /// count cannot bind. It is uncorrelated, so Postgres runs it once per query and
-/// short-circuits the per-row rank for every plan that sells unlimited regions —
-/// which, outside `free`, is all of them.
+/// short-circuits the per-row rank for every plan whose ceiling covers every
+/// enabled region.
 pub(crate) const REGION_CAP_PREDICATE: &str = "(cap.max_regions IS NULL \
      OR cap.max_regions >= (SELECT count(*) FROM regions WHERE enabled) \
      OR cap.max_regions >= ( \

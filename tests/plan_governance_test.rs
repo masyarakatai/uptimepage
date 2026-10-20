@@ -348,6 +348,20 @@ async fn an_override_lifts_the_floor_for_one_account() {
 
 #[tokio::test]
 #[ignore = "requires DATABASE_URL"]
+async fn founding_admits_any_five_regions_and_refuses_a_sixth() {
+    let Some(pool) = pg_pool_from_env().await else {
+        return;
+    };
+    let (org, _, _) = org_on_plan(&pool, "founding", 60).await;
+    let cfg = AppConfig::load().expect("config");
+    let quotas = QuotaService::new(&cfg, Some(pool.clone()));
+
+    assert!(quotas.check_region_assignment(org, None, 5).await.is_ok());
+    assert!(quotas.check_region_assignment(org, None, 6).await.is_err());
+}
+
+#[tokio::test]
+#[ignore = "requires DATABASE_URL"]
 async fn a_monitor_over_its_region_cap_is_probed_from_its_first_regions_only() {
     let Some(pool) = pg_pool_from_env().await else {
         return;
