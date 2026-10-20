@@ -217,6 +217,9 @@ jobs:
           UPTIMEPAGE_MCP_OAUTH_ENABLED: ${{ vars.MCP_OAUTH_ENABLED }}
           # Secret, not a variable — the URL carries a capability token.
           HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
+          # Heartbeat ping URLs for deployment/backup.sh, secret for the same reason.
+          BACKUP_HEARTBEAT_DAILY_URL: ${{ secrets.BACKUP_HEARTBEAT_DAILY_URL }}
+          BACKUP_HEARTBEAT_WEEKLY_URL: ${{ secrets.BACKUP_HEARTBEAT_WEEKLY_URL }}
           # Operator admin bearer — enables the cross-tenant /operator surface.
           OPERATOR_ADMIN_TOKEN: ${{ secrets.OPERATOR_ADMIN_TOKEN }}
           # Central Telegram bot — token presence enables one-tap linking.
@@ -301,6 +304,8 @@ jobs:
                UPTIMEPAGE_MCP_ENABLED='${UPTIMEPAGE_MCP_ENABLED}' \
                UPTIMEPAGE_MCP_OAUTH_ENABLED='${UPTIMEPAGE_MCP_OAUTH_ENABLED}' \
                HEARTBEAT_URL='${HEARTBEAT_URL}' \
+               BACKUP_HEARTBEAT_DAILY_URL='${BACKUP_HEARTBEAT_DAILY_URL}' \
+               BACKUP_HEARTBEAT_WEEKLY_URL='${BACKUP_HEARTBEAT_WEEKLY_URL}' \
                OPERATOR_ADMIN_TOKEN='${OPERATOR_ADMIN_TOKEN}' \
                TELEGRAM_BOT_TOKEN='${TELEGRAM_BOT_TOKEN}' \
                TELEGRAM_WEBHOOK_SECRET='${TELEGRAM_WEBHOOK_SECRET}' \
@@ -717,12 +722,14 @@ jobs:
           # revert, clear the key in .env. Same per-key write-once contract as
           # the blocks above. The agent-side keys (HOME_AGENT_TOKEN,
           # AGENT_FLOW_ENABLED) reach the running agent on its next
-          # deploy-agent run; this workflow never recreates it.
+          # deploy-agent run; this workflow never recreates it. The two
+          # BACKUP_HEARTBEAT_*_URL secrets are read by deployment/backup.sh.
           for k in HOME_AGENT_TOKEN UPTIMEPAGE_SCHEDULER_ENABLED \
                    UPTIMEPAGE_SCHEDULER_REGION UPTIMEPAGE_SCHEDULER_DEFAULT_REGION \
                    AGENT_FLOW_ENABLED UPTIMEPAGE_EMAIL_POLICY_ENABLED \
                    UPTIMEPAGE_EMAIL_POLICY_SIGNUP_POLICY \
-                   UPTIMEPAGE_CUSTOM_DOMAINS_ENABLED; do
+                   UPTIMEPAGE_CUSTOM_DOMAINS_ENABLED \
+                   BACKUP_HEARTBEAT_DAILY_URL BACKUP_HEARTBEAT_WEEKLY_URL; do
             v=$(printenv "$k" || true)
             [ -n "$v" ] || continue
             cp .env ".env.bak.$(date +%s).split.${k}"

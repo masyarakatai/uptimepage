@@ -26,14 +26,19 @@ LOG="$BACKUP_ROOT/backup.log"
 log() { echo "$(date -u +%FT%TZ) [$ACTION] $*" | tee -a "$LOG" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# A key's value from the compose .env, read without echoing; empty when the
+# file or the key is missing, so callers report it instead of errexit firing.
+env_value() { grep -E "^$1=" "$COMPOSE_DIR/.env" 2>/dev/null | head -n1 | cut -d= -f2- || true; }
+
 # The dump in progress lives under a .partial name until publish() renames it.
 # A failed run removes it, so a short file never passes for the newest backup.
 PARTIAL=""
 
 # Optional heartbeat monitor: `start` when the run begins, then its exit code
 # (0 = success, any other fails the monitor at once) with this action's last
-# log lines as the ping body.
-BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL:-}"
+# log lines as the ping body. The URL comes from the environment (set but empty
+# silences a run), else from .env as BACKUP_HEARTBEAT_DAILY_URL or _WEEKLY_URL.
+BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL-$(env_value "BACKUP_HEARTBEAT_${ACTION^^}_URL")}"
 BACKUP_HEARTBEAT_URL="${BACKUP_HEARTBEAT_URL%/}"
 LOG_START=0
 
@@ -69,10 +74,9 @@ publish() { # tmp, out
   PARTIAL=""
 }
 
-# CLICKHOUSE_PASSWORD is needed to authenticate clickhouse-client; read it
-# from .env without echoing. POSTGRES uses the in-container local socket as
-# the `monitor` superuser, so no password is needed there.
-ch_password() { grep -E '^CLICKHOUSE_PASSWORD=' .env | head -n1 | cut -d= -f2-; }
+# CLICKHOUSE_PASSWORD authenticates clickhouse-client. POSTGRES uses the
+# in-container local socket as the `monitor` superuser, so needs no password.
+ch_password() { env_value CLICKHOUSE_PASSWORD; }
 
 backup_postgres() {
   local out="$BACKUP_ROOT/postgres/monitor-$TS.sql.gz"
