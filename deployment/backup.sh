@@ -30,6 +30,17 @@ chmod 700 "$BACKUP_ROOT" "$BACKUP_ROOT"/{postgres,clickhouse,caddy}
 log() { echo "$(date -u +%FT%TZ) [$ACTION] $*" | tee -a "$LOG" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# The dump in progress lives under a .partial name until publish() renames it.
+# A failed run removes it, so a short file never passes for the newest backup.
+PARTIAL=""
+trap '[ -z "$PARTIAL" ] || rm -rf -- "$PARTIAL"' EXIT
+
+publish() { # tmp, out
+  chmod 600 "$1"
+  mv "$1" "$2"
+  PARTIAL=""
+}
+
 # CLICKHOUSE_PASSWORD is needed to authenticate clickhouse-client; read it
 # from .env without echoing. POSTGRES uses the in-container local socket as
 # the `monitor` superuser, so no password is needed there.
@@ -37,19 +48,26 @@ ch_password() { grep -E '^CLICKHOUSE_PASSWORD=' .env | head -n1 | cut -d= -f2-; 
 
 backup_postgres() {
   local out="$BACKUP_ROOT/postgres/monitor-$TS.sql.gz"
+  local tmp="$out.partial"
+  PARTIAL="$tmp"
   log "pg_dump → $(basename "$out")"
   docker compose exec -T postgres pg_dump -U monitor --no-owner --no-privileges monitor \
-    | gzip -c > "$out"
-  [ -s "$out" ] || die "pg dump is empty"
-  chmod 600 "$out"
+    | gzip -c > "$tmp"
+  # grep without -q reads to the end, so tail never takes a SIGPIPE under pipefail.
+  gzip -cd "$tmp" | tail -n 8 | grep 'PostgreSQL database dump complete' >/dev/null \
+    || die "pg dump has no completion marker"
+  publish "$tmp" "$out"
   log "pg_dump ok ($(du -h "$out" | cut -f1))"
 }
 
 backup_clickhouse() {
-  local dir="$BACKUP_ROOT/clickhouse/monitor-$TS"
+  local out="$BACKUP_ROOT/clickhouse/monitor-$TS.tgz"
+  local work="$BACKUP_ROOT/clickhouse/monitor-$TS.partial"
+  local dir="$work/monitor-$TS"
   local pw; pw="$(ch_password)"
   [ -n "$pw" ] || die "CLICKHOUSE_PASSWORD not found in .env"
-  mkdir -p "$dir"; chmod 700 "$dir"
+  PARTIAL="$work"
+  mkdir -p "$dir"; chmod 700 "$work" "$dir"
   # One schema file + one gzipped Native data file per table. Native is the
   # most faithful round-trip format; restore replays CREATE then INSERT.
   # `mapfile` (not a `while read` loop): the in-loop `docker compose exec -T`
@@ -69,10 +87,10 @@ backup_clickhouse() {
       --query "SELECT * FROM monitor.\`$t\` FORMAT Native" | gzip -c > "$dir/$t.native.gz"
     log "clickhouse table $t ok ($(du -h "$dir/$t.native.gz" | cut -f1))"
   done
-  tar -C "$BACKUP_ROOT/clickhouse" -czf "$dir.tgz" "$(basename "$dir")"
-  rm -rf "$dir"
-  chmod 600 "$dir.tgz"
-  log "clickhouse ok ($(du -h "$dir.tgz" | cut -f1))"
+  tar -C "$work" -czf "$work/$(basename "$out")" "$(basename "$dir")"
+  publish "$work/$(basename "$out")" "$out"
+  rm -rf "$work"
+  log "clickhouse ok ($(du -h "$out" | cut -f1))"
 }
 
 backup_caddy() {
@@ -91,10 +109,11 @@ backup_caddy() {
 }
 
 prune() { # dir, days
-  find "$1" -type f -name '*.gz' -mtime "+$2" -print -delete | while read -r f; do
-    log "pruned $(basename "$f")"
-  done
-  find "$1" -type f -name '*.tgz' -mtime "+$2" -print -delete | while read -r f; do
+  {
+    find "$1" -type f \( -name '*.gz' -o -name '*.tgz' \) ! -path '*.partial/*' -mtime "+$2" -print -delete
+    # A killed run never reaches its EXIT trap; the next day's run sweeps what it left.
+    find "$1" -mindepth 1 -maxdepth 1 -name '*.partial' -mmin +720 -print -exec rm -rf {} +
+  } | while read -r f; do
     log "pruned $(basename "$f")"
   done
 }
