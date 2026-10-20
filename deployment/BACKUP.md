@@ -6,8 +6,8 @@ dumps contain everything; treat them as secret).
 
 | What | When | Retention | File |
 |------|------|-----------|------|
-| PostgreSQL (`pg_dump`, gzip) | daily | 14 days | `postgres/monitor-<ts>.sql.gz` |
-| ClickHouse (schema + Native data per table, tarred) | daily | 7 days | `clickhouse/monitor-<ts>.tgz` |
+| PostgreSQL (`pg_dump`, gzip) | daily | 30 days | `postgres/monitor-<ts>.sql.gz` |
+| ClickHouse (schema + Native data per table, tarred) | daily | 3 days | `clickhouse/monitor-<ts>.tgz` |
 | Caddy data volume (certs/keys) | weekly | 28 days | `caddy/caddy-data-<ts>.tgz` |
 
 PostgreSQL is the irreplaceable data (orgs, users, targets, sessions).

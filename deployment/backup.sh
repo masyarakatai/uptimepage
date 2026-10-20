@@ -16,8 +16,8 @@ set -euo pipefail
 ACTION="${1:-}"
 COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/uptimepage/backups}"
-PG_KEEP_DAYS="${PG_KEEP_DAYS:-14}"
-CH_KEEP_DAYS="${CH_KEEP_DAYS:-7}"
+PG_KEEP_DAYS="${PG_KEEP_DAYS:-30}"
+CH_KEEP_DAYS="${CH_KEEP_DAYS:-3}"
 CADDY_KEEP_DAYS="${CADDY_KEEP_DAYS:-28}"
 PROJECT="uptimepage"            # compose `name:` — used for the volume name
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
